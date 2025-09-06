@@ -1,0 +1,13 @@
+{
+    "name": "convert_name_to_symbols",
+    "method": "GET",
+    "path": "materials/convert/name_to_symbols",
+    "description": "Convert a chemical name to a list of symbols. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported.",
+    "params": [
+        { "name": "name", "type": "string", "required": true, "query_name": "name", "description": "The chemical name to convert. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported." }
+    ],
+    "response": {
+        "mode": "json",
+        "pretty": true
+    }
+}

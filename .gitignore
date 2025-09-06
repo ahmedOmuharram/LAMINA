@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenv
+.venv/
+venv/
+
+# Environment
+.env
+.webui_secret_key
+
+# OS
+.DS_Store
+
+# Editors/IDE
+.vscode/
+.idea/
+

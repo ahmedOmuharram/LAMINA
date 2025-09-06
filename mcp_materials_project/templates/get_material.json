@@ -1,0 +1,18 @@
+{
+    "name": "get_material",
+    "method": "GET",
+    "path": "materials/summary/get_material",
+    "description": "Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols.",
+    "params": [
+        { "name": "chemsys", "type": "string", "required": false, "query_name": "chemsys", "description": "Chemical system(s) or comma-separated list (e.g., Li-Fe-O,Si-*). Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols. Example:" },
+        { "name": "formula", "type": "string", "required": false, "query_name": "formula", "description": "Formula(s), anonymized formula, or wildcard(s) (e.g., Li2FeO3,Fe2O3,Fe*O*). Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols." },
+        { "name": "element", "type": "string", "required": false, "query_name": "element", "description": "Element(s) or comma-separated list (e.g., Li,Fe,O). Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols." },
+        { "name": "page", "type": "int", "required": false, "query_name": "page", "description": "Page number (default 1).", "default": 1 },
+        { "name": "per_page", "type": "int", "required": false, "query_name": "per_page", "description": "Items per page (max 10; default 10).", "default": 10 }
+    ],
+    "response": {
+        "mode": "json",
+        "pretty": true,
+        "select_keys": ["material_id", "formula_pretty"]
+    }
+}
