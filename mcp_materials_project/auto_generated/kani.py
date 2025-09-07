@@ -4,9 +4,9 @@ from typing import Any, Optional, List, Tuple, Dict, Annotated
 from kani import ai_function, AIParam
 
 class GeneratedKaniTools:
-    @ai_function(desc="Convert a chemical name to a list of symbols. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported.", auto_truncate=128000)
-    async def convert_name_to_symbols(self, name: Annotated[str, AIParam(desc="The chemical name to convert. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported.")]) -> str:
-        """Convert a chemical name to a list of symbols. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported."""
+    @ai_function(desc="Convert an english worded chemical name to a list of symbols. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported. It must be worded and not a chemical formula. If it is a chemical formula, use the other tools directly.", auto_truncate=128000)
+    async def convert_name_to_symbols(self, name: Annotated[str, AIParam(desc="The english worded chemical name to convert. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported. It must be worded and not a chemical formula. If it is a chemical formula, use the other tools directly.")]) -> str:
+        """Convert an english worded chemical name to a list of symbols. The name can be a chemical formula (e.g. Iron Oxide 2 -> Fe2O3), an element (e.g. Oxygen -> O), or a chemical system (e.g. Lithium-Iron-* -> Li-Fe-*). Wildcards are supported. It must be worded and not a chemical formula. If it is a chemical formula, use the other tools directly."""
         _args = {}
         _args["name"] = name
         _result = await self._proxy.call_tool("convert_name_to_symbols", _args)
