@@ -106,8 +106,7 @@ async def do_json_response(messages: List[ChatMessage], model: str) -> JSONRespo
             # For title/follow-up prompts, tools shouldn't be called; ignore.
             _ = await stream.message()
 
-    # Linkify at the end for non-streaming responses
-    full_text = linkify_mp_numbers("".join(content_parts) or "")
+    full_text = "".join(content_parts) or ""
 
     payload = {
         "id": f"chatcmpl-{int(time.time())}",

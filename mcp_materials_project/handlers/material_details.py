@@ -4,8 +4,9 @@ Handler for get_material_details_by_ids endpoint.
 
 import json
 import logging
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Annotated
 
+from kani import ai_function, AIParam
 from .base import BaseHandler
 
 _log = logging.getLogger(__name__)
@@ -14,6 +15,34 @@ _log = logging.getLogger(__name__)
 class MaterialDetailsHandler(BaseHandler):
     """Handler for material details endpoints."""
     
+    @ai_function(desc="Fetch one or more materials by their material IDs and return detailed information about them.", auto_truncate=128000)
+    async def get_material_details_by_ids(
+        self,
+        material_ids: Annotated[List[str], AIParam(desc="List of material IDs, e.g., ['mp-149', 'mp-150', 'mp-151'].")],
+        fields: Annotated[List[str], AIParam(desc="List of fields to include. Values include 'builder_meta', 'nsites', 'elements', 'nelements', 'composition', 'composition_reduced', 'formula_pretty', 'formula_anonymous', 'chemsys', 'volume', 'density', 'density_atomic', 'symmetry', 'property_name', 'material_id', 'deprecated', 'deprecation_reasons', 'last_updated', 'origins', 'warnings', 'structure', 'task_ids', 'uncorrected_energy_per_atom', 'energy_per_atom', 'formation_energy_per_atom', 'energy_above_hull', 'is_stable', 'equilibrium_reaction_energy_per_atom', 'decomposes_to', 'xas', 'grain_boundaries', 'band_gap', 'cbm', 'vbm', 'efermi', 'is_gap_direct', 'is_metal', 'es_source_calc_id', 'bandstructure', 'dos', 'dos_energy_up', 'dos_energy_down', 'is_magnetic', 'ordering', 'total_magnetization', 'total_magnetization_normalized_vol', 'total_magnetization_normalized_formula_units', 'num_magnetic_sites', 'num_unique_magnetic_sites', 'types_of_magnetic_species', 'bulk_modulus', 'shear_modulus', 'universal_anisotropy', 'homogeneous_poisson', 'e_total', 'e_ionic', 'e_electronic', 'n', 'e_ij_max', 'weighted_surface_energy_EV_PER_ANG2', 'weighted_surface_energy', 'weighted_work_function', 'surface_anisotropy', 'shape_factor', 'has_reconstructed', 'possible_species', 'has_props', 'theoretical', 'database_Ids'")] = None,
+        all_fields: Annotated[bool, AIParam(desc="Whether to return all document fields. Useful if the user wants to know about the material without explicitly asking for certain fields (default True).")] = True,
+        page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
+        per_page: Annotated[int, AIParam(desc="Items per page (max 10; default 10).")] = 10
+    ) -> Dict[str, Any]:
+        """Fetch one or more materials by their material IDs and return detailed information about them."""
+        params = {
+            "material_ids": material_ids,
+            "all_fields": all_fields,
+            "page": page,
+            "per_page": per_page
+        }
+        if fields is not None:
+            params["fields"] = fields
+        
+        result = self.handle_material_details(params)
+        # Store the result for tooltip display
+        if hasattr(self, 'recent_tool_outputs'):
+            self.recent_tool_outputs.append({
+                "tool_name": "get_material_details_by_ids",
+                "result": result
+            })
+        return result
+
     def handle_material_details(self, params: Mapping[str, Any]) -> Dict[str, Any]:
         """Handle materials/summary/get_material_details_by_ids endpoint."""
         _log.info(f"GET materials/summary/get_material_details_by_ids with params: {params}")

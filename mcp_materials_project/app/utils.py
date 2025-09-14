@@ -93,20 +93,19 @@ def to_kani_history(api_messages: List[ChatMessage]) -> list[KChatMessage]:
 
 def pretty_print_tool_output(obj: Any) -> str:
     """Best-effort JSON pretty-printer for tool output, for logs panel."""
+    # Handle different types of tool outputs
+    if isinstance(obj, dict):
+        display_obj = obj
+    elif hasattr(obj, '__dict__'):
+        # Convert object with attributes to dict
+        display_obj = {k: v for k, v in obj.__dict__.items() if not k.startswith('_')}
+    else:
+        # Fallback for other types
+        display_obj = {"output": str(obj)}
+
+    # Pretty print the dictionary
     try:
-        display_obj = dict(obj)  # may raise
+        pretty = json.dumps(display_obj, indent=2, ensure_ascii=False, default=str)
+        return f"```json\n{pretty}\n```"
     except Exception:
-        try:
-            display_obj = {k: obj[k] for k in obj} if isinstance(obj, dict) else {"record": str(obj)}
-        except Exception:
-            return f"```\n{str(obj)}\n```"
-
-    res_val = display_obj.get("result")
-    if isinstance(res_val, str):
-        try:
-            display_obj["result"] = json.loads(res_val)
-        except Exception:
-            pass
-
-    pretty = json.dumps(display_obj, indent=2, ensure_ascii=False)
-    return f"```json\n{pretty}\n```"
+        return f"```\n{str(obj)}\n```"

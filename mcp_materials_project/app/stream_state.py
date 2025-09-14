@@ -66,10 +66,35 @@ class StreamState:
             duration = time.time() - started if started else 0.0
 
             logs_md = ""
+            # Prioritize recent_tool_outputs which contains actual Python objects
+            tool_output = None
             latest_out = getattr(kani_instance, "recent_tool_outputs", None)
-            if latest_out:
+            if latest_out and len(latest_out) > 0:
                 try:
-                    logs_md = f"**Tool**: `{tool_name}`\n\n**Output**:\n\n{pretty_print_tool_output(latest_out[-1])}"
+                    tool_output = latest_out[-1]
+                except Exception:
+                    pass
+            
+            # Fallback to tool message content if recent_tool_outputs is not available
+            if not tool_output and hasattr(tool_msg, 'content') and tool_msg.content:
+                try:
+                    # Try to parse the content as JSON first
+                    import json
+                    tool_output = json.loads(tool_msg.content)
+                except (json.JSONDecodeError, TypeError):
+                    try:
+                        # If JSON parsing fails, try to evaluate as Python literal
+                        import ast
+                        tool_output = ast.literal_eval(tool_msg.content)
+                    except (ValueError, SyntaxError):
+                        # If all else fails, use the string as is
+                        tool_output = tool_msg.content
+                except Exception:
+                    pass
+            
+            if tool_output:
+                try:
+                    logs_md = f"**Tool**: `{tool_name}`\n\n**Output**:\n\n{pretty_print_tool_output(tool_output)}"
                 except Exception:
                     pass
 
