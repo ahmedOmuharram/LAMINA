@@ -1,0 +1,20 @@
+:8010
+
+# Chat Completions: rewrite ONLY multipart (image uploads) to /v1/responses
+route /v1/chat/completions* {
+  @multipart {
+    header Content-Type *multipart/form-data*
+  }
+  handle @multipart {
+    uri replace /v1/chat/completions /v1/responses
+    reverse_proxy 127.0.0.1:8000
+  }
+  handle {
+    reverse_proxy 127.0.0.1:8000
+  }
+}
+
+# Everything else straight through
+route /* {
+  reverse_proxy 127.0.0.1:8000
+}

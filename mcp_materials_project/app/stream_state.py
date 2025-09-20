@@ -100,6 +100,20 @@ class StreamState:
 
             chunks.append(self.emit_tool_done_panel(tool_name, duration, logs_md))
             self.tools_open = max(0, self.tools_open - 1)
+            
+            # Check if this tool generated an image and emit it as a separate chunk
+            if tool_name in ["plot_binary_phase_diagram", "plot_composition_temperature"]:
+                # Emit analysis FIRST before the image chunk clears the metadata
+                analysis_chunk = self._emit_analysis_panel()
+                print(f"Analysis chunk generated: {analysis_chunk is not None}", flush=True)
+                if analysis_chunk:
+                    print(f"Adding analysis chunk of length: {len(analysis_chunk)}", flush=True)
+                    chunks.append(analysis_chunk)
+                
+                # Then emit the image chunk (which will clear the metadata)
+                image_chunk = self._emit_image_chunk()
+                if image_chunk:
+                    chunks.append(image_chunk)
         else:
             # No queued tool but got a FUNCTION end — show zero-duration panel anyway
             tool_name = getattr(tool_msg, "name", None) or "tool"
@@ -136,3 +150,98 @@ class StreamState:
         if not tail:
             return None
         return delta_chunk_raw(tail, self.model_name)
+    
+    def _emit_image_chunk(self) -> Optional[str]:
+        """Emit an image as a separate chunk outside the tool output."""
+        # Try to get the image data from the kani instance
+        kani_instance = getattr(self, '_kani_instance', None)
+        if not kani_instance:
+            return None
+            
+        image_data = getattr(kani_instance, '_last_image_data', None)
+        metadata = getattr(kani_instance, '_last_image_metadata', {})
+        
+        if not image_data:
+            return None
+            
+        # Get metadata about the image
+        system = metadata.get("system", "Unknown")
+        description = metadata.get("description", "Generated phase diagram")
+        phases = metadata.get("phases", [])
+        temp_range = metadata.get("temperature_range_K", "Unknown")
+        composition_info = metadata.get("composition_info")
+        analysis = metadata.get("analysis", "")
+        
+        # Create a markdown display with embedded image
+        phases_str = ", ".join(phases) if phases else "Unknown"
+        
+        # Add composition details if available
+        comp_details = ""
+        if composition_info:
+            zn_pct = composition_info.get("zn_percentage", 0)
+            al_pct = composition_info.get("al_percentage", 0)
+            mole_frac = composition_info.get("target_composition", 0)
+            comp_details = f"""- **Composition**: Al{al_pct:.0f}Zn{zn_pct:.0f} ({mole_frac:.3f} mole fraction Zn)
+"""
+        
+        # Build the markdown with image first, then analysis
+        markdown_parts = []
+        markdown_parts.append(f"**{description}**")
+        markdown_parts.append("")
+        markdown_parts.append(f"- **System**: {system}")
+        markdown_parts.append(f"- **Phases**: {phases_str}")
+        markdown_parts.append(f"- **Temperature Range**: {temp_range} K")
+        if comp_details:
+            markdown_parts.append(comp_details.strip())
+        markdown_parts.append("")
+        markdown_parts.append(f"![{system} Phase Diagram](data:image/png;base64,{image_data})")
+        
+        markdown = "\n".join(markdown_parts)
+        
+        # Clear the image data after use
+        if hasattr(kani_instance, '_last_image_data'):
+            delattr(kani_instance, '_last_image_data')
+        if hasattr(kani_instance, '_last_image_metadata'):
+            delattr(kani_instance, '_last_image_metadata')
+        
+        # Return as a delta chunk
+        from .utils import delta_chunk
+        return delta_chunk(markdown, self.model_name)
+    
+    def _emit_analysis_panel(self) -> Optional[str]:
+        """Emit a separate analysis panel as a tool-style panel."""
+        # Try to get the analysis from the kani instance
+        kani_instance = getattr(self, '_kani_instance', None)
+        print(f"Analysis panel: kani_instance exists: {kani_instance is not None}", flush=True)
+        if not kani_instance:
+            return None
+            
+        metadata = getattr(kani_instance, '_last_image_metadata', {})
+        analysis = metadata.get("analysis", "")
+        print(f"Analysis panel: analysis length: {len(analysis) if analysis else 0}", flush=True)
+        print(f"Analysis panel: metadata keys: {list(metadata.keys())}", flush=True)
+        
+        # Debug: Check if kani_instance has the attributes directly
+        has_image_data = hasattr(kani_instance, '_last_image_data')
+        has_metadata = hasattr(kani_instance, '_last_image_metadata')
+        print(f"Analysis panel: kani_instance has _last_image_data: {has_image_data}", flush=True)
+        print(f"Analysis panel: kani_instance has _last_image_metadata: {has_metadata}", flush=True)
+        
+        if has_metadata:
+            raw_metadata = getattr(kani_instance, '_last_image_metadata', {})
+            print(f"Analysis panel: raw metadata keys: {list(raw_metadata.keys())}", flush=True)
+            if "analysis" in raw_metadata:
+                print(f"Analysis panel: raw analysis length: {len(raw_metadata['analysis'])}", flush=True)
+                print(f"Analysis panel: raw analysis preview: {raw_metadata['analysis'][:200]}...", flush=True)
+        
+        if not analysis:
+            return None
+        
+        # Create a tool panel for the analysis with magnifying glass icon
+        from .utils import tool_panel_general
+        analysis_panel = tool_panel_general("🔍 Analysis", analysis)
+        print(f"Analysis panel: panel created with length: {len(analysis_panel)}", flush=True)
+        
+        # Return as a delta chunk
+        from .utils import delta_chunk
+        return delta_chunk(analysis_panel, self.model_name)
