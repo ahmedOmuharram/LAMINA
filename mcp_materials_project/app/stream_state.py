@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Iterable, Optional
 import time
+import json
 from .linkifier import MPLinkifyBuffer
 from .utils import delta_chunk, delta_chunk_raw, tool_panel_done, pretty_print_tool_output
 from ..kani_client import MPKani
@@ -20,6 +21,9 @@ class StreamState:
 
         # Streaming mp-linkifier buffer (no rewrite)
         self.linkbuf = MPLinkifyBuffer()
+        
+        # Interactive plot link capture
+        self.pending_plot_link: Optional[tuple[str, str]] = None  # (link_text, url)
 
     # ------------------------------
     # Tool tracking
@@ -48,7 +52,29 @@ class StreamState:
         processed = self.linkbuf.process(text)
         if not processed:
             return None
+
+        # Capture (and remember) any interactive plot link; do NOT emit it yet
+        processed = self._maybe_store_interactive_plot_link(processed)
+
         return delta_chunk_raw(processed, self.model_name)
+    
+    def _maybe_store_interactive_plot_link(self, text: str) -> str:
+        """Detect and store interactive plot link without modifying the text."""
+        import re
+        pattern = r'\[([^\]]+)\]\((http://localhost:8000/static/plots/[^)]+\.html)\)'
+        m = re.search(pattern, text)
+        if m:
+            self.pending_plot_link = (m.group(1), m.group(2))
+        return text
+    
+    def emit_pending_plot_link(self) -> Optional[str]:
+        """Emit any pending interactive plot link at the end of the stream."""
+        if self.pending_plot_link:
+            link_text, url = self.pending_plot_link
+            self.pending_plot_link = None
+            md = f"\n\n**Interactive Plot:** [{link_text}]({url})\n"
+            return delta_chunk(md, self.model_name)
+        return None
 
     def emit_tool_done_panel(self, tool_name: str, duration: float, logs_md: str) -> str:
         panel_md = tool_panel_done(tool_name, duration, logs_md)
@@ -72,6 +98,9 @@ class StreamState:
             if latest_out and len(latest_out) > 0:
                 try:
                     tool_output = latest_out[-1]
+                    # Use the tool name from recent_tool_outputs if available
+                    if isinstance(tool_output, dict) and "tool_name" in tool_output:
+                        tool_name = tool_output["tool_name"]
                 except Exception:
                     pass
             
@@ -97,6 +126,10 @@ class StreamState:
                     logs_md = f"**Tool**: `{tool_name}`\n\n**Output**:\n\n{pretty_print_tool_output(tool_output)}"
                 except Exception:
                     pass
+
+            # Collect any plot link from the tool's pretty-printed output
+            if logs_md:
+                self._maybe_store_interactive_plot_link(logs_md)
 
             chunks.append(self.emit_tool_done_panel(tool_name, duration, logs_md))
             self.tools_open = max(0, self.tools_open - 1)
@@ -198,11 +231,10 @@ class StreamState:
         
         markdown = "\n".join(markdown_parts)
         
-        # Clear the image data after use
+        # Clear only the large base64 image data to save memory, but keep metadata for analysis
         if hasattr(kani_instance, '_last_image_data'):
             delattr(kani_instance, '_last_image_data')
-        if hasattr(kani_instance, '_last_image_metadata'):
-            delattr(kani_instance, '_last_image_metadata')
+        # Keep _last_image_metadata for potential analysis by analyze_last_generated_plot()
         
         # Return as a delta chunk
         from .utils import delta_chunk

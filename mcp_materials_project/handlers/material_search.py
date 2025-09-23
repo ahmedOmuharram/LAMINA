@@ -15,16 +15,16 @@ _log = logging.getLogger(__name__)
 class MaterialSearchHandler(BaseHandler):
     """Handler for material search endpoints."""
     
-    @ai_function(desc="Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols.", auto_truncate=128000)
+    @ai_function(desc="Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly (e.g., Li-Fe-O, Fe2O3, Li).", auto_truncate=128000)
     async def get_material(
         self,
-        chemsys: Annotated[str, AIParam(desc="Chemical system(s) or comma-separated list (e.g., Li-Fe-O,Si-*). Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols.")] = None,
-        formula: Annotated[str, AIParam(desc="Formula(s), anonymized formula, or wildcard(s) (e.g., Li2FeO3,Fe2O3,Fe*O*). Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols.")] = None,
-        element: Annotated[str, AIParam(desc="Element(s) or comma-separated list (e.g., Li,Fe,O). Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols.")] = None,
+        chemsys: Annotated[str, AIParam(desc="Chemical system(s) or comma-separated list (e.g., Li-Fe-O,Si-*). Use chemical symbols directly.")] = None,
+        formula: Annotated[str, AIParam(desc="Formula(s), anonymized formula, or wildcard(s) (e.g., Li2FeO3,Fe2O3,Fe*O*). Use chemical symbols directly.")] = None,
+        element: Annotated[str, AIParam(desc="Element(s) or comma-separated list (e.g., Li,Fe,O). Use chemical symbols directly.")] = None,
         page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
         per_page: Annotated[int, AIParam(desc="Items per page (max 10; default 10).")] = 10
     ) -> Dict[str, Any]:
-        """Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Must be in symbols, so use the convert_name_to_symbols tool to convert the name to symbols."""
+        """Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly."""
         params = {}
         if chemsys is not None:
             params["chemsys"] = chemsys

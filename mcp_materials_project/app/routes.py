@@ -1,11 +1,13 @@
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.staticfiles import StaticFiles
 import logging
 from fastapi.middleware.cors import CORSMiddleware
 from .schemas import ChatRequest, ChatMessage
 from .core import do_stream_response, do_json_response, do_openai_stream_response
 from dotenv import load_dotenv
 from typing import Any, List
+from pathlib import Path
 
 APP_TITLE = "MPKani OpenWebUI Integration"
 APP_VERSION = "1.1.6"
@@ -24,6 +26,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files for interactive plots
+interactive_plots_dir = Path("/Users/ahmedmuharram/thesis/interactive_plots")
+interactive_plots_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static/plots", StaticFiles(directory=str(interactive_plots_dir)), name="plots")
 
 @app.get("/")
 async def root():

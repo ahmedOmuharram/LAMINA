@@ -14,10 +14,12 @@ from typing import Dict, Any, List, Optional, Tuple
 import logging
 from pathlib import Path
 import numpy as np
+import plotly.graph_objects as go
 
 try:
     from pycalphad import Database, binplot
     import pycalphad.variables as v
+    from pycalphad.core.solver import Solver
     PYCALPHAD_AVAILABLE = True
 except ImportError:
     PYCALPHAD_AVAILABLE = False
@@ -31,10 +33,10 @@ _log = logging.getLogger(__name__)
 
 # Database mapping for different chemical systems
 SYSTEM_DATABASES = {
-    "Al-Zn": "alzn_mey.tdb",
-    "AlZn": "alzn_mey.tdb", 
-    "Al-Zn-*": "alzn_mey.tdb",
-    "aluminum-zinc": "alzn_mey.tdb",
+    "Al-Zn": "COST507.tdb",
+    "AlZn": "COST507.tdb", 
+    "Al-Zn-*": "COST507.tdb",
+    "aluminum-zinc": "COST507.tdb",
 }
 
 # Phase mappings for different systems
@@ -69,6 +71,129 @@ class CalPhadHandler(BaseHandler):
         self.tdb_dir = Path(__file__).parent.parent.parent.parent / "tdbs"
         if not self.tdb_dir.exists():
             _log.warning(f"TDB directory not found at {self.tdb_dir}")
+        
+        # Reusable solver instances to avoid hashing issues
+        self._solver6 = None
+    
+    def _filter_phases_for_binary_system(self, all_phases: List[str], system: str) -> List[str]:
+        """Filter phases for binary system calculations to improve performance."""
+        # Remove invalid phases
+        filtered = [phase for phase in all_phases if phase not in ['#']]
+        
+        # For large databases (like COST507), be more selective
+        if len(all_phases) > 50:
+            print(f"Large database detected ({len(all_phases)} phases), filtering for binary {system} system", flush=True)
+            
+            if system == "Al-Zn":
+                # Essential phases for Al-Zn binary system
+                essential_phases = [
+                    'LIQUID',       # Liquid phase
+                    'FCC_A1',       # Al-rich FCC phase
+                    'HCP_A3',       # Zn-rich HCP phase  
+                    'HCP_ZN',       # Pure Zn HCP phase
+                    'BCC_A2',       # BCC phase (if present)
+                ]
+                
+                # Add any phases that contain both AL and ZN
+                alzn_phases = []
+                for phase in all_phases:
+                    phase_upper = phase.upper()
+                    if ('AL' in phase_upper and 'ZN' in phase_upper) or phase in ['ALCUZN_T']:
+                        alzn_phases.append(phase)
+                
+                # Combine and filter to only those that exist in database
+                candidate_phases = essential_phases + alzn_phases
+                filtered = [phase for phase in candidate_phases if phase in all_phases]
+                
+                print(f"Filtered to {len(filtered)} relevant phases for Al-Zn: {filtered}", flush=True)
+        
+        return filtered
+    
+    def _split_phase_instances(self, eq, phase_name, element="ZN", decimals=5, tol=2e-4):
+        """
+        Return masks for distinct coexisting instances of `phase_name` at one T.
+        Uses composition clustering: vertices with the same phase name but
+        different X(element) are grouped as #1, #2, ...
+        
+        Ensures consistent ordering: #1 = lower X(element), #2 = higher X(element)
+        """
+        import numpy as np
+
+        # mask for this phase across vertices
+        phase_vec = np.asarray(eq.Phase.values, dtype=str).ravel()
+        vmask = (phase_vec == phase_name)
+
+        if not vmask.any():
+            return {}
+
+        # element composition per vertex for this phase
+        x_raw = eq.X.sel(component=element).values.ravel().astype(float)
+        x_vals = x_raw[vmask]
+        np_vals = eq.NP.values.ravel().astype(float)[vmask]
+
+        # guard: if everything is essentially one value → no split
+        if np.all(np.isnan(x_vals)):
+            return {}
+
+        x_clean = x_vals[~np.isnan(x_vals)]
+        if x_clean.size == 0:
+            return {}
+
+        # cluster by rounded composition (robust to tiny numerical noise)
+        # Use higher precision and tighter tolerance to avoid leakage
+        keys = np.round(x_vals, decimals=5)  # was 4 - higher precision
+        uniq = np.unique(keys[~np.isnan(keys)])
+
+        # if only one unique composition → no miscibility gap
+        if uniq.size <= 1:
+            return {}
+
+        # build per-instance masks on the *full* vertex index
+        instance_masks = {}
+        # Sort by composition ASCENDING: α1 := lower X(Zn), α2 := higher X(Zn)
+        uniq_sorted = np.sort(uniq)  # ascending X(Zn) - ensures consistent ordering
+        for i, center in enumerate(uniq_sorted, start=1):
+            inst_key = f"{phase_name}#{i}"
+            # "close to this center" = same rounded value OR within tighter tol
+            local_mask = np.zeros_like(vmask, dtype=bool)
+            local_mask[vmask] = (np.abs(x_vals - center) < 2e-4) | (np.round(x_vals, decimals=5) == center)  # tighter tolerance
+            # only keep if it has any moles
+            if np.any(local_mask):
+                instance_masks[inst_key] = local_mask
+
+        # sanity: if masks overlap (rare), assign by nearest center
+        if len(instance_masks) > 1:
+            centers = np.array(uniq_sorted)
+            indices = np.where(vmask)[0]
+            for idx in indices:
+                xv = x_vals[np.where(vmask)[0].tolist().index(idx)]
+                if np.isnan(xv):
+                    continue
+                nearest = np.argmin(np.abs(centers - xv))
+                # clear from all, set only nearest
+                for k in instance_masks:
+                    instance_masks[k][idx] = False
+                instance_masks[f"{phase_name}#{nearest+1}"][idx] = True
+
+        return instance_masks
+    
+    def _split_by_region(self, eq, phase_name):
+        """Alternative splitter using Phase_region when available."""
+        import numpy as np
+        names = np.asarray(eq.Phase.values, dtype=str).ravel()
+        if not hasattr(eq, 'Phase_region'):
+            return {}
+        regions = np.asarray(getattr(eq, "Phase_region").values).ravel()
+        mask = (names == phase_name)
+        if not mask.any():
+            return {}
+        regs = np.unique(regions[mask])
+        if regs.size <= 1:
+            return {}
+        out = {}
+        for r in regs:
+            out[f"{phase_name}#{int(r)}"] = (mask & (regions == r))
+        return out
     
     def _normalize_system(self, system: str) -> str:
         """Normalize system name to standard format."""
@@ -148,13 +273,17 @@ class CalPhadHandler(BaseHandler):
         
         return phase_colors
     
-    def _parse_composition(self, system_str: str) -> Tuple[str, Optional[float]]:
+    def _parse_composition(self, system_str: str, composition_type: str = "atomic") -> Tuple[str, Optional[float], str]:
         """Parse composition string like 'Al20Zn80' into system and mole fraction.
         
         Also handles single elements like 'Zn' -> Al0Zn100, 'Al' -> Al100Zn0
         
+        Args:
+            system_str: Composition string like 'Al20Zn80'
+            composition_type: Either "atomic" (at%) or "weight" (wt%) - determines how percentages are interpreted
+        
         Returns:
-            (normalized_system, zn_mole_fraction) where zn_mole_fraction is None if no composition specified
+            (normalized_system, zn_mole_fraction, composition_type_used) where zn_mole_fraction is None if no composition specified
         """
         import re
         
@@ -173,10 +302,10 @@ class CalPhadHandler(BaseHandler):
         if target_elem in ["AL", "ZN"]:
             if target_elem == "ZN":
                 _log.info("Detected pure Zn composition")
-                return "Al-Zn", 1.0  # Pure Zn = Al0Zn100
+                return "Al-Zn", 1.0, composition_type  # Pure Zn = Al0Zn100
             elif target_elem == "AL":
                 _log.info("Detected pure Al composition")
-                return "Al-Zn", 0.0  # Pure Al = Al100Zn0
+                return "Al-Zn", 0.0, composition_type  # Pure Al = Al100Zn0
         
         # Check for percentage composition pattern: Al20Zn80, Al80Zn20, etc.
         pattern = r'([A-Za-z]+)(\d+)([A-Za-z]+)(\d+)'
@@ -186,31 +315,94 @@ class CalPhadHandler(BaseHandler):
             elem1, pct1, elem2, pct2 = match.groups()
             pct1, pct2 = int(pct1), int(pct2)
             
+            print(f"CALPHAD: Parsed input '{system_str}' -> elem1='{elem1}', pct1={pct1}, elem2='{elem2}', pct2={pct2}", flush=True)
+            
             # Normalize element names
             elem1_norm = ELEMENT_ALIASES.get(elem1.lower(), elem1.upper())
             elem2_norm = ELEMENT_ALIASES.get(elem2.lower(), elem2.upper())
             
+            print(f"CALPHAD: Normalized elements -> elem1_norm='{elem1_norm}', elem2_norm='{elem2_norm}'", flush=True)
+            
             # Check if this is Al-Zn system
             if {elem1_norm, elem2_norm} == {"AL", "ZN"}:
-                # Determine Zn mole fraction
+                # Determine Zn percentage
                 if elem2_norm == "ZN":
-                    zn_fraction = pct2 / 100.0
+                    zn_pct = pct2
+                    al_pct = pct1
+                    print(f"CALPHAD: elem2 is ZN -> al_pct={al_pct}, zn_pct={zn_pct}", flush=True)
                 else:  # elem1_norm == "ZN"
-                    zn_fraction = pct1 / 100.0
+                    zn_pct = pct1
+                    al_pct = pct2
+                    print(f"CALPHAD: elem1 is ZN -> al_pct={al_pct}, zn_pct={zn_pct}", flush=True)
                 
-                return "Al-Zn", zn_fraction
+                # Check if percentages add up to 100, if not, warn and normalize
+                total_pct = al_pct + zn_pct
+                if abs(total_pct - 100) > 0.1:
+                    print(f"CALPHAD: WARNING - Input percentages don't add to 100% (Al{al_pct}% + Zn{zn_pct}% = {total_pct}%)", flush=True)
+                    print(f"CALPHAD: Normalizing to: Al{al_pct/total_pct*100:.1f}% + Zn{zn_pct/total_pct*100:.1f}% = 100%", flush=True)
+                    if composition_type.lower() == "atomic":
+                        print(f"CALPHAD: NOTE - If you meant weight percent, specify composition_type='weight'", flush=True)
+                        # Show what this would be as weight percent (convert from atomic to weight)
+                        al_atomic_mass = 26.98
+                        zn_atomic_mass = 65.38
+                        # Weight = atomic_fraction * atomic_mass
+                        al_weight = (al_pct/100) * al_atomic_mass
+                        zn_weight = (zn_pct/100) * zn_atomic_mass
+                        total_weight = al_weight + zn_weight
+                        al_wt_pct = (al_weight / total_weight) * 100
+                        zn_wt_pct = (zn_weight / total_weight) * 100
+                        print(f"CALPHAD: As weight%: Al{al_wt_pct:.1f}wt%Zn{zn_wt_pct:.1f}wt% (adds to {al_wt_pct + zn_wt_pct:.1f}%)", flush=True)
+                    # Normalize the percentages
+                    al_pct_norm = al_pct / total_pct * 100
+                    zn_pct_norm = zn_pct / total_pct * 100
+                else:
+                    al_pct_norm = al_pct
+                    zn_pct_norm = zn_pct
+
+                # Convert to atomic fraction based on composition_type
+                if composition_type.lower() == "atomic":
+                    # Direct conversion for atomic percent
+                    zn_fraction = zn_pct_norm / 100.0
+                    print(f"CALPHAD: Using atomic percent - Al{al_pct}at%Zn{zn_pct}at% (input) -> Al{al_pct_norm:.1f}at%Zn{zn_pct_norm:.1f}at% (normalized) -> x_Zn={zn_fraction:.3f}", flush=True)
+                elif composition_type.lower() == "weight":
+                    # Convert weight percent to atomic fraction
+                    # Atomic masses: Al = 26.98, Zn = 65.38
+                    al_atomic_mass = 26.98
+                    zn_atomic_mass = 65.38
+                    
+                    # Weight fractions (using normalized percentages)
+                    al_wt_frac = al_pct_norm / 100.0
+                    zn_wt_frac = zn_pct_norm / 100.0
+                    
+                    # Convert to moles
+                    al_moles = al_wt_frac / al_atomic_mass
+                    zn_moles = zn_wt_frac / zn_atomic_mass
+                    total_moles = al_moles + zn_moles
+                    
+                    # Atomic fractions
+                    zn_fraction = zn_moles / total_moles if total_moles > 0 else 0
+                    al_fraction = al_moles / total_moles if total_moles > 0 else 0
+                    
+                    print(f"CALPHAD: Converting weight percent - Al{al_pct}wt%Zn{zn_pct}wt% (input) -> Al{al_pct_norm:.1f}wt%Zn{zn_pct_norm:.1f}wt% (normalized) -> Al{al_fraction*100:.1f}at%Zn{zn_fraction*100:.1f}at% -> x_Zn={zn_fraction:.3f}", flush=True)
+                else:
+                    # Default to atomic
+                    zn_fraction = zn_pct_norm / 100.0
+                    composition_type = "atomic"
+                    print(f"CALPHAD: Unknown composition type, defaulting to atomic percent", flush=True)
+                
+                return "Al-Zn", zn_fraction, composition_type
             else:
                 # Other systems - try to construct system name
                 system_name = f"{elem1_norm}-{elem2_norm}"
                 # For now, assume second element is the one we track
                 if elem2_norm == "ZN":
-                    return system_name, pct2 / 100.0
+                    return system_name, pct2 / 100.0, composition_type
                 else:
-                    return system_name, None
+                    return system_name, None, composition_type
         
         # No composition found, treat as regular system name
         normalized_system = self._normalize_system(system_str)
-        return normalized_system, None
+        return normalized_system, None, composition_type
     
     def _add_phase_labels(self, axes, temp_range: Tuple[float, float], phases: List[str], db=None, elements=None, comp_var=None) -> None:
         """Add interactive annotations with calculated key points."""
@@ -416,6 +608,233 @@ class CalPhadHandler(BaseHandler):
         print(f"Base64 encoding complete", flush=True)
         return img_base64
     
+    def _analyze_visual_content(self, fig, axes, normalized_system: str, phases: List[str], temp_range: Tuple[float, float]) -> str:
+        """Analyze the visual content of the generated phase diagram."""
+        try:
+            visual_analysis = []
+            visual_analysis.append("### Visual Analysis of Generated Phase Diagram:")
+            
+            # Analyze axis information
+            xlim = axes.get_xlim()
+            ylim = axes.get_ylim()
+            xlabel = axes.get_xlabel()
+            ylabel = axes.get_ylabel()
+            title = axes.get_title()
+            
+            # Detect plot type and format dimensions correctly
+            if "Temperature" in xlabel and "Phase Fraction" in ylabel:
+                # Composition-temperature plot: x = temperature, y = phase fraction
+                visual_analysis.append(f"- **Temperature Range**: {xlabel} from {xlim[0]:.0f}K to {xlim[1]:.0f}K")
+                visual_analysis.append(f"- **Y-Axis Range**: {ylabel} from {ylim[0]:.2f} to {ylim[1]:.2f}")
+            elif "Mole Fraction" in xlabel and "Temperature" in ylabel:
+                # Binary phase diagram: x = composition, y = temperature
+                visual_analysis.append(f"- **Composition Range**: {xlabel} from {xlim[0]:.2f} to {xlim[1]:.2f}")
+                visual_analysis.append(f"- **Temperature Range**: {ylabel} from {ylim[0]:.0f}K to {ylim[1]:.0f}K")
+            else:
+                # Generic fallback
+                visual_analysis.append(f"- **X-Axis**: {xlabel} from {xlim[0]:.2f} to {xlim[1]:.2f}")
+                visual_analysis.append(f"- **Y-Axis**: {ylabel} from {ylim[0]:.2f} to {ylim[1]:.2f}")
+            visual_analysis.append(f"- **Title**: {title}")
+            
+            # Analyze plot elements
+            plot_elements = []
+            
+            # Count number of plotted elements (lines, patches, etc.)
+            lines = axes.get_lines()
+            patches = axes.patches
+            collections = axes.collections
+            
+            if lines:
+                plot_elements.append(f"{len(lines)} phase boundary lines")
+            if patches:
+                plot_elements.append(f"{len(patches)} filled regions/patches")
+            if collections:
+                plot_elements.append(f"{len(collections)} plot collections (contours/fills)")
+            
+            if plot_elements:
+                visual_analysis.append(f"- **Plot Elements**: {', '.join(plot_elements)}")
+            
+            # Analyze legend if present
+            legend = axes.get_legend()
+            if legend:
+                legend_labels = [t.get_text() for t in legend.get_texts()]
+                visual_analysis.append(f"- **Legend Phases**: {', '.join(legend_labels)}")
+            
+            # Analyze grid and formatting
+            if axes.grid:
+                visual_analysis.append("- **Grid**: Enabled for better readability")
+            
+            # Check for annotations/arrows
+            if hasattr(axes, 'texts') and axes.texts:
+                annotations = len([t for t in axes.texts if t.get_text().strip()])
+                if annotations > 0:
+                    visual_analysis.append(f"- **Annotations**: {annotations} text labels/annotations present")
+            
+            # Analyze colors used (from collections and patches)
+            colors_used = set()
+            for collection in collections:
+                if hasattr(collection, 'get_facecolors'):
+                    face_colors = collection.get_facecolors()
+                    if len(face_colors) > 0:
+                        # Convert to hex for readability
+                        import matplotlib.colors as mcolors
+                        for color in face_colors[:3]:  # Sample first few colors
+                            if len(color) >= 3:
+                                hex_color = mcolors.to_hex(color[:3])
+                                colors_used.add(hex_color)
+            
+            for patch in patches:
+                if hasattr(patch, 'get_facecolor'):
+                    color = patch.get_facecolor()
+                    if color:
+                        import matplotlib.colors as mcolors
+                        hex_color = mcolors.to_hex(color[:3] if len(color) >= 3 else color)
+                        colors_used.add(hex_color)
+            
+            if colors_used:
+                visual_analysis.append(f"- **Color Scheme**: {len(colors_used)} distinct colors used for phase regions")
+            
+            # Check for special markers or arrows (like the ones we add for key points)
+            arrow_patches = [p for p in patches if 'Arrow' in str(type(p))]
+            if arrow_patches:
+                visual_analysis.append(f"- **Special Markers**: {len(arrow_patches)} arrows/markers for key points")
+            
+            return "\n".join(visual_analysis)
+            
+        except Exception as e:
+            return f"Error analyzing visual content: {str(e)}"
+
+    async def _analyze_single_temperature_point(self, db, normalized_system: str, phases: List[str], 
+                                              target_composition: float, temperature: float, 
+                                              original_composition: str, composition_type: str = "atomic") -> str:
+        """Analyze phase equilibrium at a single temperature point instead of generating a plot."""
+        try:
+            from pycalphad import equilibrium
+            import pycalphad.variables as v
+            
+            print(f"CALPHAD: Analyzing single temperature point: {temperature:.0f}K for composition {original_composition}", flush=True)
+            
+            # Calculate equilibrium at the single temperature
+            eq_result = equilibrium(
+                db, 
+                ['AL', 'ZN', 'VA'], 
+                phases,
+                {v.T: temperature, v.P: 101325, v.X('ZN'): target_composition}
+            )
+            
+            # Calculate phase fractions using the same method as composition-temperature plot
+            phase_fractions_raw = {}
+            
+            # First get raw moles for each phase
+            for phase_name in phases:
+                phase_mask = eq_result.Phase == phase_name
+                if phase_mask.any():
+                    phase_moles = float(eq_result.NP.where(phase_mask, eq_result.NP, 0).sum())
+                    phase_fractions_raw[phase_name] = phase_moles
+                else:
+                    phase_fractions_raw[phase_name] = 0.0
+            
+            # Normalize to get fractions (should sum to 1)
+            total_phase_moles = sum(phase_fractions_raw.values())
+            phase_fractions = {}
+            
+            for phase_name in phases:
+                if total_phase_moles > 0:
+                    phase_fractions[phase_name] = phase_fractions_raw[phase_name] / total_phase_moles
+                else:
+                    phase_fractions[phase_name] = 0.0
+            
+            print(f"CALPHAD: Raw phase moles: {phase_fractions_raw}", flush=True)
+            print(f"CALPHAD: Total phase moles: {total_phase_moles:.6f}", flush=True)
+            print(f"CALPHAD: Normalized fractions: {phase_fractions}", flush=True)
+            
+            # Build analysis
+            pct_zn = target_composition * 100
+            pct_al = (1 - target_composition) * 100
+            comp_suffix = "at%" if composition_type == "atomic" else "wt%"
+            
+            analysis_parts = []
+            analysis_parts.append(f"# Single Point Analysis: Al{pct_al:.0f}Zn{pct_zn:.0f} ({comp_suffix}) at {temperature:.0f}K ({temperature-273.15:.0f}°C)")
+            analysis_parts.append(f"**System**: {normalized_system}")
+            analysis_parts.append(f"**Composition**: {original_composition} ({composition_type} percent)")
+            analysis_parts.append(f"**Temperature**: {temperature:.0f}K ({temperature-273.15:.0f}°C)")
+            analysis_parts.append("")
+            
+            # Phase equilibrium at this temperature
+            analysis_parts.append("## Phase Equilibrium:")
+            stable_phases = []
+            for phase_name, fraction in phase_fractions.items():
+                if fraction > 0.001:  # Only significant phases (>0.1%)
+                    phase_label = {
+                        'LIQUID': 'Liquid',
+                        'FCC_A1': 'FCC (Al-rich)',
+                        'HCP_A3': 'HCP (Zn-rich)'
+                    }.get(phase_name, phase_name)
+                    stable_phases.append((phase_label, fraction))
+            
+            if stable_phases:
+                total_fraction = sum(frac for _, frac in stable_phases)
+                analysis_parts.append("**Stable phases at this temperature:**")
+                for phase_label, fraction in stable_phases:
+                    analysis_parts.append(f"- **{phase_label}**: {fraction:.1%}")
+                analysis_parts.append(f"**Total accounted**: {total_fraction:.1%}")
+            else:
+                analysis_parts.append("**No stable phases detected** (calculation may have failed)")
+            
+            # Microstructure description
+            analysis_parts.append("\n## Microstructural State:")
+            if len(stable_phases) == 1:
+                phase_label = stable_phases[0][0]
+                analysis_parts.append(f"- **Single-phase microstructure**: {phase_label}")
+                if 'Liquid' in phase_label:
+                    analysis_parts.append("- **State**: Completely molten")
+                else:
+                    analysis_parts.append("- **State**: Solid single-phase region")
+            elif len(stable_phases) == 2:
+                phase1, frac1 = stable_phases[0]
+                phase2, frac2 = stable_phases[1]
+                analysis_parts.append(f"- **Two-phase microstructure**: {phase1} + {phase2}")
+                analysis_parts.append(f"- **Phase balance**: {frac1:.1%} {phase1}, {frac2:.1%} {phase2}")
+            elif len(stable_phases) > 2:
+                analysis_parts.append(f"- **Multi-phase microstructure**: {len(stable_phases)} phases present")
+            
+            # Note about why no plot was generated
+            analysis_parts.append("\n## Note:")
+            analysis_parts.append(f"Since the temperature range was essentially a single point ({temperature:.0f}K), ")
+            analysis_parts.append("a phase fraction vs. temperature plot would not be meaningful. ")
+            analysis_parts.append("Instead, this analysis shows the equilibrium state at the specified temperature.")
+            
+            # Store the analysis in metadata for display as a tool pill
+            analysis_text = "\n".join(analysis_parts)
+            
+            # Create metadata similar to plot functions
+            metadata = {
+                "system": normalized_system,
+                "analysis_type": "single_temperature_point",
+                "composition": {
+                    "Al_pct": pct_al,
+                    "Zn_pct": pct_zn,
+                    "mole_fraction_Zn": target_composition
+                },
+                "temperature_K": temperature,
+                "description": f"Single point equilibrium analysis for {original_composition} at {temperature:.0f}K",
+                "analysis": analysis_text,
+                "thermodynamic_analysis": analysis_text,
+                "visual_analysis": "",  # No visual content for single point
+                "stable_phases": [label for label, _ in stable_phases]
+            }
+            
+            # Store metadata for analysis panel display
+            setattr(self, '_last_image_metadata', metadata)
+            print(f"CALPHAD: Stored single point analysis metadata", flush=True)
+            
+            # Return simple success message like other functions
+            phase_list = ", ".join([label for label, _ in stable_phases]) if stable_phases else "none detected"
+            return f"Analyzed equilibrium for {original_composition} at {temperature:.0f}K ({temperature-273.15:.0f}°C). Stable phases: {phase_list}. Single point analysis shows the microstructural state at this specific temperature."
+            
+        except Exception as e:
+            return f"Error analyzing single temperature point: {str(e)}"
+
     def _analyze_phase_diagram(self, db, normalized_system: str, phases: List[str], temp_range: Tuple[float, float]) -> str:
         """Generate deterministic analysis of the phase diagram using calculated key points."""
         try:
@@ -548,116 +967,53 @@ class CalPhadHandler(BaseHandler):
                             if len(significant_changes) > 0:
                                 analysis_parts.append(f"  - Major transition at: {transition_temp:.0f}K ({transition_temp-273.15:.0f}°C)")
             
-            # Determine melting point more precisely
-            if 'LIQUID' in composition_data:
+            # Determine melting point more precisely - only if liquid is actually present
+            if 'LIQUID' in composition_data and len(composition_data) > 1:
                 liquid_array = np.array(composition_data['LIQUID'])
-                melting_indices = np.where(liquid_array > 0.5)[0]  # Where liquid becomes dominant
-                if len(melting_indices) > 0:
-                    melting_point = temp_array[melting_indices[0]]
-                    analysis_parts.append(f"\n### Melting Point Analysis:")
-                    analysis_parts.append(f"**Primary melting begins at: {melting_point:.0f}K ({melting_point-273.15:.0f}°C)**")
+                
+                # Check if there's any significant liquid in the temperature range
+                max_liquid_fraction = np.max(liquid_array)
+                print(f"DEBUG: Maximum liquid fraction in range: {max_liquid_fraction:.6f}", flush=True)
+                
+                if max_liquid_fraction > 1e-4:  # Only analyze if there's meaningful liquid content
+                    analysis_parts.append("\n### Melting Point Analysis:")
                     
-                    # Complete melting
-                    fully_liquid = np.where(liquid_array > 0.99)[0]
-                    if len(fully_liquid) > 0:
-                        complete_melting = temp_array[fully_liquid[0]]
-                        analysis_parts.append(f"**Complete melting achieved at: {complete_melting:.0f}K ({complete_melting-273.15:.0f}°C)**")
-                        if complete_melting > melting_point + 10:
-                            analysis_parts.append(f"- **Melting range**: {complete_melting - melting_point:.0f}K ({(complete_melting - melting_point):.0f}°C)")
-                            analysis_parts.append("- **Behavior**: Gradual melting over temperature range (alloy behavior)")
+                    # Find melting temperatures correctly
+                    # SOLIDUS: Find the very first appearance of liquid (even trace amounts)
+                    liquid_trace_indices = np.where(liquid_array > 1e-6)[0]  # Any trace of liquid
+                    if len(liquid_trace_indices) > 0:
+                        # SOLIDUS: First temperature where ANY liquid appears (lowest temp with liquid)
+                        solidus_temp = temp_array[liquid_trace_indices[0]] - 1 # First (lowest) temp with any liquid
+                        analysis_parts.append(f"**Solidus temperature**: {solidus_temp:.0f}K ({solidus_temp-273.15:.0f}°C)")
+                        print(f"DEBUG: Solidus found at {solidus_temp:.0f}K with liquid fraction {liquid_array[liquid_trace_indices[0]]:.6f}", flush=True)
+                    
+                        # LIQUIDUS: Temperature where material becomes fully liquid
+                        mostly_liquid = np.where(liquid_array > 0.9)[0]
+                        if len(mostly_liquid) > 0:
+                            liquidus_temp = temp_array[mostly_liquid[0]]  # First temp where mostly liquid
+                            analysis_parts.append(f"**Liquidus temperature**: {liquidus_temp:.0f}K ({liquidus_temp-273.15:.0f}°C)")
+                            print(f"DEBUG: Liquidus found at {liquidus_temp:.0f}K with liquid fraction {liquid_array[mostly_liquid[0]]:.6f}", flush=True)
                         else:
-                            analysis_parts.append("- **Behavior**: Sharp melting transition (near-eutectic composition)")
+                            # If never becomes mostly liquid, use highest temp with liquid
+                            liquidus_temp = temp_array[liquid_trace_indices[-1]]
+                            analysis_parts.append(f"**Liquidus temperature**: {liquidus_temp:.0f}K ({liquidus_temp-273.15:.0f}°C)")
+                            print(f"DEBUG: Liquidus (max) found at {liquidus_temp:.0f}K with liquid fraction {liquid_array[liquid_trace_indices[-1]]:.6f}", flush=True)
+                            
+                        # Calculate melting range (liquidus should be higher than solidus)
+                        if liquidus_temp > solidus_temp + 10:
+                            analysis_parts.append(f"**Melting range**: {liquidus_temp - solidus_temp:.0f}K")
+                            analysis_parts.append("**Behavior**: Gradual melting over temperature range (typical alloy behavior)")
+                        else:
+                            analysis_parts.append("**Behavior**: Sharp melting transition (near-eutectic composition)")
+                    else:
+                        # Only solidus found
+                        analysis_parts.append(f"**Melting begins at**: {solidus_temp:.0f}K ({solidus_temp-273.15:.0f}°C)")
+                else:
+                    # No significant liquid found - skip melting point analysis
+                    print(f"DEBUG: No significant liquid found (max: {max_liquid_fraction:.6f}), skipping melting analysis", flush=True)
             
-            # Microstructural analysis
+            # Only include microstructural analysis - no room temperature
             analysis_parts.append("\n### Microstructural Evolution:")
-            
-            # At room temperature
-            room_temp_idx = np.argmin(np.abs(temp_array - 298.15))  # ~25°C
-            room_temp_phases = []
-            total_fraction = 0
-            for phase_name, phase_values in composition_data.items():
-                fraction = phase_values[room_temp_idx]
-                if fraction > 0.01:
-                    phase_label = {
-                        'LIQUID': 'Liquid',
-                        'FCC_A1': 'FCC (Al-rich)',
-                        'HCP_A3': 'HCP (Zn-rich)'
-                    }.get(phase_name, phase_name)
-                    room_temp_phases.append(f"{phase_label} ({fraction:.1%})")
-                    total_fraction += fraction
-            
-            if room_temp_phases:
-                analysis_parts.append(f"**At room temperature (25°C)**: {', '.join(room_temp_phases)} (Total: {total_fraction:.1%})")
-            else:
-                analysis_parts.append("**At room temperature (25°C)**: No significant phases detected")
-            
-            # Cooling behavior
-            analysis_parts.append("\n### Solidification Behavior (upon cooling from liquid):")
-            if 'LIQUID' in composition_data:
-                liquid_array = np.array(composition_data['LIQUID'])
-                # Find where liquid starts to solidify
-                solidification_start = np.where(liquid_array < 0.99)[0]
-                if len(solidification_start) > 0:
-                    solidus_temp = temp_array[solidification_start[0]]
-                    analysis_parts.append(f"1. **Solidification begins**: {solidus_temp:.0f}K ({solidus_temp-273.15:.0f}°C)")
-                    
-                    # Find primary solidifying phase
-                    for phase_name, phase_values in composition_data.items():
-                        if phase_name != 'LIQUID':
-                            phase_array = np.array(phase_values)
-                            if phase_array[solidification_start[0]] > 0.01:
-                                phase_label = {
-                                    'FCC_A1': 'FCC (Al-rich)',
-                                    'HCP_A3': 'HCP (Zn-rich)'
-                                }.get(phase_name, phase_name)
-                                analysis_parts.append(f"2. **Primary phase**: {phase_label} crystallizes first")
-                                break
-                    
-                    # Complete solidification
-                    fully_solid = np.where(liquid_array < 0.01)[0]
-                    if len(fully_solid) > 0:
-                        solidus_end = temp_array[fully_solid[0]]
-                        analysis_parts.append(f"3. **Solidification complete**: {solidus_end:.0f}K ({solidus_end-273.15:.0f}°C)")
-                        
-                        if solidus_temp - solidus_end > 20:
-                            analysis_parts.append(f"4. **Solidification range**: {solidus_temp - solidus_end:.0f}K (extended solidification)")
-                        else:
-                            analysis_parts.append("4. **Solidification range**: Narrow (rapid solidification)")
-            
-            # Processing recommendations
-            analysis_parts.append("\n### Processing Recommendations:")
-            
-            if pct_zn > 80:
-                analysis_parts.append("**Casting temperatures**: 50-100K above liquidus for good fluidity")
-                analysis_parts.append("**Cooling rate**: Fast cooling recommended to prevent excessive Zn segregation")
-                analysis_parts.append("**Mold preheating**: 473-523K to prevent cold shuts")
-            elif pct_zn > 50:
-                analysis_parts.append("**Heat treatment potential**: Two-phase region allows for age hardening")
-                analysis_parts.append("**Welding considerations**: Moderate solidification range requires controlled cooling")
-                analysis_parts.append("**Forming**: Best worked in single-phase temperature ranges")
-            else:
-                analysis_parts.append("**High-temperature forming**: Utilize liquid + solid regions for thixoforming")
-                analysis_parts.append("**Solution treatment**: Heat to single-phase region before quenching")
-                analysis_parts.append("**Joining**: Higher melting point suitable for brazing operations")
-            
-            # Material properties implications
-            analysis_parts.append("\n### Expected Material Properties:")
-            
-            if pct_zn > 70:
-                analysis_parts.append("- **Mechanical**: Lower strength, higher ductility, excellent formability")
-                analysis_parts.append("- **Corrosion**: Excellent atmospheric corrosion resistance")
-                analysis_parts.append("- **Electrical**: Good electrical conductivity (zinc-like)")
-                analysis_parts.append("- **Thermal**: Lower melting point enables low-temperature processing")
-            elif pct_zn > 30:
-                analysis_parts.append("- **Mechanical**: Balanced strength-ductility, work hardenable")
-                analysis_parts.append("- **Corrosion**: Good general corrosion resistance")
-                analysis_parts.append("- **Electrical**: Moderate electrical conductivity")
-                analysis_parts.append("- **Thermal**: Moderate thermal conductivity")
-            else:
-                analysis_parts.append("- **Mechanical**: Higher strength, age-hardenable, lower ductility")
-                analysis_parts.append("- **Corrosion**: Aluminum-like corrosion behavior with passive layer")
-                analysis_parts.append("- **Electrical**: High electrical conductivity (aluminum-like)")
-                analysis_parts.append("- **Thermal**: High thermal conductivity, lightweight")
             
             return "\n".join(analysis_parts)
             
@@ -690,6 +1046,12 @@ class CalPhadHandler(BaseHandler):
             }
         
         try:
+            # Clear any previous plot metadata at the start of new generation
+            if hasattr(self, '_last_image_metadata'):
+                delattr(self, '_last_image_metadata')
+            if hasattr(self, '_last_image_data'):
+                delattr(self, '_last_image_data')
+            
             # Normalize system name (no composition parsing for phase diagrams)
             normalized_system = self._normalize_system(system)
             _log.info(f"Plotting phase diagram for system: {system} -> {normalized_system}")
@@ -710,8 +1072,8 @@ class CalPhadHandler(BaseHandler):
             all_db_phases = list(db.phases.keys())
             print(f"All phases in database: {all_db_phases}", flush=True)
             
-            # Use phases from database, but filter out unwanted ones like '#'
-            phases = [phase for phase in all_db_phases if phase not in ['#']]
+            # Filter phases for better performance with large databases
+            phases = self._filter_phases_for_binary_system(all_db_phases, normalized_system)
             print(f"Using phases for binary diagram: {phases}", flush=True)
             
             # Set defaults
@@ -725,6 +1087,7 @@ class CalPhadHandler(BaseHandler):
             
             # For Al-Zn system
             if normalized_system == "Al-Zn":
+                import pycalphad.variables as v
                 elements = ['AL', 'ZN', 'VA']
                 comp_var = v.X('ZN')  # Zinc composition
                 
@@ -765,7 +1128,7 @@ class CalPhadHandler(BaseHandler):
                 
                 # Phase labels are now included in the shading method
                 
-                axes.set_xlabel('Mole Fraction Zn')
+                axes.set_xlabel('Mole Fraction Zn (atomic basis)')
                 axes.set_ylabel('Temperature (K)')
                 
                 title = f'{normalized_system} Phase Diagram'
@@ -785,16 +1148,25 @@ class CalPhadHandler(BaseHandler):
                 from matplotlib.ticker import MaxNLocator
                 axes.yaxis.set_major_locator(MaxNLocator(nbins=8))
             
+            # Generate visual analysis before converting to base64
+            print("Analyzing visual content...", flush=True)
+            visual_analysis = self._analyze_visual_content(fig, axes, normalized_system, phases, temp_range)
+            print(f"Visual analysis complete, length: {len(visual_analysis)}", flush=True)
+            
             # Convert to base64
             print("Converting plot to base64...", flush=True)
             img_base64 = self._plot_to_base64(fig)
             print(f"Image conversion complete, size: {len(img_base64)} characters", flush=True)
             plt.close(fig)
-            print("Plot closed, generating analysis...", flush=True)
+            print("Plot closed, generating thermodynamic analysis...", flush=True)
             
             # Generate deterministic analysis
-            analysis = self._analyze_phase_diagram(db, normalized_system, phases, temp_range)
-            print(f"CALPHAD: Generated analysis with length: {len(analysis)}", flush=True)
+            thermodynamic_analysis = self._analyze_phase_diagram(db, normalized_system, phases, temp_range)
+            print(f"CALPHAD: Generated thermodynamic analysis with length: {len(thermodynamic_analysis)}", flush=True)
+            
+            # Combine visual and thermodynamic analysis
+            combined_analysis = f"{visual_analysis}\n\n{thermodynamic_analysis}"
+            print(f"CALPHAD: Combined analysis length: {len(combined_analysis)}", flush=True)
             
             # Store the image data privately and return only a simple success message
             # The image will be handled by the _extract_image_display method
@@ -808,7 +1180,9 @@ class CalPhadHandler(BaseHandler):
                 "temperature_range_K": temp_range,
                 "composition_step": comp_step,
                 "description": description,
-                "analysis": analysis,
+                "analysis": combined_analysis,
+                "visual_analysis": visual_analysis,
+                "thermodynamic_analysis": thermodynamic_analysis,
                 "image_info": {
                     "format": "png",
                     "size": fig_size,
@@ -821,11 +1195,106 @@ class CalPhadHandler(BaseHandler):
             # Return a simple success message - analysis will be shown in image display
             success_msg = f"Successfully generated {normalized_system} phase diagram showing phases {', '.join(phases)} over temperature range {temp_range[0]:.0f}-{temp_range[1]:.0f}K. The diagram displays phase boundaries and stable regions for this binary system."
             print(f"CALPHAD: Returning success message: {success_msg[:100]}...", flush=True)
-            return success_msg
+            print(f"CALPHAD: SUCCESS MESSAGE LENGTH: {len(success_msg)} characters (should be short text, not base64)", flush=True)
+            
+            # Safeguard: ensure we're not accidentally returning base64 data
+            if "data:image/png;base64," in success_msg or len(success_msg) > 1000:
+                print(f"CALPHAD: ERROR - Success message contains base64 data or is too long! Truncating.", flush=True)
+                result = "Successfully generated phase diagram. Image will be displayed separately."
+            else:
+                result = success_msg
+            
+            # Store the result for tooltip display
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "plot_binary_phase_diagram",
+                    "result": result
+                })
+            return result
             
         except Exception as e:
             _log.exception(f"Error generating phase diagram for {system}")
-            return f"Failed to generate phase diagram for {system}: {str(e)}"
+            result = f"Failed to generate phase diagram for {system}: {str(e)}"
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "plot_binary_phase_diagram",
+                    "result": result
+                })
+            return result
+
+    # --- helper: build plotly fig ---
+    def _plotly_comp_temp(self, temps, phase_data, labels, colors, special_Ts, title, subtitle) -> go.Figure:
+        import numpy as np
+        import plotly.graph_objects as go
+
+        fig = go.Figure()
+        EPS = 5e-3
+
+        order = list(phase_data.keys())
+
+        # column-stack fractions (nT, nP)
+        Y = np.column_stack([np.asarray(phase_data[k], dtype=float) for k in order])
+        Y = np.where(Y > EPS, Y, 0.0)  # visually hide tiny slivers
+
+        # row-wise sum for renormalized hover
+        row_sum = Y.sum(axis=1, keepdims=True)
+        row_sum[row_sum == 0] = 1.0
+        frac_norm = Y / row_sum
+
+        # cumulative for ribbon tops
+        cum = np.cumsum(Y, axis=1)
+
+        T = np.asarray(temps, dtype=float)
+        Tc = T - 273.15
+
+        for j, k in enumerate(order):
+            y_j = Y[:, j]                    # TRUE phase fraction height at each T
+            if float(np.nanmax(y_j)) < EPS:  # skip phases never visible
+                continue
+
+            upper = cum[:, j]
+            lower = cum[:, j-1] if j > 0 else np.zeros_like(upper)
+
+            label = labels.get(k, k)
+            base  = k.split('#')[0]
+            col   = colors.get(k) or colors.get(base) or "#808080"
+
+            # Build per-point hover text; blank when the phase is absent at that T
+            txt = []
+            for i in range(len(T)):
+                if y_j[i] <= EPS:
+                    txt.append("")  # no row for this phase at this T
+                else:
+                    txt.append(
+                        f"<b>{label}</b><br>"
+                        f"T = {int(round(T[i]))} K ({int(round(Tc[i]))} °C)<br>"
+                        f"fraction = {frac_norm[i, j]:.2f}"
+                    )
+
+            fig.add_trace(go.Scatter(
+                x=T, y=upper,
+                name=label,
+                mode="lines",
+                line=dict(width=0.5, color=col),
+                fill="tozeroy" if j == 0 else "tonexty",
+                fillcolor=col,
+                text=txt,
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=True,
+                legendgroup=f"phase-{base}"
+            ))
+
+        fig.update_layout(
+            template="plotly_white",
+            hovermode="x unified",
+            hoverlabel=dict(namelength=-1),
+            title=dict(text=f"<b>{title}</b><br><sup>{subtitle}</sup>", y=0.95),
+            xaxis=dict(title="Temperature (K)"),
+            yaxis=dict(title="Phase Fraction", range=[0, 1]),
+            showlegend=True,
+            margin=dict(l=70, r=20, t=80, b=60),
+        )
+        return fig
 
     @ai_function(desc="PREFERRED for composition-specific thermodynamic questions. Plot phase stability vs temperature for a specific composition. Use for queries like 'Al20Zn80', 'Al80Zn20', single elements like 'Zn' or 'Al', melting point questions, phase transitions. Shows which phases are stable at different temperatures.")
     async def plot_composition_temperature(
@@ -833,290 +1302,400 @@ class CalPhadHandler(BaseHandler):
         composition: Annotated[str, AIParam(desc="Specific composition like 'Al20Zn80', 'Al80Zn20', 'Zn30Al70', or single element like 'Zn' or 'Al'")],
         min_temperature: Annotated[Optional[float], AIParam(desc="Minimum temperature in Kelvin. Default: 300")] = None,
         max_temperature: Annotated[Optional[float], AIParam(desc="Maximum temperature in Kelvin. Default: 1000")] = None,
+        composition_type: Annotated[Optional[str], AIParam(desc="Composition type: 'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = None,
         figure_width: Annotated[Optional[float], AIParam(desc="Figure width in inches. Default: 8")] = None,
-        figure_height: Annotated[Optional[float], AIParam(desc="Figure height in inches. Default: 6")] = None
+        figure_height: Annotated[Optional[float], AIParam(desc="Figure height in inches. Default: 6")] = None,
+        interactive: Annotated[Optional[str], AIParam(desc="Interactive output mode: 'html' for interactive Plotly HTML output. Default: 'html'")] = "html"
     ) -> str:
         """
         Generate a temperature vs phase stability plot for a specific composition.
-        
-        This shows which phases are stable as temperature changes for a fixed composition.
-        Useful for understanding phase transformations during heating/cooling.
         """
-        
         if not PYCALPHAD_AVAILABLE:
             return "pycalphad library not available. Install with: pip install pycalphad"
-        
+
         try:
-            # Parse composition
-            normalized_system, target_composition = self._parse_composition(composition)
+            # reset previous artifacts
+            if hasattr(self, '_last_image_metadata'):
+                delattr(self, '_last_image_metadata')
+            if hasattr(self, '_last_image_data'):
+                delattr(self, '_last_image_data')
+
+            # parse composition
+            comp_type = composition_type or "atomic"
+            normalized_system, target_composition, actual_comp_type = self._parse_composition(composition, comp_type)
             if target_composition is None:
                 return f"Could not parse composition from '{composition}'. Use format like 'Al20Zn80' or 'Al80Zn20'."
-            
-            _log.info(f"Plotting composition-temperature for: {composition} -> {normalized_system}, X_Zn={target_composition}")
-            
-            # Get database
+
             db_path = self._get_database_path(normalized_system)
             if not db_path:
                 return f"No thermodynamic database available for system '{normalized_system}'. Supported: {list(SYSTEM_DATABASES.keys())}"
-            
-            # Load database
             db = Database(str(db_path))
-            _log.info(f"Loaded database: {db_path}")
-            
-            # Get all phases from the database automatically
+
             all_db_phases = list(db.phases.keys())
-            print(f"All phases in database: {all_db_phases}", flush=True)
-            
-            # Use phases from database, but filter out unwanted ones like '#'
-            phases = [phase for phase in all_db_phases if phase not in ['#']]
-            print(f"Using phases for binary diagram: {phases}", flush=True)
-            
-            # Set defaults
+            phases = self._filter_phases_for_binary_system(all_db_phases, normalized_system)
+
             temp_range = (min_temperature or 300, max_temperature or 1000)
             fig_size = (figure_width or 8, figure_height or 6)
-            
-            # Create figure
-            fig = plt.figure(figsize=fig_size)
-            axes = fig.gca()
-            
-            # For Al-Zn system, calculate phase fractions vs temperature
+
+            # single-point shortcut
+            if abs(temp_range[1] - temp_range[0]) < 1.0:
+                return await self._analyze_single_temperature_point(
+                    db, normalized_system, phases, target_composition, temp_range[0], composition, actual_comp_type
+                )
+
+            # Generate phase data using pycalphad
+            phase_data = {}
             if normalized_system == "Al-Zn":
                 from pycalphad import equilibrium
+                import pycalphad.variables as v
                 import numpy as np
-                
-                # Create temperature array
-                temps = np.linspace(temp_range[0], temp_range[1], 50)
-                
-                # Calculate equilibrium at fixed composition
-                eq_result = equilibrium(
-                    db, 
-                    ['AL', 'ZN', 'VA'], 
-                    phases,
-                    {v.T: temps, v.P: 101325, v.X('ZN'): target_composition}
+
+                # temperature sampling
+                span = temp_range[1] - temp_range[0]
+                if span <= 100:
+                    nT = max(50, int(span))
+                else:
+                    nT = max(100, min(350, int(span/2)))
+                temps = np.linspace(temp_range[0], temp_range[1], nT)
+
+                # equilibrium
+                active = tuple(str(p) for p in phases)
+                if self._solver6 is None:
+                    self._solver6 = Solver(max_phases=6)
+                eq = equilibrium(
+                    db, ['AL','ZN','VA'], active,
+                    {v.T: temps, v.P: 101325.0, v.X('ZN'): float(target_composition)},
+                    calc_opts={'pdens': 2000},
+                    solver=self._solver6
                 )
-                
-                # Plot phase fractions
-                phase_colors = {
-                    'LIQUID': '#1f77b4',    # Blue
-                    'FCC_A1': '#ff7f0e',    # Orange  
-                    'HCP_A3': '#2ca02c',    # Green
-                }
-                
-                # Use a different approach - calculate equilibrium at each temperature separately
-                temp_values = temps
-                
-                # Initialize arrays for each phase
-                phase_data = {phase: np.zeros(len(temp_values)) for phase in phases}
-                
-                # Calculate equilibrium at each temperature point individually
-                for i, temp in enumerate(temp_values):
-                    try:
-                        eq_single = equilibrium(
-                            db, 
-                            ['AL', 'ZN', 'VA'], 
-                            phases,
-                            {v.T: temp, v.P: 101325, v.X('ZN'): target_composition}
-                        )
-                        
-                        
-                        # Calculate phase fractions at this temperature
-                        total_moles = eq_single.NP.sum()
-                        
-                        # Debug for a few temperature points
-                        if i in [10, 25, 40]:  # Debug a few points
-                            print(f"Debug T={temp:.0f}K: total_moles={float(total_moles):.6f}", flush=True)
-                            unique_phases = np.unique(eq_single.Phase.values)
-                            print(f"  Found phases: {unique_phases}", flush=True)
-                        
-                        # Get the phase fractions directly from the equilibrium result
-                        phase_fractions = {}
-                        
-                        # Group by phase and sum moles
-                        for phase_name in phases:
-                            phase_mask = eq_single.Phase == phase_name
-                            if phase_mask.any():
-                                # Sum moles for this phase
-                                phase_moles = float(eq_single.NP.where(phase_mask, eq_single.NP, 0).sum())
-                                phase_fractions[phase_name] = phase_moles
+
+                # per-T phase moles (preserve miscibility via instance splitting)
+                tvals = np.asarray(eq.squeeze().T.values, dtype=float)
+                for i,_T in enumerate(tvals):
+                    eqT = eq.isel(T=i).squeeze()
+                    names = np.asarray(eqT.Phase.values, dtype=str).ravel()
+                    np_vals = np.asarray(eqT.NP.values, dtype=float).ravel()
+
+                    valid = [p for p in np.unique(names) if p]
+                    totals = {}
+                    split_candidates = {"FCC_A1", "HCP_A3", "BCC_A2"}
+                    for ph in valid:
+                        if ph in split_candidates:
+                            masks = self._split_by_region(eqT, ph) or \
+                                    self._split_phase_instances(eqT, ph, element="ZN", decimals=5, tol=2e-4)
+                            if masks:
+                                for inst, m in masks.items():
+                                    mol = float(np_vals[m].sum())
+                                    if mol > 0: totals[inst] = totals.get(inst, 0.0) + mol
                             else:
-                                phase_fractions[phase_name] = 0.0
-                        
-                        # Normalize to get fractions (should sum to 1)
-                        total_phase_moles = sum(phase_fractions.values())
-                        
-                        if i in [10, 25, 40]:  # Debug
-                            print(f"  Raw phase moles: {phase_fractions}", flush=True)
-                            print(f"  Total phase moles: {total_phase_moles:.6f}", flush=True)
-                        
-                        for phase in phases:
-                            if total_phase_moles > 0:
-                                phase_data[phase][i] = phase_fractions[phase] / total_phase_moles
-                            else:
-                                phase_data[phase][i] = 0.0
-                            
-                            if i in [10, 25, 40]:
-                                print(f"  {phase}: final fraction={phase_data[phase][i]:.6f}", flush=True)
-                                
-                    except Exception as e:
-                        # If calculation fails for this temperature, set all phases to 0
-                        for phase in phases:
-                            phase_data[phase][i] = 0.0
-                        _log.warning(f"Equilibrium calculation failed at T={temp}K: {e}")
-                
-                # Extract colors from the existing plot
-                base_colors = self._extract_phase_colors_from_plot(axes, phases)
-                
-                
-                # Create stacked area plot instead of overlapping lines
-                # Prepare data for stacking
-                phase_labels = {
+                                m = (names == ph)
+                                mol = float(np_vals[m].sum())
+                                if mol > 0: totals[ph] = totals.get(ph, 0.0) + mol
+                        else:
+                            m = (names == ph)
+                            mol = float(np_vals[m].sum())
+                            if mol > 0: totals[ph] = totals.get(ph, 0.0) + mol
+
+                    den = float(sum(totals.values())) or 1.0
+                    for key, mol in totals.items():
+                        if key not in phase_data:
+                            phase_data[key] = np.zeros_like(tvals, dtype=float)
+                        phase_data[key][i] = mol/den
+
+                # --- colors and labels ---
+                label_map = {
                     'LIQUID': 'Liquid',
-                    'FCC_A1': 'FCC (Al-rich)', 
-                    'HCP_A3': 'HCP (Zn-rich)'
+                    'FCC_A1': 'FCC (Al-rich)',
+                    'FCC_A1#1': 'FCC (α₁)',
+                    'FCC_A1#2': 'FCC (α₂)',
+                    'HCP_A3': 'HCP (Zn-rich)',
+                    'HCP_ZN': 'HCP (Zn-rich)',
+                    'BCC_A2': 'BCC'
                 }
+
+                # Colorblind-friendly, high-contrast overrides
+                custom_colors = {
+                    'LIQUID':  '#7f7f7f',  # grey
+                    'FCC_A1':  '#1f77b4',  # blue
+                    'FCC_A1#1':'#1f4e79',  # dark navy for α₁
+                    'FCC_A1#2':'#8DD1F1',  # lighter blue for α₂
+                    'HCP_A3':  '#d62728',  # red
+                    'HCP_ZN':  '#d62728',  # red
+                    'BCC_A2':  '#2ca02c'   # green
+                }
+
+                order    = ['LIQUID','FCC_A1#1','FCC_A1#2','FCC_A1','HCP_A3','HCP_ZN','BCC_A2']
+                present  = list(phase_data.keys())
+                keys     = [k for k in order if k in present] + [k for k in sorted(present) if k not in order]
+
+                # --------- EVENT DETECTION ---------
+                thr_on, thr_off = 0.01, 0.005
+                def onset_offset(arr):
+                    on  = np.where(arr > thr_on)[0]
+                    off = np.where(arr > thr_off)[0]
+                    if len(on) == 0: return None, None
+                    return on[0], (off[-1] if len(off) else None)
+
+                raw = []
+                for k, arr in phase_data.items():
+                    i_on, i_off = onset_offset(np.asarray(arr))
+                    lbl = label_map.get(k, k)
+                    if i_on is not None:
+                        Ton = float(tvals[i_on])
+                        raw.append((Ton, 'appear', lbl))
+                    if i_off is not None and i_on is not None:
+                        Toff = float(tvals[i_off])
+                        if Toff - Ton > 20:
+                            raw.append((Toff, 'disappear', lbl))
+
+                # cluster nearby same-kind events
+                def cluster(events, win=40):
+                    events = sorted(events, key=lambda x: (x[1], x[0]))
+                    out, bucket = [], []
+                    for T, kind, name in events:
+                        if not bucket or (kind == bucket[-1][1] and abs(T - bucket[-1][0]) <= win):
+                            bucket.append((T, kind, name))
+                        else:
+                            Tm = float(np.mean([t for t,_,__ in bucket]))
+                            kindm = bucket[0][1]
+                            names = sorted({n for _,_,n in bucket})
+                            out.append((Tm, kindm, names))
+                            bucket = [(T, kind, name)]
+                    if bucket:
+                        Tm = float(np.mean([t for t,_,__ in bucket]))
+                        kindm = bucket[0][1]
+                        names = sorted({n for _,_,n in bucket})
+                        out.append((Tm, kindm, names))
+                    return out
+
+                clustered = cluster(raw, win=40)
+                tops = [(T, names) for T,kind,names in clustered if kind=='appear']
+                bots = [(T, names) for T,kind,names in clustered if kind=='disappear']
+
+                # Generate both interactive Plotly HTML plot and static PNG
+                ordered_phase_data = {k: phase_data[k] for k in keys if k in phase_data}
                 
-                # Only include phases that exist
-                plot_phases = []
-                plot_data = []
-                plot_colors = []
-                plot_labels = []
+                # 1) Generate interactive Plotly HTML plot
+                fig = self._plotly_comp_temp(
+                    temps=temps,
+                    phase_data=ordered_phase_data,
+                    labels=label_map,
+                    colors=custom_colors,
+                    special_Ts=[int(round(T)) for T,_ in tops] + [int(round(T)) for T,_ in bots],
+                    title="Phase Stability vs Temperature",
+                    subtitle=f"Composition: Al{(1-target_composition)*100:.0f}Zn{target_composition*100:.0f} ({'at%' if actual_comp_type=='atomic' else 'wt%'})"
+                )
+                outdir = Path("/Users/ahmedmuharram/thesis/interactive_plots")
+                outdir.mkdir(parents=True, exist_ok=True)
+                outfile = outdir / f"phase_stability_Al{(1-target_composition)*100:.0f}Zn{target_composition*100:.0f}.html"
+                fig.write_html(str(outfile), include_plotlyjs="cdn", full_html=True)
                 
-                for phase in phases:
-                    phase_values = phase_data[phase]
-                    if np.max(phase_values) > 1e-9:  # Only significant phases
-                        plot_phases.append(phase)
-                        plot_data.append(phase_values)
-                        plot_colors.append(base_colors.get(phase, '#808080'))
-                        plot_labels.append(phase_labels.get(phase, phase))
+                # 2) Generate static PNG plot
+                import matplotlib.pyplot as plt
                 
-                # Create stacked area plot
-                if plot_data:
-                    axes.stackplot(temp_values, *plot_data, 
-                                 labels=plot_labels,
-                                 colors=plot_colors,
-                                 alpha=0.8)
+                fig_static, axes = plt.subplots(figsize=fig_size)
+                
+                # Plot the stacked areas
+                order = ['LIQUID','FCC_A1#1','FCC_A1#2','FCC_A1','HCP_A3','HCP_ZN','BCC_A2']
+                present = list(phase_data.keys())
+                keys = [k for k in order if k in present] + [k for k in sorted(present) if k not in order]
+
+                import matplotlib.colors as mcolors
+                data, labels, colors = [], [], []
+                for k in keys:
+                    if np.max(phase_data[k]) < 1e-6:
+                        continue
+                    data.append(phase_data[k])
+                    labels.append(label_map.get(k, k))
+                    # pick override → fallback to base phase color → final grey
+                    col = custom_colors.get(
+                        k,
+                        custom_colors.get(k.split('#')[0],
+                        "#808080")
+                    )
+                    colors.append(col)
+
+                if data:
+                    axes.stackplot(temps, *data, labels=labels, colors=colors, alpha=0.8)
+                    axes.set_xlim(temp_range[0], temp_range[1])
+                    axes.set_ylim(0, 1)
+                    axes.set_xlabel("Temperature (K)")
+                    axes.set_ylabel("Phase Fraction")
+                    axes.grid(True, alpha=0.3)
+
+                    # Simple x-axis formatting - normal temperature ticks
+                    axes.tick_params(axis='x', labelsize=10)
                     
-                    # Add boundary lines for clarity
-                    cumulative = np.zeros_like(temp_values)
-                    for i, phase_values in enumerate(plot_data):
-                        cumulative += phase_values
-                        if i < len(plot_data) - 1:  # Don't draw line at top
-                            axes.plot(temp_values, cumulative, 'k-', linewidth=0.5, alpha=0.3)
+                    # Normal subplot adjustment
+                    fig_static.subplots_adjust(bottom=0.15)
+
+                    # Titles / Caption / Legend
+                    pct_zn = target_composition * 100
+                    pct_al = (1 - target_composition) * 100
+                    comp_suffix = "at%" if actual_comp_type == "atomic" else "wt%"
+
+                    fig_static.suptitle("Phase Stability vs Temperature", y=0.95, fontsize=14, fontweight='bold')
+                    fig_static.text(0.5, 0.9125, f"Composition: Al{pct_al:.0f}Zn{pct_zn:.0f} ({comp_suffix})",
+                                 ha='center', va='top', fontsize=12)
+
+                    # De-duped legend centered vertically on right
+                    handles, lbls = axes.get_legend_handles_labels()
+                    # map by the plotted key rather than label text
+                    unique = {}
+                    for h, l in zip(handles, lbls):
+                        unique[id(h)] = (h, l)   # any stable unique key; or carry your 'keys' array and zip keys->(h,l)
+                    axes.legend([h for h,l in unique.values()],
+                                [l for h,l in unique.values()],
+                                loc='center left', bbox_to_anchor=(1.02, 0.5),
+                                borderaxespad=0., frameon=True)
+
+                # Generate analysis
+                thermodynamic_analysis = self._analyze_composition_temperature(phase_data, target_composition, temp_range)
                 
-                # Add temperature markers for major visual transitions
-                important_temps = []
-                
-                temp_min, temp_max = temp_values[0], temp_values[-1]
-                margin = (temp_max - temp_min) * 0.1  # Stay away from edges
-                
-                # Look for major changes in phase fractions by examining the actual plot data
-                for phase in plot_phases:
-                    phase_array = np.array(phase_data[phase])
-                    phase_label = phase_labels.get(phase, phase)
-                    
-                    # Find major jumps in phase fraction (>0.3 change)
-                    diff = np.abs(np.diff(phase_array))
-                    major_changes = np.where(diff > 0.3)[0]  # Big changes only
-                    
-                    for change_idx in major_changes:
-                        temp = temp_values[change_idx]
-                        if temp_min + margin < temp < temp_max - margin:
-                            # Determine if phase is appearing or disappearing
-                            before_val = phase_array[change_idx]
-                            after_val = phase_array[change_idx + 1]
-                            
-                            if before_val < 0.1 and after_val > 0.4:
-                                if phase_label.lower() == 'liquid':
-                                    important_temps.append((temp, f"Melting starts"))
-                                else:
-                                    important_temps.append((temp, f"{phase_label} appears"))
-                            elif before_val > 0.2 and after_val < 0.05:
-                                # For disappears, use the temperature where it finishes disappearing (after_val position)
-                                disappear_temp = temp_values[change_idx + 1]  # Use the end of the transition
-                                if phase_label.lower() == 'liquid':
-                                    important_temps.append((disappear_temp, f"Solidification starts"))
-                                else:
-                                    important_temps.append((disappear_temp, f"{phase_label} disappears"))
-                
-                # Remove duplicates and sort
-                unique_temps = []
-                for temp, desc in important_temps:
-                    if not any(abs(temp - existing_temp) < 40 for existing_temp, _ in unique_temps):
-                        unique_temps.append((temp, desc))
-                
-                unique_temps.sort()
-                unique_temps = unique_temps[:3]  # Max 3 transitions
-                
-                # Add vertical dashed lines and bottom labels with arrows
-                for i, (temp, description) in enumerate(unique_temps):
-                    # Vertical dashed line
-                    axes.axvline(x=temp, color='gray', linestyle='--', alpha=0.7, linewidth=1)
-                    
-                    # Label at bottom with arrow pointing to line
-                    y_label_pos = axes.get_ylim()[0] - 0.15 - (i * 0.08)  # Offset each label
-                    
-                    axes.annotate(f'{temp:.0f}K\n{description}', 
-                                 xy=(temp, axes.get_ylim()[0]), 
-                                 xytext=(temp, y_label_pos),
-                                 fontsize=7, va='top', ha='center',
-                                 bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', alpha=0.9, edgecolor='orange'),
-                                 arrowprops=dict(arrowstyle='->', color='orange', lw=1.5))
-                
-                # Formatting
                 pct_zn = target_composition * 100
                 pct_al = (1 - target_composition) * 100
-                axes.set_xlabel('Temperature (K)')
-                axes.set_ylabel('Phase Fraction')
-                axes.set_title(f'Phase Stability vs Temperature\nComposition: Al{pct_al:.0f}Zn{pct_zn:.0f}')
-                axes.grid(True, alpha=0.3)
-                axes.legend()
+                comp_suffix = "at%" if actual_comp_type == "atomic" else "wt%"
                 
-                # Set exact plot limits with no margins
-                axes.set_xlim(300, 1000)
-                axes.set_ylim(0, 1.0)
-            
-            # Convert to base64
-            img_base64 = self._plot_to_base64(fig)
-            plt.close(fig)
-            
-            # Generate deterministic analysis
-            analysis = self._analyze_composition_temperature(phase_data, target_composition, temp_range)
-            print(f"CALPHAD: Generated composition analysis with length: {len(analysis)}", flush=True)
-            print(f"CALPHAD: Composition analysis preview: {analysis[:200]}...", flush=True)
-            
-            # Store the image data
-            setattr(self, '_last_image_data', img_base64)
-            pct_zn = target_composition * 100
-            pct_al = (1 - target_composition) * 100
-            description = f"Generated phase stability plot for composition Al{pct_al:.0f}Zn{pct_zn:.0f} showing phase fractions vs temperature"
-            
-            metadata = {
-                "system": normalized_system,
-                "database_file": db_path.name,
-                "phases": phases,
-                "temperature_range_K": temp_range,
-                "composition_info": {
-                    "target_composition": target_composition,
-                    "zn_percentage": pct_zn,
-                    "al_percentage": pct_al
-                },
-                "description": description,
-                "analysis": analysis,
-                "image_info": {
-                    "format": "png",
-                    "size": fig_size,
-                    "data_length": len(img_base64)
+                # Convert static plot to base64
+                img_base64 = self._plot_to_base64(fig_static)
+                plt.close(fig_static)
+                
+                metadata = {
+                    "system": normalized_system,
+                    "database_file": db_path.name,
+                    "phases": phases,
+                    "temperature_range_K": temp_range,
+                    "composition_info": {
+                        "target_composition": target_composition,
+                        "zn_percentage": pct_zn,
+                        "al_percentage": pct_al,
+                        "composition_type": actual_comp_type,
+                        "composition_suffix": comp_suffix,
+                        "original_input": composition
+                    },
+                    "description": f"Generated phase stability plot for composition Al{pct_al:.0f}Zn{pct_zn:.0f} ({comp_suffix}) showing phase fractions vs temperature",
+                    "thermodynamic_analysis": thermodynamic_analysis,
+                    "analysis": thermodynamic_analysis,
+                    "image_info": {"format": "png", "size": fig_size, "data_length": len(img_base64)}
                 }
-            }
-            setattr(self, '_last_image_metadata', metadata)
-            print(f"CALPHAD: Stored composition metadata with keys: {list(metadata.keys())}", flush=True)
-            print(f"CALPHAD: Stored composition analysis length: {len(metadata['analysis'])}", flush=True)
-            
-            return f"Successfully generated phase stability plot for Al{pct_al:.0f}Zn{pct_zn:.0f} over temperature range {temp_range[0]}-{temp_range[1]}K. Shows phase fractions vs temperature for this specific composition."
-            
+                setattr(self, '_last_image_metadata', metadata)
+                setattr(self, '_last_image_data', img_base64)
+
+                # Generate clickable link for the interactive plot
+                filename = outfile.name
+                plot_url = f"http://localhost:8000/static/plots/{filename}"
+                
+                # Store the result for tooltip display
+                result = f"Successfully generated phase stability plot for Al{pct_al:.0f}Zn{pct_zn:.0f} over {temp_range[0]}–{temp_range[1]}K.\n\n[Interactive Plot]({plot_url})"
+                if hasattr(self, 'recent_tool_outputs'):
+                    self.recent_tool_outputs.append({
+                        "tool_name": "plot_composition_temperature",
+                        "result": result
+                    })
+                return result
         except Exception as e:
             _log.exception(f"Error generating composition-temperature plot for {composition}")
-            return f"Failed to generate composition-temperature plot for {composition}: {str(e)}"
+            result = f"Failed to generate composition-temperature plot for {composition}: {str(e)}"
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "plot_composition_temperature",
+                    "result": result
+                })
+            return result
+
+    @ai_function(desc="Analyze and interpret the most recently generated phase diagram or composition plot. Provides detailed analysis of visual features, phase boundaries, and thermodynamic insights based on the actual generated plot.")
+    async def analyze_last_generated_plot(self) -> str:
+        """
+        Analyze and interpret the most recently generated phase diagram or composition plot.
+        
+        This function provides detailed analysis of the visual content and thermodynamic features
+        of the last generated plot, allowing the model to "see" and interpret its own output.
+        """
+        
+        # Check if we have metadata from a recently generated plot
+        metadata = getattr(self, '_last_image_metadata', None)
+        if not metadata:
+            return "No recently generated phase diagram or composition plot available to analyze. Please generate a plot first using plot_binary_phase_diagram() or plot_composition_temperature()."
+        
+        # Extract analysis components
+        visual_analysis = metadata.get("visual_analysis", "")
+        thermodynamic_analysis = metadata.get("thermodynamic_analysis", "")
+        combined_analysis = metadata.get("analysis", "")
+        
+        # Check if image data is available (may be cleared after display to save memory)
+        image_data = getattr(self, '_last_image_data', None)
+        has_image = image_data is not None and len(image_data) > 1000
+        image_was_generated = metadata.get("image_info", {}).get("data_length", 0) > 1000
+        
+        # Build comprehensive interpretation
+        interpretation_parts = []
+        
+        interpretation_parts.append("# Analysis of Generated Phase Diagram")
+        interpretation_parts.append(f"**System**: {metadata.get('system', 'Unknown')}")
+        interpretation_parts.append(f"**Database**: {metadata.get('database_file', 'Unknown')}")
+        
+        # Temperature and composition info
+        analysis_type = metadata.get('analysis_type', '')
+        if analysis_type == 'single_temperature_point':
+            temp_k = metadata.get('temperature_K', 0)
+            interpretation_parts.append(f"**Temperature**: {temp_k:.0f}K ({temp_k-273.15:.0f}°C) [Single Point]")
+        else:
+            temp_range = metadata.get('temperature_range_K', (0, 0))
+            interpretation_parts.append(f"**Temperature Range**: {temp_range[0]:.0f}-{temp_range[1]:.0f}K ({temp_range[0]-273.15:.0f} to {temp_range[1]-273.15:.0f}°C)")
+        
+        # Composition-specific info
+        comp_info = metadata.get('composition_info', {}) or metadata.get('composition', {})
+        if comp_info:
+            zn_pct = comp_info.get('zn_percentage', 0) or comp_info.get('Zn_pct', 0)
+            al_pct = comp_info.get('al_percentage', 0) or comp_info.get('Al_pct', 0)
+            target_comp = comp_info.get('target_composition', 0) or comp_info.get('mole_fraction_Zn', 0)
+            interpretation_parts.append(f"**Specific Composition**: Al{al_pct:.0f}Zn{zn_pct:.0f}")
+            interpretation_parts.append(f"**Corresponds to**: x={target_comp:.3f} on binary phase diagram")
+        
+        # Phases present
+        phases = metadata.get('phases', [])
+        if phases:
+            interpretation_parts.append(f"**Phases Included**: {', '.join(phases)}")
+        
+        # Image status
+        if has_image:
+            img_info = metadata.get('image_info', {})
+            interpretation_parts.append(f"**Image Status**: Currently available in memory - {img_info.get('format', 'Unknown').upper()} format, {img_info.get('data_length', 0):,} characters")
+        elif image_was_generated:
+            img_info = metadata.get('image_info', {})
+            interpretation_parts.append(f"**Image Status**: Generated and displayed (cleared from memory) - {img_info.get('format', 'Unknown').upper()} format, {img_info.get('data_length', 0):,} characters")
+        
+        interpretation_parts.append("")
+        
+        # Include the visual analysis if available
+        if visual_analysis:
+            interpretation_parts.append(visual_analysis)
+            interpretation_parts.append("")
+        
+        # Include the thermodynamic analysis if available
+        if thermodynamic_analysis:
+            interpretation_parts.append(thermodynamic_analysis)
+            interpretation_parts.append("")
+        
+        # Add interpretation guidance
+        interpretation_parts.append("## How to Interpret This Information:")
+        interpretation_parts.append("- **Visual Analysis**: Describes the actual plotted elements, colors, and visual features of the generated diagram")
+        interpretation_parts.append("- **Thermodynamic Analysis**: Provides calculated key points, phase transitions, and material properties")
+        interpretation_parts.append("- **Phase Boundaries**: Lines/regions where phase stability changes")
+        interpretation_parts.append("- **Temperature Transitions**: Key temperatures where phase changes occur")
+        
+        # Add correlation guidance for binary vs composition plots
+        if comp_info:
+            interpretation_parts.append("- **Binary Diagram Correlation**: This composition-temperature plot corresponds to a vertical slice through the binary phase diagram")
+        else:
+            interpretation_parts.append("- **Composition Analysis**: Use plot_composition_temperature() for specific composition analysis")
+        
+        final_analysis = "\n".join(interpretation_parts)
+        
+        print(f"CALPHAD: Generated interpretation analysis, length: {len(final_analysis)}", flush=True)
+        print(f"CALPHAD: Has visual analysis: {bool(visual_analysis)}, Has thermodynamic analysis: {bool(thermodynamic_analysis)}", flush=True)
+        
+        return final_analysis
 
     @ai_function(desc="List available chemical systems and their thermodynamic databases for phase diagram calculation.")
     async def list_available_systems(self) -> Dict[str, Any]:

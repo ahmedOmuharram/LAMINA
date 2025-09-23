@@ -88,6 +88,11 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
     for chunk in state.close_orphan_tools():
         yield chunk
 
+    # Emit any pending interactive plot link right at the end
+    plot_link_chunk = state.emit_pending_plot_link()
+    if plot_link_chunk:
+        yield plot_link_chunk
+
     # Final stop
     yield final_stop_chunk(model_name)
     yield "data: [DONE]\n\n"
