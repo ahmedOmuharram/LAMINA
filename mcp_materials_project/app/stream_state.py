@@ -49,6 +49,11 @@ class StreamState:
     # ------------------------------
     def emit_stream_text(self, text: str) -> Optional[str]:
         """Buffer-aware linkify; only emits finalized, safe content."""
+        # Hide tool-call tags if they appear in raw text
+        if "<|functions." in text or "<|function." in text:
+            # swallow the markup; do not emit
+            return None
+
         processed = self.linkbuf.process(text)
         if not processed:
             return None
@@ -135,7 +140,7 @@ class StreamState:
             self.tools_open = max(0, self.tools_open - 1)
             
             # Check if this tool generated an image and emit it as a separate chunk
-            if tool_name in ["plot_binary_phase_diagram", "plot_composition_temperature"]:
+            if tool_name in ["plot_binary_phase_diagram", "plot_composition_temperature", "plot_ternary_phase_diagram"]:
                 # Emit analysis FIRST before the image chunk clears the metadata
                 analysis_chunk = self._emit_analysis_panel()
                 print(f"Analysis chunk generated: {analysis_chunk is not None}", flush=True)
@@ -191,8 +196,17 @@ class StreamState:
         if not kani_instance:
             return None
             
+        # Look for image data on the kani instance (which includes CalPhadHandler)
         image_data = getattr(kani_instance, '_last_image_data', None)
         metadata = getattr(kani_instance, '_last_image_metadata', {})
+        
+        # Debug: print what we found
+        print(f"Image chunk: Found image_data: {bool(image_data)}", flush=True)
+        print(f"Image chunk: Found metadata: {bool(metadata)}", flush=True)
+        if image_data:
+            print(f"Image chunk: Image data length: {len(image_data)}", flush=True)
+        if metadata:
+            print(f"Image chunk: Metadata keys: {list(metadata.keys())}", flush=True)
         
         if not image_data:
             return None
@@ -210,12 +224,52 @@ class StreamState:
         
         # Add composition details if available
         comp_details = ""
-        if composition_info:
-            zn_pct = composition_info.get("zn_percentage", 0)
-            al_pct = composition_info.get("al_percentage", 0)
-            mole_frac = composition_info.get("target_composition", 0)
-            comp_details = f"""- **Composition**: Al{al_pct:.0f}Zn{zn_pct:.0f} ({mole_frac:.3f} mole fraction Zn)
-"""
+        if isinstance(composition_info, dict):
+            target = composition_info.get("target_composition")
+            # Prefer explicit suffix (e.g., 'at%'/'wt%'); otherwise derive from type
+            suffix = composition_info.get("composition_suffix")
+            if not suffix:
+                ctype = composition_info.get("composition_type")
+                if ctype == "atomic":
+                    suffix = "at%"
+                elif ctype == "weight":
+                    suffix = "wt%"
+
+            # Pretty printer for dict compositions: "Al30 Si55 C15"
+            def _pretty_comp_map(comp_map: dict) -> str:
+                try:
+                    items = comp_map.items()  # preserves insertion order if dict was ordered
+                except Exception:
+                    items = sorted(comp_map.items())
+                return " ".join(f"{el.title()}{int(round(frac*100))}" for el, frac in items)
+
+            lines = []
+
+            if isinstance(target, dict) and target:
+                # Generic N-component formatting
+                lines.append(f"- **Composition**: {_pretty_comp_map(target)}" + (f" ({suffix})" if suffix else ""))
+                # If binary, also show x(second element)
+                elems = list(target.keys())
+                if len(elems) == 2:
+                    second = elems[1]
+                    x = float(target.get(second, 0.0))
+                    lines.append(f"- **Binary coordinate**: x({second}) = {x:.3f}")
+
+            elif isinstance(target, (int, float)):
+                # Old/binary-style scalar mole fraction (keep Al–Zn nice print if available)
+                zn_pct = composition_info.get("zn_percentage")
+                al_pct = composition_info.get("al_percentage")
+                if zn_pct is not None and al_pct is not None:
+                    lines.append(f"- **Composition**: Al{float(al_pct):.0f}Zn{float(zn_pct):.0f} (x(Zn) = {float(target):.3f})")
+                else:
+                    lines.append(f"- **Binary coordinate**: x = {float(target):.3f}")
+
+            # Fallback if nothing matched
+            if not lines:
+                sysname = metadata.get("system") or "Unknown system"
+                lines.append(f"- **Composition**: {sysname} (unspecified fractions)")
+
+            comp_details = "\n".join(lines)
         
         # Build the markdown with image first, then analysis
         markdown_parts = []
@@ -223,7 +277,11 @@ class StreamState:
         markdown_parts.append("")
         markdown_parts.append(f"- **System**: {system}")
         markdown_parts.append(f"- **Phases**: {phases_str}")
-        markdown_parts.append(f"- **Temperature Range**: {temp_range} K")
+        if isinstance(temp_range, (list, tuple)) and len(temp_range) == 2:
+            temp_str = f"{temp_range[0]}–{temp_range[1]}"
+        else:
+            temp_str = str(temp_range)
+        markdown_parts.append(f"- **Temperature Range**: {temp_str} K")
         if comp_details:
             markdown_parts.append(comp_details.strip())
         markdown_parts.append("")

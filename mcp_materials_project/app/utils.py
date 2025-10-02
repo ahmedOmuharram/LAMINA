@@ -96,47 +96,62 @@ def to_kani_history(api_messages: List[ChatMessage]) -> list[KChatMessage]:
     return out
 
 def pretty_print_tool_output(obj: Any) -> str:
-    """Best-effort JSON pretty-printer for tool output, for logs panel."""
-    # Handle different types of tool outputs
+    """Safe JSON pretty-printer for tool output, prevents source code leaks."""
+    # Only handle JSON-serializable types to prevent source code leaks
+    if obj is None:
+        return "```json\nnull\n```"
+    
+    # Handle basic JSON types
+    if isinstance(obj, (str, int, float, bool)):
+        try:
+            return f"```json\n{json.dumps(obj, indent=2)}\n```"
+        except Exception:
+            return f"```\n{str(obj)[:500]}\n```"  # Truncate long strings
+    
+    # Handle lists and tuples
+    if isinstance(obj, (list, tuple)):
+        try:
+            # Convert to list and limit size
+            obj_list = list(obj)[:100]  # Limit to 100 items
+            return f"```json\n{json.dumps(obj_list, indent=2, default=str)}\n```"
+        except Exception:
+            return f"```\n{str(obj)[:500]}\n```"
+    
+    # Handle dictionaries
     if isinstance(obj, dict):
-        display_obj = obj.copy()
-    elif hasattr(obj, '__dict__'):
-        # Convert object with attributes to dict
-        display_obj = {k: v for k, v in obj.__dict__.items() if not k.startswith('_')}
-    else:
-        # Fallback for other types
-        display_obj = {"output": str(obj)}
-
-    # Special handling for image data - avoid streaming massive base64 strings
-    if isinstance(display_obj, dict):
-        display_obj = display_obj.copy()
+        display_obj = {}
+        for key, value in obj.items():
+            # Skip internal/private fields that might contain source code
+            if key.startswith('_') or key in ['__module__', '__file__', '__code__', '__source__']:
+                continue
+            
+            # Limit value size and type
+            if isinstance(value, (str, int, float, bool, type(None))):
+                if isinstance(value, str) and len(value) > 1000:
+                    display_obj[key] = f"<truncated string: {len(value)} chars>"
+                else:
+                    display_obj[key] = value
+            elif isinstance(value, (list, tuple)):
+                display_obj[key] = f"<list/tuple: {len(value)} items>"
+            elif isinstance(value, dict):
+                display_obj[key] = f"<dict: {len(value)} keys>"
+            else:
+                display_obj[key] = f"<{type(value).__name__}>"
         
-        # Handle _image_data specially (internal field for image storage)
-        if "_image_data" in display_obj:
-            image_data = display_obj.pop("_image_data")
-            if isinstance(image_data, str) and len(image_data) > 1000:
-                display_obj["_image_data_summary"] = f"<base64 image data: {len(image_data)} characters>"
-        
-        # Handle nested image objects
-        if "image" in display_obj and isinstance(display_obj["image"], dict):
-            image_info = display_obj["image"].copy()
-            if "data" in image_info and isinstance(image_info["data"], str):
-                data_len = len(image_info["data"])
-                if data_len > 1000:  # Large base64 string
-                    image_info["data"] = f"<base64 image data: {data_len} characters>"
-            display_obj["image"] = image_info
-        
-        # Also handle direct base64 fields
-        for key in ["base64_image", "image_data", "data"]:
-            if key in display_obj and isinstance(display_obj[key], str) and len(display_obj[key]) > 1000:
-                display_obj[key] = f"<base64 data: {len(display_obj[key])} characters>"
-
-    # Pretty print the dictionary
+        try:
+            pretty = json.dumps(display_obj, indent=2, ensure_ascii=False)
+            return f"```json\n{pretty}\n```"
+        except Exception:
+            return f"```\n{str(obj)[:500]}\n```"
+    
+    # For other types, use safe string representation with size limit
     try:
-        pretty = json.dumps(display_obj, indent=2, ensure_ascii=False, default=str)
-        return f"```json\n{pretty}\n```"
+        obj_str = str(obj)
+        if len(obj_str) > 1000:
+            obj_str = obj_str[:1000] + "... <truncated>"
+        return f"```\n{obj_str}\n```"
     except Exception:
-        return f"```\n{str(obj)}\n```"
+        return "```\n<unable to represent object>\n```"
 
 
 def extract_text_from_message_content(content: Any) -> str:

@@ -43,37 +43,38 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
     async for stream in kani_instance.full_round_stream(user_prompt):
         role = getattr(stream, "role", None)
 
-        if role == ChatRole.ASSISTANT:
-            # Emit role header once per assistant turn
-            yield role_header_chunk(model_name)
-
-            # Stream tokens immediately (with buffering linkifier)
-            async for token in stream:
-                if token is None:
-                    continue
-                chunk = state.emit_stream_text(token)
-                if chunk:
-                    yield chunk
-
-            # AFTER tokens, fetch the finalized message (for tool_calls, etc.)
-            msg = await stream.message()
-            state.register_tool_calls(msg)
-
-        elif role == ChatRole.FUNCTION:
-            # A tool finished: emit its final panel; if this was the last tool, flush buffer once
+        if role == ChatRole.FUNCTION:
             tool_msg = await stream.message()
             for chunk in state.complete_next_tool(tool_msg, kani_instance):
                 yield chunk
+            continue
 
-        else:
-            # Other roles: stream tokens immediately as well
-            yield role_header_chunk(model_name)
-            async for token in stream:
-                if token is None:
-                    continue
-                chunk = state.emit_stream_text(token)
+        # For ANY other role, buffer first, then decide
+        yield role_header_chunk(model_name)
+
+        tmp_tokens: list[str] = []
+        async for token in stream:
+            if token is not None:
+                tmp_tokens.append(token)
+
+        msg = await stream.message()
+        state.register_tool_calls(msg)
+
+        has_tools = bool(
+            getattr(msg, "tool_calls", None) or
+            getattr(msg, "function_call", None)  # older field, just in case
+        )
+
+        # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
+        raw = "".join(tmp_tokens)
+        looks_like_func_tag = ("<|functions." in raw) or ("<|function." in raw)
+
+        if not (has_tools or looks_like_func_tag):
+            for tok in tmp_tokens:
+                chunk = state.emit_stream_text(tok)
                 if chunk:
                     yield chunk
+        # else: drop the prelude & markup entirely
 
     # End-of-stream safety: flush any remaining linkifier tail
     tail_chunk = state.flush_linkbuf()
@@ -306,21 +307,34 @@ async def do_json_response(messages: List[ChatMessage] | ChatRequest, model: str
     assistant_text_parts: list[str] = []
     async for stream in kani_instance.full_round_stream(user_prompt):
         role = getattr(stream, "role", None)
-        if role == ChatRole.ASSISTANT:
-            async for token in stream:
-                if token:
-                    assistant_text_parts.append(token)
-            # finalize message (no need to use the returned object for JSON path)
-            try:
-                await stream.message()
-            except Exception:
-                pass
-        elif role == ChatRole.FUNCTION:
+        
+        if role == ChatRole.FUNCTION:
             # For JSON path, we don't need to render tool panels; ignore.
             try:
                 await stream.message()
             except Exception:
                 pass
+            continue
+
+        # For ANY other role, buffer first, then decide
+        tmp_tokens = []
+        async for token in stream:
+            if token:
+                tmp_tokens.append(token)
+        msg = await stream.message()
+        
+        has_tools = bool(
+            getattr(msg, "tool_calls", None) or
+            getattr(msg, "function_call", None)  # older field, just in case
+        )
+
+        # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
+        raw = "".join(tmp_tokens)
+        looks_like_func_tag = ("<|functions." in raw) or ("<|function." in raw)
+
+        if not (has_tools or looks_like_func_tag):
+            assistant_text_parts.extend(tmp_tokens)
+        # else: drop tmp_tokens (tool panels will be represented by subsequent FUNCTION turns)
 
     content = "".join(assistant_text_parts)
     payload = {
