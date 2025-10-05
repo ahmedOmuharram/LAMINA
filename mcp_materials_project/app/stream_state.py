@@ -191,24 +191,24 @@ class StreamState:
     
     def _emit_image_chunk(self) -> Optional[str]:
         """Emit an image as a separate chunk outside the tool output."""
-        # Try to get the image data from the kani instance
+        # Try to get the image URL from the kani instance
         kani_instance = getattr(self, '_kani_instance', None)
         if not kani_instance:
             return None
             
-        # Look for image data on the kani instance (which includes CalPhadHandler)
-        image_data = getattr(kani_instance, '_last_image_data', None)
+        # Look for image URL on the kani instance (which includes CalPhadHandler)
+        image_url = getattr(kani_instance, '_last_image_url', None)
         metadata = getattr(kani_instance, '_last_image_metadata', {})
         
         # Debug: print what we found
-        print(f"Image chunk: Found image_data: {bool(image_data)}", flush=True)
+        print(f"Image chunk: Found image_url: {bool(image_url)}", flush=True)
         print(f"Image chunk: Found metadata: {bool(metadata)}", flush=True)
-        if image_data:
-            print(f"Image chunk: Image data length: {len(image_data)}", flush=True)
+        if image_url:
+            print(f"Image chunk: Image URL: {image_url}", flush=True)
         if metadata:
             print(f"Image chunk: Metadata keys: {list(metadata.keys())}", flush=True)
         
-        if not image_data:
+        if not image_url:
             return None
             
         # Get metadata about the image
@@ -271,10 +271,9 @@ class StreamState:
 
             comp_details = "\n".join(lines)
         
-        # Build the markdown with image first, then analysis
+        # Build the markdown with image link
         markdown_parts = []
-        markdown_parts.append(f"**{description}**")
-        markdown_parts.append("")
+        markdown_parts.append(f"\n**{description}**\n")
         markdown_parts.append(f"- **System**: {system}")
         markdown_parts.append(f"- **Phases**: {phases_str}")
         if isinstance(temp_range, (list, tuple)) and len(temp_range) == 2:
@@ -284,19 +283,24 @@ class StreamState:
         markdown_parts.append(f"- **Temperature Range**: {temp_str} K")
         if comp_details:
             markdown_parts.append(comp_details.strip())
-        markdown_parts.append("")
-        markdown_parts.append(f"![{system} Phase Diagram](data:image/png;base64,{image_data})")
+        markdown_parts.append(f"\n![{system} Phase Diagram]({image_url})")
         
         markdown = "\n".join(markdown_parts)
         
-        # Clear only the large base64 image data to save memory, but keep metadata for analysis
-        if hasattr(kani_instance, '_last_image_data'):
-            delattr(kani_instance, '_last_image_data')
+        # Debug: Check the markdown content
+        print(f"Image chunk: Markdown length: {len(markdown)}", flush=True)
+        print(f"Image chunk: Image URL in markdown: {image_url}", flush=True)
+        
+        # Clear the image URL to save memory, but keep metadata for analysis
+        if hasattr(kani_instance, '_last_image_url'):
+            delattr(kani_instance, '_last_image_url')
         # Keep _last_image_metadata for potential analysis by analyze_last_generated_plot()
         
         # Return as a delta chunk
         from .utils import delta_chunk
-        return delta_chunk(markdown, self.model_name)
+        result = delta_chunk(markdown, self.model_name)
+        print(f"Image chunk: Delta chunk created, length: {len(result)}", flush=True)
+        return result
     
     def _emit_analysis_panel(self) -> Optional[str]:
         """Emit a separate analysis panel as a tool-style panel."""
@@ -312,9 +316,9 @@ class StreamState:
         print(f"Analysis panel: metadata keys: {list(metadata.keys())}", flush=True)
         
         # Debug: Check if kani_instance has the attributes directly
-        has_image_data = hasattr(kani_instance, '_last_image_data')
+        has_image_url = hasattr(kani_instance, '_last_image_url')
         has_metadata = hasattr(kani_instance, '_last_image_metadata')
-        print(f"Analysis panel: kani_instance has _last_image_data: {has_image_data}", flush=True)
+        print(f"Analysis panel: kani_instance has _last_image_url: {has_image_url}", flush=True)
         print(f"Analysis panel: kani_instance has _last_image_metadata: {has_metadata}", flush=True)
         
         if has_metadata:

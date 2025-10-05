@@ -21,3 +21,4 @@ venv/
 .idea/
 
 auto_generated/
+interactive_plots/

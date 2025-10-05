@@ -40,63 +40,80 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
     state = StreamState(model_name=model_name)
     state._kani_instance = kani_instance  # Pass kani instance for image access
 
-    async for stream in kani_instance.full_round_stream(user_prompt):
-        role = getattr(stream, "role", None)
+    try:
+        async for stream in kani_instance.full_round_stream(user_prompt):
+            role = getattr(stream, "role", None)
 
-        if role == ChatRole.FUNCTION:
-            tool_msg = await stream.message()
-            for chunk in state.complete_next_tool(tool_msg, kani_instance):
-                yield chunk
-            continue
-
-        # For ANY other role, buffer first, then decide
-        yield role_header_chunk(model_name)
-
-        tmp_tokens: list[str] = []
-        async for token in stream:
-            if token is not None:
-                tmp_tokens.append(token)
-
-        msg = await stream.message()
-        state.register_tool_calls(msg)
-
-        has_tools = bool(
-            getattr(msg, "tool_calls", None) or
-            getattr(msg, "function_call", None)  # older field, just in case
-        )
-
-        # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
-        raw = "".join(tmp_tokens)
-        looks_like_func_tag = ("<|functions." in raw) or ("<|function." in raw)
-
-        if not (has_tools or looks_like_func_tag):
-            for tok in tmp_tokens:
-                chunk = state.emit_stream_text(tok)
-                if chunk:
+            if role == ChatRole.FUNCTION:
+                tool_msg = await stream.message()
+                for chunk in state.complete_next_tool(tool_msg, kani_instance):
                     yield chunk
-        # else: drop the prelude & markup entirely
+                continue
 
-    # End-of-stream safety: flush any remaining linkifier tail
-    tail_chunk = state.flush_linkbuf()
-    if tail_chunk:
-        yield tail_chunk
+            # For ANY other role, buffer first, then decide
+            yield role_header_chunk(model_name)
 
-    # End-of-stream safety: flush anything still buffered
-    for chunk in state.flush_buffer_if_any():
-        yield chunk
+            tmp_tokens: list[str] = []
+            async for token in stream:
+                if token is not None:
+                    tmp_tokens.append(token)
 
-    # Close any orphan tools with zero-duration panels
-    for chunk in state.close_orphan_tools():
-        yield chunk
+            msg = await stream.message()
+            state.register_tool_calls(msg)
 
-    # Emit any pending interactive plot link right at the end
-    plot_link_chunk = state.emit_pending_plot_link()
-    if plot_link_chunk:
-        yield plot_link_chunk
+            has_tools = bool(
+                getattr(msg, "tool_calls", None) or
+                getattr(msg, "function_call", None)  # older field, just in case
+            )
 
-    # Final stop
-    yield final_stop_chunk(model_name)
-    yield "data: [DONE]\n\n"
+            # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
+            raw = "".join(tmp_tokens)
+            looks_like_func_tag = ("<|functions." in raw) or ("<|function." in raw)
+
+            if not (has_tools or looks_like_func_tag):
+                for tok in tmp_tokens:
+                    chunk = state.emit_stream_text(tok)
+                    if chunk:
+                        yield chunk
+            # else: drop the prelude & markup entirely
+
+        # End-of-stream safety: flush any remaining linkifier tail
+        tail_chunk = state.flush_linkbuf()
+        if tail_chunk:
+            yield tail_chunk
+
+        # End-of-stream safety: flush anything still buffered
+        for chunk in state.flush_buffer_if_any():
+            yield chunk
+
+        # Close any orphan tools with zero-duration panels
+        for chunk in state.close_orphan_tools():
+            yield chunk
+
+        # Emit any pending interactive plot link right at the end
+        plot_link_chunk = state.emit_pending_plot_link()
+        if plot_link_chunk:
+            yield plot_link_chunk
+
+        # Final stop
+        yield final_stop_chunk(model_name)
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        _log.exception("sse_generator: Error during streaming")
+        print(f"sse_generator: ERROR - {type(e).__name__}: {str(e)}", flush=True)
+        import traceback
+        print(f"sse_generator: Traceback:\n{traceback.format_exc()}", flush=True)
+        # Try to send an error message to the user
+        error_msg = f"\n\n**Error**: An error occurred during generation: {str(e)}\n\n"
+        try:
+            yield delta_chunk_raw(error_msg, model_name)
+            yield final_stop_chunk(model_name)
+            yield "data: [DONE]\n\n"
+        except Exception as inner_e:
+            _log.exception("sse_generator: Failed to send error message")
+            print(f"sse_generator: Failed to send error message: {inner_e}", flush=True)
+        raise
 
     # Clear any saved tool outputs on the kani wrapper (if present)
     try:
@@ -303,53 +320,61 @@ async def do_json_response(messages: List[ChatMessage] | ChatRequest, model: str
     print(f"do_json_response[Kani]: model={model_name} prior={len(kani_history)}", flush=True)
     kani_instance = MPKani(model=model_name, chat_history=kani_history)
 
-    # Collect assistant text by consuming the streaming iterator
-    assistant_text_parts: list[str] = []
-    async for stream in kani_instance.full_round_stream(user_prompt):
-        role = getattr(stream, "role", None)
-        
-        if role == ChatRole.FUNCTION:
-            # For JSON path, we don't need to render tool panels; ignore.
-            try:
-                await stream.message()
-            except Exception:
-                pass
-            continue
+    try:
+        # Collect assistant text by consuming the streaming iterator
+        assistant_text_parts: list[str] = []
+        async for stream in kani_instance.full_round_stream(user_prompt):
+            role = getattr(stream, "role", None)
+            
+            if role == ChatRole.FUNCTION:
+                # For JSON path, we don't need to render tool panels; ignore.
+                try:
+                    await stream.message()
+                except Exception:
+                    pass
+                continue
 
-        # For ANY other role, buffer first, then decide
-        tmp_tokens = []
-        async for token in stream:
-            if token:
-                tmp_tokens.append(token)
-        msg = await stream.message()
-        
-        has_tools = bool(
-            getattr(msg, "tool_calls", None) or
-            getattr(msg, "function_call", None)  # older field, just in case
-        )
+            # For ANY other role, buffer first, then decide
+            tmp_tokens = []
+            async for token in stream:
+                if token:
+                    tmp_tokens.append(token)
+            msg = await stream.message()
+            
+            has_tools = bool(
+                getattr(msg, "tool_calls", None) or
+                getattr(msg, "function_call", None)  # older field, just in case
+            )
 
-        # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
-        raw = "".join(tmp_tokens)
-        looks_like_func_tag = ("<|functions." in raw) or ("<|function." in raw)
+            # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
+            raw = "".join(tmp_tokens)
+            looks_like_func_tag = ("<|functions." in raw) or ("<|function." in raw)
 
-        if not (has_tools or looks_like_func_tag):
-            assistant_text_parts.extend(tmp_tokens)
-        # else: drop tmp_tokens (tool panels will be represented by subsequent FUNCTION turns)
+            if not (has_tools or looks_like_func_tag):
+                assistant_text_parts.extend(tmp_tokens)
+            # else: drop tmp_tokens (tool panels will be represented by subsequent FUNCTION turns)
 
-    content = "".join(assistant_text_parts)
-    payload = {
-        "id": f"chatcmpl-{int(time.time())}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": model_name,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": content},
-            "finish_reason": "stop",
-        }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-    }
-    return JSONResponse(payload, status_code=200)
+        content = "".join(assistant_text_parts)
+        payload = {
+            "id": f"chatcmpl-{int(time.time())}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model_name,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+        return JSONResponse(payload, status_code=200)
+    
+    except Exception as e:
+        _log.exception("do_json_response[Kani]: Error during generation")
+        print(f"do_json_response[Kani]: ERROR - {type(e).__name__}: {str(e)}", flush=True)
+        import traceback
+        print(f"do_json_response[Kani]: Traceback:\n{traceback.format_exc()}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Error during generation: {str(e)}")
 
 
 async def openai_stream_generator(request_like: ChatRequest, model: str) -> Iterable[str]:
