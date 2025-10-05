@@ -11,7 +11,6 @@ from typing import Dict, Any, Optional
 import logging
 
 from pycalphad import Database, binplot
-from pycalphad.plot.utils import phase_legend
 import pycalphad.variables as v
 from kani.ai_function import ai_function
 from typing_extensions import Annotated
@@ -88,11 +87,23 @@ class AIFunctionsMixin:
 
             binplot(
                 db, elements, phases,
-                { v.X(comp_el): (0, 1, comp_step),
-                  v.T: (T_lo, T_hi, temp_points),
-                  v.P: 101325, v.N: 1 },
-                plot_kwargs={'ax': axes, 'tielines': False, 'eq_kwargs': {'linewidth': 2}}
+                {
+                    v.X(comp_el): (0, 1, comp_step),
+                    v.T: (T_lo, T_hi, temp_points),
+                    v.P: 101325, v.N: 1
+                },
+                plot_kwargs={'ax': axes, 'tielines': False},
+                eq_kwargs={'linewidth': 2},
+                legend=True
             )
+
+            # Get the legend handle that binplot created
+            legend = axes.get_legend()
+            
+            # Give the legend some breathing room by widening the figure
+            if legend is not None:
+                w, h = fig.get_size_inches()
+                fig.set_size_inches(w * 1.2, h)  # widen ~20%
 
             # generic labels / format
             # self._add_phase_labels(axes, temp_range, phases, db, elements, v.X(comp_el))  # Disabled - use legend instead
@@ -112,19 +123,18 @@ class AIFunctionsMixin:
                 pad = 0.02 * (y1 - y0)
                 axes.set_ylim(y0 - pad, y1 + pad)
             
-            # Build legend directly from pycalphad's colors
-            legend_handles, phase_colors = phase_legend([p for p in phases if p != 'LIQUID'])
-            legend = axes.legend(handles=legend_handles, title="Phases",
-                                 loc="upper right", frameon=True)
-            
             # Generate visual analysis before saving
             print("Analyzing visual content...", flush=True)
             visual_analysis = self._analyze_visual_content(fig, axes, f"{A}-{B}", phases, (T_lo, T_hi))
             print(f"Visual analysis complete, length: {len(visual_analysis)}", flush=True)
             
-            # Save plot to file and get URL
+            # Save plot to file and get URL - include legend as extra_artist so it won't be cropped
             print("Saving plot to file...", flush=True)
-            plot_url = self._save_plot_to_file(fig, f"phase_diagram_{A}-{B}", extra_artists=[legend])
+            plot_url = self._save_plot_to_file(
+                fig, 
+                f"phase_diagram_{A}-{B}",
+                extra_artists=[legend] if legend is not None else None
+            )
             print(f"Plot saved, URL: {plot_url}", flush=True)
             plt.close(fig)
             print("Plot closed, generating thermodynamic analysis...", flush=True)

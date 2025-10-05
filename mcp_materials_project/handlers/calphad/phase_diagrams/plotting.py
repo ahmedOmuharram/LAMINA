@@ -9,10 +9,21 @@ import base64
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.lines import Line2D
+from matplotlib.collections import LineCollection
 import numpy as np
 import plotly.graph_objects as go
 from typing import Dict, Any, List, Optional, Tuple
 import logging
+
+# Import pycalphad legend utilities
+try:
+    from pycalphad.plot.utils import phase_legend, phase_colormap
+except ImportError:
+    # Fallback if pycalphad version doesn't have these
+    phase_legend = None
+    phase_colormap = None
 
 _log = logging.getLogger(__name__)
 
@@ -34,9 +45,6 @@ class PlottingMixin:
         
         # Add labels for each phase
         for i, phase in enumerate(phases):
-            if phase == "LIQUID":
-                continue  # Skip liquid as it's usually obvious
-                
             # Get color for this phase
             color = phase_colors.get(phase, '#888888')
             
@@ -64,9 +72,7 @@ class PlottingMixin:
                               linewidth=0.5),
                      ha='center', va='bottom',
                      zorder=10)
-    
-    
-    
+ 
     def _save_plot_to_file(self, fig, filename: str, extra_artists=None) -> str:
         """Save matplotlib figure to file and return URL."""
         from pathlib import Path
