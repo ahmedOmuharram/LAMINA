@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Iterable, Optional
 import time
-import json
 from .linkifier import MPLinkifyBuffer
 from .utils import delta_chunk, delta_chunk_raw, tool_panel_done, pretty_print_tool_output
 from ..kani_client import MPKani
@@ -274,13 +273,6 @@ class StreamState:
         # Build the markdown with image link
         markdown_parts = []
         markdown_parts.append(f"\n**{description}**\n")
-        markdown_parts.append(f"- **System**: {system}")
-        markdown_parts.append(f"- **Phases**: {phases_str}")
-        if isinstance(temp_range, (list, tuple)) and len(temp_range) == 2:
-            temp_str = f"{temp_range[0]}–{temp_range[1]}"
-        else:
-            temp_str = str(temp_range)
-        markdown_parts.append(f"- **Temperature Range**: {temp_str} K")
         if comp_details:
             markdown_parts.append(comp_details.strip())
         markdown_parts.append(f"\n![{system} Phase Diagram]({image_url})")

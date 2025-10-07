@@ -123,6 +123,29 @@ class AIFunctionsMixin:
                 pad = 0.02 * (y1 - y0)
                 axes.set_ylim(y0 - pad, y1 + pad)
             
+            # Detect and mark eutectic points on the diagram
+            print("Detecting eutectic points for visualization...", flush=True)
+            eq_coarse = self._coarse_equilibrium_grid(db, A, B, phases, (T_lo, T_hi), nx=101, nT=161)
+            detected_eutectics = []
+            if eq_coarse is not None:
+                ls_data = self._extract_liquidus_solidus(eq_coarse, B)
+                if ls_data is not None:
+                    # Use sensitive parameters with wider validation spacing
+                    detected_eutectics = self._find_eutectic_points(eq_coarse, B, ls_data, delta_T=10.0, min_spacing=0.03, eps_drop=0.1)
+                    if detected_eutectics:
+                        print(f"Marking {len(detected_eutectics)} eutectic point(s) on the diagram", flush=True)
+                        for e in detected_eutectics:
+                            print(f"  - {e['temperature']:.0f} K at {e['composition_pct']:.2f} at% {B}: {e['reaction']}", flush=True)
+                        self._mark_eutectics_on_axes(axes, detected_eutectics, B_symbol=B)
+                        # Store for reuse in analysis to ensure consistency
+                        self._cached_eutectics = detected_eutectics
+                    else:
+                        print("No eutectic points detected to mark", flush=True)
+                        self._cached_eutectics = []
+            
+            # Also cache the equilibrium data for analysis
+            self._cached_eq_coarse = eq_coarse
+            
             # Generate visual analysis before saving
             print("Analyzing visual content...", flush=True)
             visual_analysis = self._analyze_visual_content(fig, axes, f"{A}-{B}", phases, (T_lo, T_hi))
@@ -143,6 +166,12 @@ class AIFunctionsMixin:
             thermodynamic_analysis = self._analyze_phase_diagram(db, f"{A}-{B}", phases, (T_lo, T_hi))
             print(f"CALPHAD: Generated thermodynamic analysis with length: {len(thermodynamic_analysis)}", flush=True)
             
+            # Clean up cached data after analysis is complete
+            if hasattr(self, '_cached_eq_coarse'):
+                delattr(self, '_cached_eq_coarse')
+            if hasattr(self, '_cached_eutectics'):
+                delattr(self, '_cached_eutectics')
+            
             # Combine visual and thermodynamic analysis
             combined_analysis = f"{visual_analysis}\n\n{thermodynamic_analysis}"
             print(f"CALPHAD: Combined analysis length: {len(combined_analysis)}", flush=True)
@@ -150,7 +179,6 @@ class AIFunctionsMixin:
             # Store the image URL privately and return only a simple success message
             # The image will be handled by the stream state
             setattr(self, '_last_image_url', plot_url)
-            description = f"Generated binary phase diagram for {A}-{B} system showing stable phases as a function of temperature and composition"
             
             metadata = {
                 "system": f"{A}-{B}",
@@ -158,7 +186,7 @@ class AIFunctionsMixin:
                 "phases": phases,
                 "temperature_range_K": (T_lo, T_hi),
                 "composition_step": comp_step,
-                "description": description,
+                "description": f"Phase diagram for {A}-{B} system",
                 "analysis": combined_analysis,
                 "visual_analysis": visual_analysis,
                 "thermodynamic_analysis": thermodynamic_analysis,
@@ -170,10 +198,31 @@ class AIFunctionsMixin:
             setattr(self, '_last_image_metadata', metadata)
             print(f"CALPHAD: Stored metadata, analysis length: {len(metadata['analysis'])}", flush=True)
             
-            # Return a simple success message - analysis will be shown in image display
-            success_msg = f"Successfully generated {A}-{B} phase diagram showing phases {', '.join(phases)} over temperature range {T_lo:.0f}-{T_hi:.0f}K. The diagram displays phase boundaries and stable regions for this binary system."
+            # Return success message with key findings so the AI can see them
+            success_parts = [
+                f"Successfully generated {A}-{B} phase diagram showing phases: {', '.join(phases)}",
+                f"Temperature range: {T_lo:.0f}-{T_hi:.0f} K"
+            ]
+            
+            # Extract and include key points from analysis
+            key_points = getattr(self, '_last_key_points', [])
+            if key_points:
+                # Add melting points
+                melting_pts = [kp for kp in key_points if kp.get('type') == 'pure_melting']
+                for mp in melting_pts:
+                    success_parts.append(f"Pure {mp['element']} melting point: {mp['temperature']:.0f} K")
+                
+                # Add eutectic points
+                eutectic_pts = [kp for kp in key_points if kp.get('type') == 'eutectic']
+                if eutectic_pts:
+                    for ep in eutectic_pts:
+                        success_parts.append(f"Eutectic point: {ep['temperature']:.0f} K at {ep['composition_pct']:.1f} at% {B} ({ep['reaction']})")
+                else:
+                    success_parts.append("No eutectic points detected in this temperature range")
+            
+            success_msg = ". ".join(success_parts) + "."
             print(f"CALPHAD: Returning success message: {success_msg[:100]}...", flush=True)
-            print(f"CALPHAD: SUCCESS MESSAGE LENGTH: {len(success_msg)} characters (should be short text, not base64)", flush=True)
+            print(f"CALPHAD: SUCCESS MESSAGE LENGTH: {len(success_msg)} characters", flush=True)
             
             # Safeguard: ensure we're not accidentally returning base64 data
             if "data:image/png;base64," in success_msg or len(success_msg) > 1000:
