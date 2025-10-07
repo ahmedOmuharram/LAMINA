@@ -13,6 +13,12 @@ class StreamState:
         self.tool_name_by_id: Dict[str, str] = {}
         self.tool_started_at: Dict[str, float] = {}
         self.tools_open: int = 0
+        
+        # Track which tools have already been completed to prevent duplicates
+        self.completed_tools: set[str] = set()
+        
+        # Track which tool outputs have been consumed
+        self.tool_output_index: int = 0
 
         # Answer buffering (only while tools are running)
         self.buffer_chunks: List[str] = []
@@ -35,6 +41,13 @@ class StreamState:
         for tc in msg.tool_calls:
             tc_id = getattr(tc, "id", f"tc-{int(now*1e6)}")
             tool_name = getattr(getattr(tc, "function", None), "name", "tool")
+            
+            # Prevent duplicate registration
+            if tc_id in self.tool_name_by_id or tc_id in self.tool_fifo:
+                print(f"DEBUG: Skipping duplicate tool registration for tc_id={tc_id}, tool={tool_name}", flush=True)
+                continue
+            
+            print(f"DEBUG: Registering tool tc_id={tc_id}, name={tool_name}", flush=True)
             self.tool_fifo.append(tc_id)
             self.tool_name_by_id[tc_id] = tool_name
             self.tool_started_at[tc_id] = now
@@ -91,21 +104,44 @@ class StreamState:
 
         if self.tool_fifo:
             tc_id = self.tool_fifo.pop(0)
+            
+            print(f"DEBUG: Processing tool completion for tc_id={tc_id}, fifo length={len(self.tool_fifo)}", flush=True)
+            
+            # Check if we've already completed this tool (prevents duplicates)
+            if tc_id in self.completed_tools:
+                print(f"DEBUG: Skipping duplicate tool completion for tc_id={tc_id}", flush=True)
+                return chunks
+            
+            # Mark this tool as completed
+            self.completed_tools.add(tc_id)
+            
             tool_name = self.tool_name_by_id.pop(tc_id, getattr(tool_msg, "name", "tool") or "tool")
             started = self.tool_started_at.pop(tc_id, None)
             duration = time.time() - started if started else 0.0
+            
+            print(f"DEBUG: Tool name={tool_name}, duration={duration:.2f}s", flush=True)
 
             logs_md = ""
             # Prioritize recent_tool_outputs which contains actual Python objects
             tool_output = None
             latest_out = getattr(kani_instance, "recent_tool_outputs", None)
-            if latest_out and len(latest_out) > 0:
+            if latest_out and self.tool_output_index < len(latest_out):
                 try:
-                    tool_output = latest_out[-1]
+                    # Use the next unprocessed tool output
+                    tool_output = latest_out[self.tool_output_index]
+                    self.tool_output_index += 1
+                    print(f"DEBUG: Consumed tool output #{self.tool_output_index-1}, {len(latest_out) - self.tool_output_index} remaining", flush=True)
                     # Use the tool name from recent_tool_outputs if available
                     if isinstance(tool_output, dict) and "tool_name" in tool_output:
                         tool_name = tool_output["tool_name"]
-                except Exception:
+                        # Also check if this exact tool output was already processed
+                        tool_key = f"{tool_name}_{duration:.2f}"
+                        if tool_key in self.completed_tools:
+                            print(f"DEBUG: Skipping duplicate tool output for {tool_key}", flush=True)
+                            return chunks
+                        self.completed_tools.add(tool_key)
+                except Exception as e:
+                    print(f"DEBUG: Error processing recent_tool_outputs: {e}", flush=True)
                     pass
             
             # Fallback to tool message content if recent_tool_outputs is not available
@@ -161,6 +197,9 @@ class StreamState:
             chunks.append(delta_chunk("".join(self.buffer_chunks), self.model_name))
             self.buffer_chunks.clear()
             self.seen_chunks.clear()
+            # Clear completed tools tracking for next request
+            self.completed_tools.clear()
+            self.tool_output_index = 0
 
         return chunks
 
@@ -176,9 +215,15 @@ class StreamState:
         chunks: List[str] = []
         while self.tool_fifo:
             tc_id = self.tool_fifo.pop(0)
-            tool_name = self.tool_name_by_id.pop(tc_id, "tool")
-            self.tool_started_at.pop(tc_id, None)
-            chunks.append(self.emit_tool_done_panel(tool_name, 0.0, ""))
+            # Skip if already completed (prevents duplicates)
+            if tc_id not in self.completed_tools:
+                self.completed_tools.add(tc_id)
+                tool_name = self.tool_name_by_id.pop(tc_id, "tool")
+                self.tool_started_at.pop(tc_id, None)
+                chunks.append(self.emit_tool_done_panel(tool_name, 0.0, ""))
+        # Clear completed tools tracking after orphans are closed
+        self.completed_tools.clear()
+        self.tool_output_index = 0
         return chunks
 
     def flush_linkbuf(self) -> Optional[str]:
