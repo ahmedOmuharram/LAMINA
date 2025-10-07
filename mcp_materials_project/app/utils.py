@@ -95,6 +95,51 @@ def to_kani_history(api_messages: List[ChatMessage]) -> list[KChatMessage]:
         # else: ignore unknown roles
     return out
 
+def _format_nested_value(value: Any, depth: int = 0, max_depth: int = 3) -> Any:
+    """Recursively format nested values with depth limit."""
+    # Prevent infinite recursion
+    if depth > max_depth:
+        if isinstance(value, dict):
+            return f"<dict: {len(value)} keys (max depth reached)>"
+        elif isinstance(value, (list, tuple)):
+            return f"<{type(value).__name__}: {len(value)} items (max depth reached)>"
+        else:
+            return f"<{type(value).__name__}>"
+    
+    # Handle basic JSON types
+    if isinstance(value, (str, int, float, bool, type(None))):
+        if isinstance(value, str) and len(value) > 2000:
+            return f"<truncated string: {len(value)} chars>"
+        return value
+    
+    # Handle lists and tuples
+    if isinstance(value, (list, tuple)):
+        # Limit list size
+        if len(value) > 50:
+            result = [_format_nested_value(item, depth + 1, max_depth) for item in value[:50]]
+            result.append(f"... ({len(value) - 50} more items)")
+            return result
+        return [_format_nested_value(item, depth + 1, max_depth) for item in value]
+    
+    # Handle dictionaries
+    if isinstance(value, dict):
+        # Limit dict size and skip internal keys
+        result = {}
+        count = 0
+        for k, v in value.items():
+            # Skip internal/private fields
+            if str(k).startswith('_') or k in ['__module__', '__file__', '__code__', '__source__']:
+                continue
+            if count >= 50:
+                result[f"... ({len(value) - count} more keys)"] = "truncated"
+                break
+            result[k] = _format_nested_value(v, depth + 1, max_depth)
+            count += 1
+        return result
+    
+    # For other types, return a safe representation
+    return f"<{type(value).__name__}>"
+
 def pretty_print_tool_output(obj: Any) -> str:
     """Safe JSON pretty-printer for tool output, prevents source code leaks."""
     # Only handle JSON-serializable types to prevent source code leaks
@@ -125,21 +170,11 @@ def pretty_print_tool_output(obj: Any) -> str:
             if key.startswith('_') or key in ['__module__', '__file__', '__code__', '__source__']:
                 continue
             
-            # Limit value size and type
-            if isinstance(value, (str, int, float, bool, type(None))):
-                if isinstance(value, str) and len(value) > 1000:
-                    display_obj[key] = f"<truncated string: {len(value)} chars>"
-                else:
-                    display_obj[key] = value
-            elif isinstance(value, (list, tuple)):
-                display_obj[key] = f"<list/tuple: {len(value)} items>"
-            elif isinstance(value, dict):
-                display_obj[key] = f"<dict: {len(value)} keys>"
-            else:
-                display_obj[key] = f"<{type(value).__name__}>"
+            # Recursively handle nested structures with depth limit
+            display_obj[key] = _format_nested_value(value, depth=0, max_depth=3)
         
         try:
-            pretty = json.dumps(display_obj, indent=2, ensure_ascii=False)
+            pretty = json.dumps(display_obj, indent=2, ensure_ascii=False, default=str)
             return f"```json\n{pretty}\n```"
         except Exception:
             return f"```\n{str(obj)[:500]}\n```"
