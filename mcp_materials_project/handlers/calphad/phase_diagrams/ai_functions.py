@@ -114,6 +114,8 @@ class AIFunctionsMixin:
             axes.set_xlim(0, 1)
             
             # ❗ DO NOT force set_ylim when auto_T is True
+            # Store the actual displayed temperature range for reporting
+            T_display_lo, T_display_hi = T_lo, T_hi
             if not auto_T:
                 axes.set_ylim(T_lo, T_hi)
             else:
@@ -122,8 +124,12 @@ class AIFunctionsMixin:
                 y0, y1 = axes.get_ylim()
                 pad = 0.02 * (y1 - y0)
                 axes.set_ylim(y0 - pad, y1 + pad)
+                # Store the actual displayed range for reporting
+                T_display_lo, T_display_hi = y0 - pad, y1 + pad
+                print(f"Auto-scaled temperature range: {T_display_lo:.0f}-{T_display_hi:.0f} K", flush=True)
             
             # Detect and mark eutectic points on the diagram
+            # Use the full computation range (T_lo, T_hi) to ensure we capture all features
             print("Detecting eutectic points for visualization...", flush=True)
             eq_coarse = self._coarse_equilibrium_grid(db, A, B, phases, (T_lo, T_hi), nx=101, nT=161)
             detected_eutectics = []
@@ -148,7 +154,7 @@ class AIFunctionsMixin:
             
             # Generate visual analysis before saving
             print("Analyzing visual content...", flush=True)
-            visual_analysis = self._analyze_visual_content(fig, axes, f"{A}-{B}", phases, (T_lo, T_hi))
+            visual_analysis = self._analyze_visual_content(fig, axes, f"{A}-{B}", phases, (T_display_lo, T_display_hi))
             print(f"Visual analysis complete, length: {len(visual_analysis)}", flush=True)
             
             # Save plot to file and get URL - include legend as extra_artist so it won't be cropped
@@ -162,8 +168,8 @@ class AIFunctionsMixin:
             plt.close(fig)
             print("Plot closed, generating thermodynamic analysis...", flush=True)
             
-            # Generate deterministic analysis
-            thermodynamic_analysis = self._analyze_phase_diagram(db, f"{A}-{B}", phases, (T_lo, T_hi))
+            # Generate deterministic analysis (use displayed range for reporting)
+            thermodynamic_analysis = self._analyze_phase_diagram(db, f"{A}-{B}", phases, (T_display_lo, T_display_hi))
             print(f"CALPHAD: Generated thermodynamic analysis with length: {len(thermodynamic_analysis)}", flush=True)
             
             # Clean up cached data after analysis is complete
@@ -184,7 +190,7 @@ class AIFunctionsMixin:
                 "system": f"{A}-{B}",
                 "database_file": db_path.name,
                 "phases": phases,
-                "temperature_range_K": (T_lo, T_hi),
+                "temperature_range_K": (T_display_lo, T_display_hi),
                 "composition_step": comp_step,
                 "description": f"Phase diagram for {A}-{B} system",
                 "analysis": combined_analysis,
@@ -201,7 +207,7 @@ class AIFunctionsMixin:
             # Return success message with key findings so the AI can see them
             success_parts = [
                 f"Successfully generated {A}-{B} phase diagram showing phases: {', '.join(phases)}",
-                f"Temperature range: {T_lo:.0f}-{T_hi:.0f} K"
+                f"Temperature range: {T_display_lo:.0f}-{T_display_hi:.0f} K"
             ]
             
             # Extract and include key points from analysis
