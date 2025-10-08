@@ -462,3 +462,399 @@ class AIFunctionsMixin:
         out["total_systems"] = len(out["systems"])
         out["database_file"] = db_path.name
         return out
+    
+    @ai_function(desc="Calculate equilibrium phase fractions at a specific temperature and composition. Use to verify phase amounts at a single condition. Returns detailed phase information including fractions and compositions.")
+    async def calculate_equilibrium_at_point(
+        self,
+        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Al30Si55C15', 'Al80Zn20', 'Fe70Cr20Ni10'). Atomic percent by default.")],
+        temperature: Annotated[float, AIParam(desc="Temperature in Kelvin")],
+        composition_type: Annotated[Optional[str], AIParam(desc="'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = "atomic"
+    ) -> str:
+        """
+        Calculate thermodynamic equilibrium at a specific point (temperature + composition).
+        
+        Returns phase fractions, compositions, and stability information.
+        Useful for verifying specific phase equilibrium conditions.
+        """
+        try:
+            from pycalphad import Database, equilibrium
+            
+            # Parse composition string (e.g., "Al30Si55C15" -> {AL: 0.30, SI: 0.55, C: 0.15})
+            comp_dict = self._parse_multicomponent_composition(composition)
+            if not comp_dict:
+                return f"Failed to parse composition: {composition}. Use format like 'Al30Si55C15' or 'Fe70Cr20Ni10'"
+            
+            elements = list(comp_dict.keys())
+            system_str = "-".join(elements)
+            
+            # Load database (pass elements to select appropriate .tdb)
+            db_path = self._get_database_path(system_str, elements=elements)
+            if not db_path:
+                return f"No thermodynamic database found for {system_str} system."
+            
+            db = Database(str(db_path))
+            
+            # Get phases
+            phases = self._filter_phases_for_multicomponent(db, elements)
+            
+            # Build conditions
+            elements_with_va = elements + ['VA']
+            conditions = {v.T: temperature, v.P: 101325, v.N: 1}
+            
+            # Set composition conditions (N-1 independent compositions)
+            for i, elem in enumerate(elements[1:], 1):
+                conditions[v.X(elem)] = comp_dict[elem]
+            
+            # Calculate equilibrium
+            eq = equilibrium(db, elements_with_va, phases, conditions)
+            
+            # Extract phase fractions and compositions
+            phase_info = []
+            total_fraction = 0.0
+            
+            stable_phases = eq.Phase.values.ravel()
+            phase_fractions = eq.NP.values.ravel()
+            
+            for i, phase in enumerate(stable_phases):
+                if phase == '' or np.isnan(phase_fractions[i]):
+                    continue
+                
+                frac = float(phase_fractions[i])
+                if frac > 1e-6:  # Only report significant phases
+                    total_fraction += frac
+                    
+                    # Get composition of this phase
+                    phase_comp = {}
+                    for elem in elements:
+                        # Extract phase composition for this element
+                        x_val = eq.X.sel(component=elem).values.ravel()[i]
+                        if not np.isnan(x_val):
+                            phase_comp[elem] = float(x_val)
+                    
+                    phase_info.append({
+                        'phase': phase,
+                        'fraction': frac,
+                        'composition': phase_comp
+                    })
+            
+            # Sort by fraction (descending)
+            phase_info.sort(key=lambda x: x['fraction'], reverse=True)
+            
+            # Format response
+            comp_str = " ".join([f"{elem}{comp_dict[elem]*100:.1f}" for elem in elements])
+            response_lines = [
+                f"**Equilibrium at {temperature:.1f} K for {comp_str}**\n",
+                f"**Temperature**: {temperature:.1f} K ({temperature-273.15:.1f} °C)",
+                f"**Composition**: {comp_str} (atomic %)\n",
+                "**Stable Phases**:"
+            ]
+            
+            for pinfo in phase_info:
+                phase_name = pinfo['phase']
+                frac = pinfo['fraction']
+                comp = pinfo['composition']
+                
+                comp_str_phase = ", ".join([f"{e}: {comp[e]*100:.2f}%" for e in elements if e in comp])
+                response_lines.append(f"  • **{phase_name}**: {frac*100:.2f}% ({comp_str_phase})")
+            
+            if not phase_info:
+                response_lines.append("  • No stable phases found (calculation may have failed)")
+            
+            response_lines.append(f"\n**Total phase fraction**: {total_fraction*100:.2f}%")
+            
+            return "\n".join(response_lines)
+            
+        except Exception as e:
+            _log.exception(f"Error calculating equilibrium at {temperature}K for {composition}")
+            return f"Failed to calculate equilibrium: {str(e)}"
+    
+    @ai_function(desc="Calculate how phase fractions change with temperature for a specific composition. Essential for understanding precipitation, dissolution, and phase transformations. Returns phase fraction data across temperature range.")
+    async def calculate_phase_fractions_vs_temperature(
+        self,
+        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Al30Si55C15', 'Al80Zn20')")],
+        min_temperature: Annotated[float, AIParam(desc="Minimum temperature in Kelvin")],
+        max_temperature: Annotated[float, AIParam(desc="Maximum temperature in Kelvin")],
+        temperature_step: Annotated[Optional[float], AIParam(desc="Temperature step in Kelvin. Default: 10")] = None,
+        composition_type: Annotated[Optional[str], AIParam(desc="'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = "atomic"
+    ) -> str:
+        """
+        Calculate phase fractions as a function of temperature for a fixed composition.
+        
+        This is the primary tool for understanding:
+        - Precipitation behavior (phase fraction increasing with cooling)
+        - Dissolution behavior (phase fraction decreasing with heating)
+        - Phase transformation temperatures
+        - Solvus boundaries
+        
+        Returns detailed phase fraction data and analysis.
+        """
+        try:
+            from pycalphad import Database, equilibrium
+            
+            # Parse composition
+            comp_dict = self._parse_multicomponent_composition(composition)
+            if not comp_dict:
+                return f"Failed to parse composition: {composition}"
+            
+            elements = list(comp_dict.keys())
+            system_str = "-".join(elements)
+            
+            # Load database (pass elements to select appropriate .tdb)
+            db_path = self._get_database_path(system_str, elements=elements)
+            if not db_path:
+                return f"No thermodynamic database found for {system_str} system."
+            
+            db = Database(str(db_path))
+            phases = self._filter_phases_for_multicomponent(db, elements)
+            
+            # Temperature array
+            step = temperature_step or 10.0
+            temps = np.arange(min_temperature, max_temperature + step, step)
+            
+            # Calculate equilibrium at each temperature
+            phase_fractions = {}  # {phase_name: [fractions]}
+            all_phases_seen = set()
+            
+            elements_with_va = elements + ['VA']
+            
+            _log.info(f"Calculating equilibrium for {len(temps)} temperature points...")
+            
+            for T in temps:
+                conditions = {v.T: T, v.P: 101325, v.N: 1}
+                for i, elem in enumerate(elements[1:], 1):
+                    conditions[v.X(elem)] = comp_dict[elem]
+                
+                try:
+                    eq = equilibrium(db, elements_with_va, phases, conditions)
+                    
+                    # Extract phases at this temperature
+                    stable_phases = eq.Phase.values.ravel()
+                    phase_fracs = eq.NP.values.ravel()
+                    
+                    temp_phases = {}
+                    for i, phase in enumerate(stable_phases):
+                        if phase and not np.isnan(phase_fracs[i]):
+                            frac = float(phase_fracs[i])
+                            if frac > 1e-8:
+                                temp_phases[phase] = frac
+                                all_phases_seen.add(phase)
+                    
+                    # Store fractions for all seen phases
+                    for phase in all_phases_seen:
+                        if phase not in phase_fractions:
+                            phase_fractions[phase] = []
+                        phase_fractions[phase].append(temp_phases.get(phase, 0.0))
+                        
+                except Exception as e:
+                    _log.warning(f"Equilibrium calculation failed at {T}K: {e}")
+                    # Append zeros for this temperature
+                    for phase in all_phases_seen:
+                        if phase not in phase_fractions:
+                            phase_fractions[phase] = []
+                        phase_fractions[phase].append(0.0)
+            
+            # Generate analysis
+            comp_str = " ".join([f"{elem}{comp_dict[elem]*100:.0f}" for elem in elements])
+            
+            response_lines = [
+                f"**Phase Fractions vs Temperature for {comp_str}**\n",
+                f"**Temperature Range**: {min_temperature:.0f} - {max_temperature:.0f} K ({min_temperature-273.15:.0f} - {max_temperature-273.15:.0f} °C)",
+                f"**Composition**: {comp_str} (atomic %)",
+                f"**Temperature Points**: {len(temps)}\n",
+                "**Phase Evolution**:"
+            ]
+            
+            # Analyze each phase
+            for phase, fractions in sorted(phase_fractions.items()):
+                max_frac = max(fractions)
+                min_frac = min(fractions)
+                
+                if max_frac < 1e-6:
+                    continue  # Skip phases that never appear
+                
+                # Find where phase appears/disappears
+                frac_start = fractions[0]
+                frac_end = fractions[-1]
+                
+                # Determine trend
+                if frac_end > frac_start + 0.01:
+                    trend = "increasing"
+                    change = f"+{(frac_end - frac_start)*100:.2f}%"
+                elif frac_start > frac_end + 0.01:
+                    trend = "decreasing"
+                    change = f"{(frac_end - frac_start)*100:.2f}%"
+                else:
+                    trend = "stable"
+                    change = "~0%"
+                
+                response_lines.append(
+                    f"  • **{phase}**: {frac_start*100:.2f}% → {frac_end*100:.2f}% "
+                    f"({trend}, {change})"
+                )
+            
+            # Store data for potential plotting
+            setattr(self, '_last_phase_fraction_data', {
+                'temperatures': temps.tolist(),
+                'phase_fractions': {p: f.copy() for p, f in phase_fractions.items()},
+                'composition': comp_dict,
+                'composition_str': comp_str
+            })
+            
+            return "\n".join(response_lines)
+            
+        except Exception as e:
+            _log.exception(f"Error calculating phase fractions vs temperature")
+            return f"Failed to calculate phase fractions vs temperature: {str(e)}"
+    
+    @ai_function(desc="Analyze whether a specific phase increases or decreases with temperature. Use to verify statements about precipitation or dissolution behavior.")
+    async def analyze_phase_fraction_trend(
+        self,
+        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Al30Si55C15')")],
+        phase_name: Annotated[str, AIParam(desc="Name of the phase to analyze (e.g., 'AL4C3', 'SIC', 'FCC_A1')")],
+        min_temperature: Annotated[float, AIParam(desc="Minimum temperature in Kelvin")],
+        max_temperature: Annotated[float, AIParam(desc="Maximum temperature in Kelvin")],
+        expected_trend: Annotated[Optional[str], AIParam(desc="Expected trend: 'increase', 'decrease', or 'stable'. Optional.")] = None
+    ) -> str:
+        """
+        Analyze the trend of a specific phase fraction with temperature.
+        
+        This tool is designed to verify statements like:
+        - "Phase X increases with decreasing temperature"
+        - "Phase Y precipitates upon cooling"
+        - "Phase Z dissolves upon heating"
+        
+        Returns detailed analysis with verification of expected trends.
+        """
+        try:
+            from pycalphad import Database, equilibrium
+            
+            # Parse composition
+            comp_dict = self._parse_multicomponent_composition(composition)
+            if not comp_dict:
+                return f"Failed to parse composition: {composition}"
+            
+            elements = list(comp_dict.keys())
+            system_str = "-".join(elements)
+            
+            # Load database (pass elements to select appropriate .tdb)
+            db_path = self._get_database_path(system_str, elements=elements)
+            if not db_path:
+                return f"No thermodynamic database found for {system_str} system."
+            
+            db = Database(str(db_path))
+            phases = self._filter_phases_for_multicomponent(db, elements)
+            
+            # Normalize phase name
+            phase_name_upper = phase_name.upper()
+            
+            # Check if phase exists in database
+            if phase_name_upper not in phases and phase_name not in phases:
+                available = ", ".join(sorted(phases))
+                return f"Phase '{phase_name}' not found in database. Available phases: {available}"
+            
+            phase_to_track = phase_name_upper if phase_name_upper in phases else phase_name
+            
+            # Calculate over temperature range
+            temps = np.linspace(min_temperature, max_temperature, 50)
+            fractions = []
+            
+            elements_with_va = elements + ['VA']
+            
+            for T in temps:
+                conditions = {v.T: T, v.P: 101325, v.N: 1}
+                for i, elem in enumerate(elements[1:], 1):
+                    conditions[v.X(elem)] = comp_dict[elem]
+                
+                try:
+                    eq = equilibrium(db, elements_with_va, phases, conditions)
+                    
+                    # Find our phase
+                    stable_phases = eq.Phase.values.ravel()
+                    phase_fracs = eq.NP.values.ravel()
+                    
+                    phase_frac = 0.0
+                    for i, phase in enumerate(stable_phases):
+                        if phase == phase_to_track and not np.isnan(phase_fracs[i]):
+                            phase_frac = max(phase_frac, float(phase_fracs[i]))
+                    
+                    fractions.append(phase_frac)
+                    
+                except Exception as e:
+                    _log.warning(f"Calculation failed at {T}K: {e}")
+                    fractions.append(0.0)
+            
+            # Analyze trend
+            fractions = np.array(fractions)
+            frac_low_T = fractions[0]
+            frac_high_T = fractions[-1]
+            
+            max_frac = np.max(fractions)
+            min_frac = np.min(fractions)
+            
+            # Compute overall trend
+            delta = frac_high_T - frac_low_T
+            
+            if abs(delta) < 0.001:
+                trend = "stable"
+                trend_desc = "remains relatively stable"
+            elif delta > 0.001:
+                trend = "increases"
+                trend_desc = "increases with increasing temperature (decreases upon cooling)"
+            else:
+                trend = "decreases"
+                trend_desc = "decreases with increasing temperature (increases upon cooling)"
+            
+            comp_str = "".join([f"{elem}{comp_dict[elem]*100:.0f}" for elem in elements])
+            
+            response_lines = [
+                f"**Phase Fraction Analysis: {phase_to_track} in {comp_str}**\n",
+                f"**Temperature Range**: {min_temperature:.0f} - {max_temperature:.0f} K ({min_temperature-273.15:.0f} - {max_temperature-273.15:.0f} °C)",
+                f"**Phase**: {phase_to_track}",
+                f"**Composition**: {comp_str} (atomic %)\n",
+                f"**Results**:",
+                f"  • Fraction at {min_temperature:.0f} K: {frac_low_T*100:.3f}%",
+                f"  • Fraction at {max_temperature:.0f} K: {frac_high_T*100:.3f}%",
+                f"  • Change: {delta*100:.3f}% ({'+' if delta > 0 else ''}{delta*100:.3f}%)",
+                f"  • Maximum fraction: {max_frac*100:.3f}%",
+                f"  • Minimum fraction: {min_frac*100:.3f}%\n",
+                f"**Trend**: The phase fraction **{trend_desc}**."
+            ]
+            
+            # Verify against expected trend if provided
+            if expected_trend:
+                expected_lower = expected_trend.lower()
+                matches = False
+                
+                # Check for "increasing/decreasing with temperature" patterns
+                if "decreasing temperature" in expected_lower or "upon cooling" in expected_lower or "with cooling" in expected_lower:
+                    # Phase should be higher at LOW temperature (precipitation upon cooling)
+                    if "increase" in expected_lower:
+                        matches = (frac_low_T > frac_high_T + 0.001)
+                    elif "decrease" in expected_lower:
+                        matches = (frac_low_T < frac_high_T - 0.001)
+                        
+                elif "increasing temperature" in expected_lower or "upon heating" in expected_lower or "with heating" in expected_lower:
+                    # Phase should be higher at HIGH temperature
+                    if "increase" in expected_lower:
+                        matches = (frac_high_T > frac_low_T + 0.001)
+                    elif "decrease" in expected_lower:
+                        matches = (frac_high_T < frac_low_T - 0.001)
+                        
+                # Simple increase/decrease without temperature reference
+                elif "increase" in expected_lower:
+                    matches = (trend == "increases")
+                elif "decrease" in expected_lower:
+                    matches = (trend == "decreases")
+                elif "stable" in expected_lower or "constant" in expected_lower:
+                    matches = (trend == "stable")
+                
+                if matches:
+                    response_lines.append(f"\n✅ **Verification**: The expected trend ('{expected_trend}') **matches** the calculated behavior.")
+                else:
+                    response_lines.append(f"\n❌ **Verification**: The expected trend ('{expected_trend}') **does NOT match** the calculated behavior.")
+            
+            return "\n".join(response_lines)
+            
+        except Exception as e:
+            _log.exception(f"Error analyzing phase fraction trend")
+            return f"Failed to analyze phase fraction trend: {str(e)}"

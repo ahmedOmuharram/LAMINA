@@ -223,9 +223,18 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         
         raise ValueError(f"Could not parse system: {system}")
 
-    def _get_database_path(self, _system_ignored: str = "") -> Optional[Path]:
-        """Get the path to the thermodynamic database file."""
-        return _pick_tdb_path(self.tdb_dir)
+    def _get_database_path(self, _system_ignored: str = "", elements: Optional[List[str]] = None) -> Optional[Path]:
+        """
+        Get the path to the thermodynamic database file.
+        
+        Args:
+            _system_ignored: System string (legacy parameter)
+            elements: List of element symbols to help select appropriate database
+        
+        Returns:
+            Path to appropriate .tdb file
+        """
+        return _pick_tdb_path(self.tdb_dir, elements=elements)
 
     def _normalize_elements(self, elements: List[str], db=None) -> List[str]:
         """Normalize element symbols to database format."""
@@ -286,6 +295,83 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
             return (A, B), 0.5, composition_type  # Default to 50-50
         except:
             raise ValueError(f"Could not parse composition: {system_or_comp}")
+    
+    def _parse_multicomponent_composition(self, comp_str: str) -> Optional[dict]:
+        """
+        Parse multicomponent composition string like 'Al30Si55C15' into {AL: 0.30, SI: 0.55, C: 0.15}.
+        
+        Args:
+            comp_str: Composition string with format ElementNumber pairs (e.g., 'Al30Si55C15')
+            
+        Returns:
+            Dictionary mapping element symbols to mole fractions, or None if parsing fails
+        """
+        import re
+        
+        # Pattern to match element symbol followed by number
+        pattern = r'([A-Z][a-z]?)(\d+(?:\.\d+)?)'
+        matches = re.findall(pattern, comp_str.strip())
+        
+        if not matches:
+            return None
+        
+        # Extract elements and amounts
+        comp_dict = {}
+        total = 0.0
+        
+        for elem, amount_str in matches:
+            elem_upper = _upper_symbol(elem)
+            amount = float(amount_str)
+            comp_dict[elem_upper] = amount
+            total += amount
+        
+        if total == 0.0:
+            return None
+        
+        # Normalize to sum to 1.0
+        for elem in comp_dict:
+            comp_dict[elem] /= total
+        
+        return comp_dict
+    
+    def _filter_phases_for_multicomponent(self, db, elements: List[str], include_metastable: bool = False) -> List[str]:
+        """
+        Filter phases relevant for a multicomponent system (3+ elements).
+        
+        Args:
+            db: pycalphad Database
+            elements: List of element symbols
+            include_metastable: Whether to include metastable phases
+            
+        Returns:
+            List of relevant phase names
+        """
+        all_phases = list(db.phases.keys())
+        candidates = []
+        
+        # Filter out excluded phases unless metastable requested
+        for phase in all_phases:
+            if not include_metastable and _is_excluded_phase(phase):
+                continue
+            candidates.append(phase)
+        
+        # Keep phases that contain any of our elements
+        kept = []
+        for phase in candidates:
+            if phase == "LIQUID":
+                kept.append(phase)
+                continue
+            
+            phase_elems = self._phase_elements(db, phase)
+            
+            # Include phase if it contains any combination of our elements
+            if any(elem in phase_elems for elem in elements):
+                kept.append(phase)
+        
+        # Optional: activation pass to prune dead phases
+        # For multicomponent systems, we'll skip this for now as it's expensive
+        
+        return kept
 
     def _calculate_equilibrium_at_T(self, db, elements, phases, T, xB, comp_var):
         """Calculate equilibrium at a specific temperature."""

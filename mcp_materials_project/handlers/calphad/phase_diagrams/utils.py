@@ -35,17 +35,38 @@ def _compose_alias_map(db) -> dict:
         aliases[el] = el
     return aliases
 
-def _pick_tdb_path(tdb_dir: Path) -> Optional[Path]:
-    # prefer a single .tdb; if multiple, prefer one that looks Al-focused and pycal-compatible
+def _pick_tdb_path(tdb_dir: Path, elements: Optional[list] = None) -> Optional[Path]:
+    """
+    Pick appropriate thermodynamic database based on elements involved.
+    
+    Args:
+        tdb_dir: Directory containing .tdb files
+        elements: List of element symbols (e.g., ['AL', 'SI', 'C'])
+    
+    Returns:
+        Path to appropriate .tdb file
+    """
     if not tdb_dir.exists():
         return None
+    
     candidates = sorted([p for p in tdb_dir.glob("*.tdb") if p.is_file()])
     if not candidates:
         return None
-    # First try pycal versions
+    
+    # If elements provided, choose database based on system
+    if elements:
+        elements_upper = [el.upper() for el in elements]
+        
+        # COST507.tdb for carbon-containing systems
+        if 'C' in elements_upper or 'N' in elements_upper or 'B' in elements_upper:
+            for p in candidates:
+                if "COST507" in p.name or "cost507" in p.name.lower():
+                    return p
+    
+    # Default: prefer pycal versions for Al systems
     for p in candidates:
         if "pycal" in p.name.lower() and "al" in p.name.lower():
             return p
-    # Then try any Al-focused version
-    else:
-        return "COST507.tdb"
+    
+    # Fallback to first candidate
+    return candidates[0]
