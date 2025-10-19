@@ -16,7 +16,8 @@ from kani.ai_function import ai_function
 from typing_extensions import Annotated
 from kani import AIParam
 
-from .utils import _db_elements
+from .database_utils import get_db_elements, map_phase_name
+from .equilibrium_utils import extract_phase_fractions_from_equilibrium
 
 _log = logging.getLogger(__name__)
 
@@ -27,8 +28,8 @@ class AIFunctionsMixin:
     async def plot_binary_phase_diagram(
         self,
         system: Annotated[str, AIParam(desc="Chemical system (e.g., 'Al-Zn', 'AlZn', 'aluminum-zinc')")],
-        min_temperature: Annotated[Optional[float], AIParam(desc="Minimum temperature in Kelvin. Default: 300")] = None,
-        max_temperature: Annotated[Optional[float], AIParam(desc="Maximum temperature in Kelvin. Default: 1000")] = None,
+        min_temperature: Annotated[Optional[float], AIParam(desc="Minimum temperature in Kelvin. Default: auto")] = None,
+        max_temperature: Annotated[Optional[float], AIParam(desc="Maximum temperature in Kelvin. Default: auto")] = None,
         composition_step: Annotated[Optional[float], AIParam(desc="Composition step size (0-1). Default: 0.02")] = None,
         figure_width: Annotated[Optional[float], AIParam(desc="Figure width in inches. Default: 9")] = None,
         figure_height: Annotated[Optional[float], AIParam(desc="Figure height in inches. Default: 6")] = None
@@ -36,10 +37,15 @@ class AIFunctionsMixin:
         """
         Generate a binary phase diagram using CALPHAD thermodynamic data.
         
-        Currently supports:
-        - Al-Zn (Aluminum-Zinc) system
+        Returns:
+            Success message with key findings (e.g., phases, eutectic points, melting points).
+            
+        Side Effects:
+            - Saves PNG image to interactive_plots/ directory
+            - Stores image URL and metadata in self._last_image_url and self._last_image_metadata
+            - Image URL is served at http://localhost:8000/static/plots/[filename]
         
-        Returns phase diagram as base64-encoded PNG image with metadata.
+        Currently supports Al-Zn and other systems in available .tdb databases.
         """
         
         try:
@@ -49,18 +55,19 @@ class AIFunctionsMixin:
             if hasattr(self, '_last_image_data'):
                 delattr(self, '_last_image_data')
             
-            # Normalize & load DB
-            db_path = self._get_database_path(system)
+            # Parse system first to get elements for database selection
+            A, B = self._normalize_system(system, db=None)
+            
+            # Select database based on elements
+            db_path = self._get_database_path(system, elements=[A, B])
             if not db_path:
-                return {"success": False, "error": f"No .tdb found in {self.tdb_dir}."}
+                return {"success": False, "error": f"No .tdb found in {self.tdb_dir}.", "citations": ["pycalphad"]}
             db = Database(str(db_path))
 
-            # Parse system → (A,B); ensure both are in DB
-            A, B = self._normalize_system(system, db=db)
-            db_elems = _db_elements(db)
+            # Ensure both elements are in the selected DB
+            db_elems = get_db_elements(db)
             if not (A in db_elems and B in db_elems):
-                return {"success": False, "error": f"Elements '{A}' and '{B}' must both exist in the database ({sorted(db_elems)})."}
-
+                return {"success": False, "error": f"Elements '{A}' and '{B}' must both exist in the database ({sorted(db_elems)}).", "citations": ["pycalphad"]}
             # Use A-B; x-axis will be X(B)
             elements = [A, B, 'VA']
             comp_el = B  # x variable
@@ -107,7 +114,7 @@ class AIFunctionsMixin:
 
             # generic labels / format
             # self._add_phase_labels(axes, temp_range, phases, db, elements, v.X(comp_el))  # Disabled - use legend instead
-            axes.set_xlabel(f"Mole Fraction {comp_el} (atomic basis)")
+            axes.set_xlabel(f"Mole fraction of {comp_el}, $x_{{{comp_el}}}$")
             axes.set_ylabel("Temperature (K)")
             fig.suptitle(f"{A}-{B} Phase Diagram", x=0.5, fontsize=14, fontweight='bold')
             axes.grid(True, alpha=0.3)
@@ -126,11 +133,11 @@ class AIFunctionsMixin:
                 axes.set_ylim(y0 - pad, y1 + pad)
                 # Store the actual displayed range for reporting
                 T_display_lo, T_display_hi = y0 - pad, y1 + pad
-                print(f"Auto-scaled temperature range: {T_display_lo:.0f}-{T_display_hi:.0f} K", flush=True)
+                _log.info(f"Auto-scaled temperature range: {T_display_lo:.0f}-{T_display_hi:.0f} K")
             
             # Detect and mark eutectic points on the diagram
             # Use the full computation range (T_lo, T_hi) to ensure we capture all features
-            print("Detecting eutectic points for visualization...", flush=True)
+            _log.info("Detecting eutectic points for visualization...")
             eq_coarse = self._coarse_equilibrium_grid(db, A, B, phases, (T_lo, T_hi), nx=101, nT=161)
             detected_eutectics = []
             if eq_coarse is not None:
@@ -139,38 +146,38 @@ class AIFunctionsMixin:
                     # Use sensitive parameters with wider validation spacing
                     detected_eutectics = self._find_eutectic_points(eq_coarse, B, ls_data, delta_T=10.0, min_spacing=0.03, eps_drop=0.1)
                     if detected_eutectics:
-                        print(f"Marking {len(detected_eutectics)} eutectic point(s) on the diagram", flush=True)
+                        _log.info(f"Marking {len(detected_eutectics)} eutectic point(s) on the diagram")
                         for e in detected_eutectics:
-                            print(f"  - {e['temperature']:.0f} K at {e['composition_pct']:.2f} at% {B}: {e['reaction']}", flush=True)
+                            _log.info(f"  - {e['temperature']:.0f} K at {e['composition_pct']:.2f} at% {B}: {e['reaction']}")
                         self._mark_eutectics_on_axes(axes, detected_eutectics, B_symbol=B)
                         # Store for reuse in analysis to ensure consistency
                         self._cached_eutectics = detected_eutectics
                     else:
-                        print("No eutectic points detected to mark", flush=True)
+                        _log.info("No eutectic points detected to mark")
                         self._cached_eutectics = []
             
             # Also cache the equilibrium data for analysis
             self._cached_eq_coarse = eq_coarse
             
             # Generate visual analysis before saving
-            print("Analyzing visual content...", flush=True)
+            _log.info("Analyzing visual content...")
             visual_analysis = self._analyze_visual_content(fig, axes, f"{A}-{B}", phases, (T_display_lo, T_display_hi))
-            print(f"Visual analysis complete, length: {len(visual_analysis)}", flush=True)
+            _log.info(f"Visual analysis complete, length: {len(visual_analysis)}")
             
             # Save plot to file and get URL - include legend as extra_artist so it won't be cropped
-            print("Saving plot to file...", flush=True)
+            _log.info("Saving plot to file...")
             plot_url = self._save_plot_to_file(
                 fig, 
                 f"phase_diagram_{A}-{B}",
                 extra_artists=[legend] if legend is not None else None
             )
-            print(f"Plot saved, URL: {plot_url}", flush=True)
+            _log.info(f"Plot saved, URL: {plot_url}")
             plt.close(fig)
-            print("Plot closed, generating thermodynamic analysis...", flush=True)
+            _log.info("Plot closed, generating thermodynamic analysis...")
             
             # Generate deterministic analysis (use displayed range for reporting)
             thermodynamic_analysis = self._analyze_phase_diagram(db, f"{A}-{B}", phases, (T_display_lo, T_display_hi))
-            print(f"CALPHAD: Generated thermodynamic analysis with length: {len(thermodynamic_analysis)}", flush=True)
+            _log.info(f"Generated thermodynamic analysis with length: {len(thermodynamic_analysis)}")
             
             # Clean up cached data after analysis is complete
             if hasattr(self, '_cached_eq_coarse'):
@@ -180,7 +187,7 @@ class AIFunctionsMixin:
             
             # Combine visual and thermodynamic analysis
             combined_analysis = f"{visual_analysis}\n\n{thermodynamic_analysis}"
-            print(f"CALPHAD: Combined analysis length: {len(combined_analysis)}", flush=True)
+            _log.info(f"Combined analysis length: {len(combined_analysis)}")
             
             # Store the image URL privately and return only a simple success message
             # The image will be handled by the stream state
@@ -202,7 +209,7 @@ class AIFunctionsMixin:
                 }
             }
             setattr(self, '_last_image_metadata', metadata)
-            print(f"CALPHAD: Stored metadata, analysis length: {len(metadata['analysis'])}", flush=True)
+            _log.info(f"Stored metadata, analysis length: {len(metadata['analysis'])}")
             
             # Return success message with key findings so the AI can see them
             success_parts = [
@@ -227,15 +234,15 @@ class AIFunctionsMixin:
                     success_parts.append("No eutectic points detected in this temperature range")
             
             success_msg = ". ".join(success_parts) + "."
-            print(f"CALPHAD: Returning success message: {success_msg[:100]}...", flush=True)
-            print(f"CALPHAD: SUCCESS MESSAGE LENGTH: {len(success_msg)} characters", flush=True)
+            _log.info(f"Returning success message: {success_msg[:100]}...")
+            _log.debug(f"SUCCESS MESSAGE LENGTH: {len(success_msg)} characters")
             
             # Safeguard: ensure we're not accidentally returning base64 data
             if "data:image/png;base64," in success_msg or len(success_msg) > 1000:
-                print(f"CALPHAD: ERROR - Success message contains base64 data or is too long! Truncating.", flush=True)
-                result = "Successfully generated phase diagram. Image will be displayed separately."
+                _log.error("ERROR - Success message contains base64 data or is too long! Truncating.")
+                result = {"success": True, "message": "Successfully generated phase diagram. Image will be displayed separately.", "citations": ["pycalphad"]}
             else:
-                result = success_msg
+                result = {"success": True, "message": success_msg, "citations": ["pycalphad"]}
             
             # Store the result for tooltip display
             if hasattr(self, 'recent_tool_outputs'):
@@ -247,7 +254,7 @@ class AIFunctionsMixin:
             
         except Exception as e:
             _log.exception(f"Error generating phase diagram for {system}")
-            result = f"Failed to generate phase diagram for {system}: {str(e)}"
+            result = {"success": False, "error": f"Failed to generate phase diagram for {system}: {str(e)}", "citations": ["pycalphad"]}
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
                     "tool_name": "plot_binary_phase_diagram",
@@ -259,8 +266,8 @@ class AIFunctionsMixin:
     async def plot_composition_temperature(
         self,
         composition: Annotated[str, AIParam(desc="Specific composition like 'Al20Zn80', 'Al80Zn20', 'Zn30Al70', or single element like 'Zn' or 'Al'")],
-        min_temperature: Annotated[Optional[float], AIParam(desc="Minimum temperature in Kelvin. Default: 300")] = None,
-        max_temperature: Annotated[Optional[float], AIParam(desc="Maximum temperature in Kelvin. Default: 1000")] = None,
+        min_temperature: Annotated[Optional[float], AIParam(desc="Minimum temperature in Kelvin. Default: auto (200K)")] = None,
+        max_temperature: Annotated[Optional[float], AIParam(desc="Maximum temperature in Kelvin. Default: auto (2300K)")] = None,
         composition_type: Annotated[Optional[str], AIParam(desc="Composition type: 'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = None,
         figure_width: Annotated[Optional[float], AIParam(desc="Figure width in inches. Default: 8")] = None,
         figure_height: Annotated[Optional[float], AIParam(desc="Figure height in inches. Default: 6")] = None,
@@ -268,6 +275,19 @@ class AIFunctionsMixin:
     ) -> str:
         """
         Generate a temperature vs phase stability plot for a specific composition.
+        
+        Args:
+            composition: Composition string (e.g., 'Al20Zn80'). Numbers are interpreted as percentages.
+            composition_type: 'atomic' for at% (default) or 'weight' for wt%. Weight% is converted to mole fractions internally.
+            interactive: 'html' for Plotly HTML (default) generates both HTML and static PNG
+        
+        Returns:
+            Success message with composition and temperature range.
+            
+        Side Effects:
+            - Saves PNG and HTML to interactive_plots/ directory
+            - Stores URLs and metadata in self._last_image_url, self._last_html_url, and self._last_image_metadata
+            - Files are served at http://localhost:8000/static/plots/[filename]
         """
         try:
             # reset previous artifacts
@@ -279,20 +299,30 @@ class AIFunctionsMixin:
             # Parse composition and get system
             (A, B), xB, comp_type = self._parse_composition(composition, composition_type or "atomic")
             
-            # Load database
-            db_path = self._get_database_path(f"{A}-{B}")
+            # Load database with element-based selection
+            db_path = self._get_database_path(f"{A}-{B}", elements=[A, B])
             if not db_path:
                 return f"No thermodynamic database found for {A}-{B} system."
             
             db = Database(str(db_path))
             
             # Check elements exist in database
-            db_elems = _db_elements(db)
+            db_elems = get_db_elements(db)
             if not (A in db_elems and B in db_elems):
                 return f"Elements '{A}' and '{B}' not found in database. Available: {sorted(db_elems)}"
             
-            # Set temperature range
-            temp_range = (min_temperature or 300, max_temperature or 1000)
+            # Set temperature range with AUTO detection (same as plot_binary_phase_diagram)
+            auto_T = (min_temperature is None and max_temperature is None)
+            if auto_T:
+                # Wide bracket so high-melting systems are captured
+                T_lo, T_hi = 200.0, 2300.0
+                _log.info(f"Using auto temperature range: {T_lo:.0f}-{T_hi:.0f} K")
+            else:
+                T_lo = min_temperature or 300.0
+                T_hi = max_temperature or 1000.0
+                _log.info(f"Using specified temperature range: {T_lo:.0f}-{T_hi:.0f} K")
+            
+            temp_range = (T_lo, T_hi)
             
             # Get phases for this system
             phases = self._filter_phases_for_system(db, (A, B))
@@ -304,43 +334,126 @@ class AIFunctionsMixin:
             # Temperature points
             n_temp = max(50, min(200, int((temp_range[1] - temp_range[0]) / 5)))
             temps = np.linspace(temp_range[0], temp_range[1], n_temp)
+            _log.info(f"Temperature array: {len(temps)} points from {temps[0]:.1f} to {temps[-1]:.1f} K")
             
             # Calculate equilibrium at each temperature
             phase_data = {}
             for phase in phases:
                 phase_data[phase] = []
             
+            successful_calcs = 0
+            failed_calcs = 0
+            
             for T in temps:
                 try:
                     # Calculate equilibrium at this temperature
                     eq = self._calculate_equilibrium_at_T(db, elements, phases, T, xB, comp_var)
                     
-                    # Extract phase fractions
+                    # Extract phase fractions properly (handling multiple vertices in two-phase regions)
+                    # Use looser tolerance (1e-4) for better boundary handling
+                    temp_fractions = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
+                    
+                    # Append fractions for all phases (0.0 if not present)
                     for phase in phases:
-                        if phase in eq.Phase.values:
-                            phase_frac = eq.where(eq.Phase == phase)['NP'].values
-                            if len(phase_frac) > 0 and not np.isnan(phase_frac[0]):
-                                phase_data[phase].append(float(phase_frac[0]))
-                            else:
-                                phase_data[phase].append(0.0)
-                        else:
-                            phase_data[phase].append(0.0)
+                        phase_data[phase].append(temp_fractions.get(phase, 0.0))
+                    
+                    successful_calcs += 1
                             
                 except Exception as e:
                     # If calculation fails at this temperature, set all phases to 0
+                    if failed_calcs == 0:  # Log first failure
+                        _log.warning(f"Equilibrium calculation failed at T={T:.1f}K: {e}")
+                    failed_calcs += 1
                     for phase in phases:
                         phase_data[phase].append(0.0)
+            
+            _log.info(f"Equilibrium calculations: {successful_calcs} successful, {failed_calcs} failed")
+            
+            # Debug phase data
+            _log.debug(f"Phase data collected for {len(phase_data)} phases")
+            for phase, fracs in phase_data.items():
+                max_frac = max(fracs) if fracs else 0
+                if max_frac > 0.01:
+                    _log.debug(f"  {phase}: max fraction = {max_frac:.3f}")
             
             # Create plot
             if interactive == "html":
                 # Create interactive Plotly plot
+                _log.info(f"Creating interactive plot with temps shape: {np.array(temps).shape}, range: {temps[0]:.1f}-{temps[-1]:.1f} K")
                 fig = self._create_interactive_plot(temps, phase_data, A, B, xB, comp_type, temp_range)
                 
                 # Save as HTML
                 html_content = fig.to_html(include_plotlyjs='cdn')
                 
-                # Store HTML content
-                setattr(self, '_last_image_data', html_content)
+                # Save HTML to file and get URL
+                _log.info("Saving interactive HTML plot to file...")
+                html_url = self._save_html_to_file(html_content, f"composition_stability_{A}{100-xB*100:.0f}{B}{xB*100:.0f}")
+                _log.info(f"HTML plot saved, URL: {html_url}")
+                
+                # Also export static PNG for display in OpenWebUI
+                _log.info("Exporting static PNG from Plotly figure...")
+                try:
+                    # Convert Plotly figure to static image
+                    png_bytes = fig.to_image(format="png", width=1200, height=700, scale=2)
+                    
+                    # Save PNG to file
+                    from pathlib import Path
+                    import time
+                    plots_dir = Path(__file__).parent.parent.parent.parent.parent / "interactive_plots"
+                    timestamp = int(time.time() * 1000)
+                    safe_filename = f"composition_stability_{A}{100-xB*100:.0f}{B}{xB*100:.0f}".replace(" ", "_").replace("/", "_")
+                    png_path = plots_dir / f"{safe_filename}_{timestamp}.png"
+                    
+                    with open(png_path, 'wb') as f:
+                        f.write(png_bytes)
+                    
+                    png_url = f"http://localhost:8000/static/plots/{png_path.name}"
+                    _log.info(f"Static PNG saved, URL: {png_url}")
+                    
+                except Exception as e:
+                    _log.warning(f"Could not export static PNG: {e}. Using matplotlib fallback.")
+                    # Fallback: create matplotlib version with stacked area
+                    fig_mpl, ax = plt.subplots(figsize=(figure_width or 10, figure_height or 6))
+                    
+                    # Prepare data for stackplot
+                    phase_names = []
+                    phase_arrays = []
+                    colors = plt.cm.tab10(np.linspace(0, 1, len(phases)))
+                    
+                    for i, (phase, fractions) in enumerate(phase_data.items()):
+                        if max(fractions) > 0.01:
+                            # Map phase name to readable form (e.g., CSI -> SiC)
+                            readable_phase = map_phase_name(phase)
+                            phase_names.append(readable_phase)
+                            phase_arrays.append(fractions)
+                    
+                    if phase_arrays:
+                        # Create stacked area plot
+                        ax.stackplot(temps, *phase_arrays, labels=phase_names, 
+                                   colors=colors[:len(phase_arrays)], alpha=0.8, 
+                                   edgecolor='white', linewidth=0.5)
+                    
+                    ax.set_xlabel("Temperature (K)", fontsize=12)
+                    ax.set_ylabel("Phase Fraction", fontsize=12)
+                    ax.set_title(f"Phase Stability: {A}{100-xB*100:.0f}{B}{xB*100:.0f}", fontsize=14, fontweight='bold')
+                    ax.grid(True, alpha=0.3, zorder=0)
+                    ax.set_ylim(0, 1)
+                    ax.set_xlim(temps[0], temps[-1])
+                    
+                    # Add legend
+                    if phase_names:
+                        legend = ax.legend(title="Phases", loc="best", frameon=True, 
+                                         fancybox=True, shadow=True, framealpha=0.9)
+                    else:
+                        legend = None
+                    
+                    png_url = self._save_plot_to_file(fig_mpl, f"composition_stability_{A}{100-xB*100:.0f}{B}{xB*100:.0f}", 
+                                                     extra_artists=[legend] if legend else None)
+                    plt.close(fig_mpl)
+                
+                # Store URLs - PNG for display, HTML for interactive link
+                setattr(self, '_last_image_url', png_url)
+                setattr(self, '_last_html_url', html_url)
                 
                 # Generate analysis
                 analysis = self._analyze_composition_temperature(phase_data, xB, temp_range, A, B)
@@ -351,35 +464,60 @@ class AIFunctionsMixin:
                     "temperature_range_K": temp_range,
                     "composition_type": comp_type,
                     "analysis": analysis,
-                    "interactive": True
+                    "interactive": True,
+                    "image_info": {
+                        "format": "png",  # Main display format
+                        "url": png_url,
+                        "interactive_html_url": html_url  # Link to interactive version
+                    }
                 }
                 setattr(self, '_last_image_metadata', metadata)
                 
-                return f"Generated interactive phase stability plot for {A}{100-xB*100:.0f}{B}{xB*100:.0f} composition showing phase fractions vs temperature."
+                # Include link to interactive version in the response
+                return (f"Generated phase stability plot for {A}{100-xB*100:.0f}{B}{xB*100:.0f} composition showing phase fractions vs temperature.\n\n"
+                       f"📊 [View Interactive Plot]({html_url}) - Click to explore the interactive Plotly version with hover details and zoom.")
             
             else:
-                # Create static matplotlib plot
+                # Create static matplotlib plot with stacked area
                 fig, ax = plt.subplots(figsize=(figure_width or 8, figure_height or 6))
                 
-                # Plot phase fractions
-                colors = plt.cm.Set3(np.linspace(0, 1, len(phases)))
+                # Prepare data for stackplot
+                phase_names = []
+                phase_arrays = []
+                colors = plt.cm.tab10(np.linspace(0, 1, len(phases)))
+                
                 for i, (phase, fractions) in enumerate(phase_data.items()):
                     if max(fractions) > 0.01:  # Only plot phases with significant fractions
-                        ax.plot(temps, fractions, label=phase, linewidth=2, color=colors[i])
+                        # Map phase name to readable form (e.g., CSI -> SiC)
+                        readable_phase = map_phase_name(phase)
+                        phase_names.append(readable_phase)
+                        phase_arrays.append(fractions)
                 
-                ax.set_xlabel("Temperature (K)")
-                ax.set_ylabel("Phase Fraction")
-                ax.set_title(f"Phase Stability: {A}{100-xB*100:.0f}{B}{xB*100:.0f}")
-                ax.grid(True, alpha=0.3)
+                if phase_arrays:
+                    # Create stacked area plot
+                    ax.stackplot(temps, *phase_arrays, labels=phase_names, 
+                               colors=colors[:len(phase_arrays)], alpha=0.8,
+                               edgecolor='white', linewidth=0.5)
+                
+                ax.set_xlabel("Temperature (K)", fontsize=12)
+                ax.set_ylabel("Phase Fraction", fontsize=12)
+                ax.set_title(f"Phase Stability: {A}{100-xB*100:.0f}{B}{xB*100:.0f}", fontsize=14, fontweight='bold')
+                ax.grid(True, alpha=0.3, zorder=0)
                 ax.set_ylim(0, 1)
+                ax.set_xlim(temps[0], temps[-1])
                 
                 # Create legend for phase fractions
-                legend = ax.legend(title="Phases", loc="upper right", frameon=True)
+                if phase_names:
+                    legend = ax.legend(title="Phases", loc="best", frameon=True,
+                                     fancybox=True, shadow=True, framealpha=0.9)
+                else:
+                    legend = None
                 
                 # Save plot to file and get URL
-                print("Saving plot to file...", flush=True)
-                plot_url = self._save_plot_to_file(fig, f"composition_stability_{A}{100-xB*100:.0f}{B}{xB*100:.0f}", extra_artists=[legend])
-                print(f"Plot saved, URL: {plot_url}", flush=True)
+                _log.info("Saving plot to file...")
+                plot_url = self._save_plot_to_file(fig, f"composition_stability_{A}{100-xB*100:.0f}{B}{xB*100:.0f}", 
+                                                   extra_artists=[legend] if legend else None)
+                _log.info(f"Plot saved, URL: {plot_url}")
                 plt.close(fig)
                 
                 # Store image data
@@ -400,7 +538,7 @@ class AIFunctionsMixin:
                         "composition_type": comp_type,
                         "composition_suffix": "at%" if comp_type == "atomic" else "wt%"
                     },
-                    "description": f"Phase stability diagram for {A}{int((1-xB)*100)}{B}{int(xB*100)} composition",
+                    "description": f"Phase stability diagram for {A}{round((1-xB)*100)}{B}{round(xB*100)} composition",
                     "phases": phases,
                     "image_info": {
                         "format": "png",
@@ -409,11 +547,11 @@ class AIFunctionsMixin:
                 }
                 setattr(self, '_last_image_metadata', metadata)
                 
-                return f"Generated phase stability plot for {A}{100-xB*100:.0f}{B}{xB*100:.0f} composition showing phase fractions vs temperature."
+                return {"success": True, "message": f"Generated phase stability plot for {A}{100-xB*100:.0f}{B}{xB*100:.0f} composition showing phase fractions vs temperature.", "citations": ["pycalphad"]}
                 
         except Exception as e:
             _log.exception(f"Error generating composition-temperature plot for {composition}")
-            return f"Failed to generate composition-temperature plot: {str(e)}"
+            return {"success": False, "error": f"Failed to generate composition-temperature plot: {str(e)}", "citations": ["pycalphad"]}
 
     @ai_function(desc="Analyze and interpret the most recently generated phase diagram or composition plot. Provides detailed analysis of visual features, phase boundaries, and thermodynamic insights based on the actual generated plot.")
     async def analyze_last_generated_plot(self) -> str:
@@ -427,7 +565,7 @@ class AIFunctionsMixin:
         # Check if we have metadata from a recently generated plot
         metadata = getattr(self, '_last_image_metadata', None)
         if not metadata:
-            return "No recently generated phase diagram or composition plot available to analyze. Please generate a plot first using plot_binary_phase_diagram() or plot_composition_temperature()."
+            return {"success": False, "error": "No recently generated phase diagram or composition plot available to analyze. Please generate a plot first using plot_binary_phase_diagram() or plot_composition_temperature().", "citations": ["pycalphad"]}
         
         # Extract analysis components
         visual_analysis = metadata.get("visual_analysis", "")
@@ -437,50 +575,34 @@ class AIFunctionsMixin:
         # Check if image data is available (may be cleared after display to save memory)
         image_data = getattr(self, '_last_image_data', None)
         if not image_data:
-            return f"Plot analysis (image data cleared to save memory):\n\n{combined_analysis}"
+            return {"success": True, "message": f"Plot analysis (image data cleared to save memory):\n\n{combined_analysis}", "citations": ["pycalphad"]}
         
         # Return the combined analysis
-        return combined_analysis
+        return {"success": True, "message": combined_analysis, "citations": ["pycalphad"]}
 
-    @ai_function(desc="List available element pairs (binaries) supported by the loaded thermodynamic database.")
-    async def list_available_systems(self) -> Dict[str, Any]:
-        db_path = self._get_database_path("")
-        out = {"pycalphad_available": True, "tdb_directory": str(self.tdb_dir), "systems": []}
-        if not db_path:
-            return out
-        db = Database(str(db_path))
-        elems = sorted(_db_elements(db))
-        # Prefer Al-X pairs first (DB optimized there), then all pairs (X-Y where both in DB)
-        al_pairs = [("AL", e) for e in elems if e != "AL"]
-        other_pairs = []
-        for i in range(len(elems)):
-            for j in range(i+1, len(elems)):
-                a, b = elems[i], elems[j]
-                if a == "AL" or b == "AL": continue
-                other_pairs.append((a, b))
-        out["systems"] = [{"system": f"{a}-{b}"} for a,b in (al_pairs + other_pairs)]
-        out["total_systems"] = len(out["systems"])
-        out["database_file"] = db_path.name
-        return out
-    
     @ai_function(desc="Calculate equilibrium phase fractions at a specific temperature and composition. Use to verify phase amounts at a single condition. Returns detailed phase information including fractions and compositions.")
     async def calculate_equilibrium_at_point(
         self,
-        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Al30Si55C15', 'Al80Zn20', 'Fe70Cr20Ni10'). Atomic percent by default.")],
+        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Al30Si55C15', 'Al80Zn20', 'Fe70Cr20Ni10'). Numbers are percentages.")],
         temperature: Annotated[float, AIParam(desc="Temperature in Kelvin")],
         composition_type: Annotated[Optional[str], AIParam(desc="'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = "atomic"
     ) -> str:
         """
         Calculate thermodynamic equilibrium at a specific point (temperature + composition).
         
-        Returns phase fractions, compositions, and stability information.
-        Useful for verifying specific phase equilibrium conditions.
+        Args:
+            composition: Element-number pairs (e.g., 'Al30Si55C15'). Numbers are percentages.
+            composition_type: 'atomic' (default) or 'weight'. Weight% is converted to mole fractions internally.
+        
+        Returns:
+            Formatted text with phase fractions and per-phase compositions.
         """
         try:
             from pycalphad import Database, equilibrium
             
             # Parse composition string (e.g., "Al30Si55C15" -> {AL: 0.30, SI: 0.55, C: 0.15})
-            comp_dict = self._parse_multicomponent_composition(composition)
+            # Note: Always returns atomic (mole) fractions, converting from weight if needed
+            comp_dict = self._parse_multicomponent_composition(composition, composition_type)
             if not comp_dict:
                 return f"Failed to parse composition: {composition}. Use format like 'Al30Si55C15' or 'Fe70Cr20Ni10'"
             
@@ -494,8 +616,13 @@ class AIFunctionsMixin:
             
             db = Database(str(db_path))
             
-            # Get phases
-            phases = self._filter_phases_for_multicomponent(db, elements)
+            # Get phases - use correct filter for binary vs multicomponent
+            if len(elements) == 2:
+                # Binary system - use binary-specific filter with activation pass
+                phases = self._filter_phases_for_system(db, tuple(elements))
+            else:
+                # Multicomponent system (3+ elements)
+                phases = self._filter_phases_for_multicomponent(db, elements)
             
             # Build conditions
             elements_with_va = elements + ['VA']
@@ -508,34 +635,41 @@ class AIFunctionsMixin:
             # Calculate equilibrium
             eq = equilibrium(db, elements_with_va, phases, conditions)
             
+            # Extract phase fractions properly (handling multiple vertices in two-phase regions)
+            # Use looser tolerance (1e-4) for better boundary handling
+            phase_fractions_dict = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
+            
             # Extract phase fractions and compositions
             phase_info = []
             total_fraction = 0.0
             
-            stable_phases = eq.Phase.values.ravel()
-            phase_fractions = eq.NP.values.ravel()
-            
-            for i, phase in enumerate(stable_phases):
-                if phase == '' or np.isnan(phase_fractions[i]):
-                    continue
+            for phase, frac in phase_fractions_dict.items():
+                total_fraction += frac
                 
-                frac = float(phase_fractions[i])
-                if frac > 1e-6:  # Only report significant phases
-                    total_fraction += frac
+                # Get composition of this phase
+                phase_comp = {}
+                try:
+                    # Squeeze and select data for this phase
+                    eqp = eq.squeeze()
+                    phase_mask = eqp['Phase'] == phase
                     
-                    # Get composition of this phase
-                    phase_comp = {}
                     for elem in elements:
-                        # Extract phase composition for this element
-                        x_val = eq.X.sel(component=elem).values.ravel()[i]
+                        # Extract phase composition for this element (average over vertices)
+                        x_data = eqp['X'].sel(component=elem).where(phase_mask, drop=False)
+                        x_val = float(x_data.mean().values)
                         if not np.isnan(x_val):
-                            phase_comp[elem] = float(x_val)
-                    
-                    phase_info.append({
-                        'phase': phase,
-                        'fraction': frac,
-                        'composition': phase_comp
-                    })
+                            phase_comp[elem] = x_val
+                except Exception as e:
+                    _log.warning(f"Could not extract composition for phase {phase}: {e}")
+                
+                # Map phase name to readable form (e.g., CSI -> SiC)
+                readable_name = map_phase_name(phase)
+                
+                phase_info.append({
+                    'phase': readable_name,
+                    'fraction': frac,
+                    'composition': phase_comp
+                })
             
             # Sort by fraction (descending)
             phase_info.sort(key=lambda x: x['fraction'], reverse=True)
@@ -562,11 +696,11 @@ class AIFunctionsMixin:
             
             response_lines.append(f"\n**Total phase fraction**: {total_fraction*100:.2f}%")
             
-            return "\n".join(response_lines)
+            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
             
         except Exception as e:
             _log.exception(f"Error calculating equilibrium at {temperature}K for {composition}")
-            return f"Failed to calculate equilibrium: {str(e)}"
+            return {"success": False, "error": f"Failed to calculate equilibrium: {str(e)}", "citations": ["pycalphad"]}
     
     @ai_function(desc="Calculate how phase fractions change with temperature for a specific composition. Essential for understanding precipitation, dissolution, and phase transformations. Returns phase fraction data across temperature range.")
     async def calculate_phase_fractions_vs_temperature(
@@ -591,8 +725,8 @@ class AIFunctionsMixin:
         try:
             from pycalphad import Database, equilibrium
             
-            # Parse composition
-            comp_dict = self._parse_multicomponent_composition(composition)
+            # Parse composition (always returns atomic/mole fractions, converting from weight if needed)
+            comp_dict = self._parse_multicomponent_composition(composition, composition_type)
             if not comp_dict:
                 return f"Failed to parse composition: {composition}"
             
@@ -605,7 +739,14 @@ class AIFunctionsMixin:
                 return f"No thermodynamic database found for {system_str} system."
             
             db = Database(str(db_path))
-            phases = self._filter_phases_for_multicomponent(db, elements)
+            
+            # Get phases - use correct filter for binary vs multicomponent
+            if len(elements) == 2:
+                # Binary system - use binary-specific filter with activation pass
+                phases = self._filter_phases_for_system(db, tuple(elements))
+            else:
+                # Multicomponent system (3+ elements)
+                phases = self._filter_phases_for_multicomponent(db, elements)
             
             # Temperature array
             step = temperature_step or 10.0
@@ -627,17 +768,12 @@ class AIFunctionsMixin:
                 try:
                     eq = equilibrium(db, elements_with_va, phases, conditions)
                     
-                    # Extract phases at this temperature
-                    stable_phases = eq.Phase.values.ravel()
-                    phase_fracs = eq.NP.values.ravel()
+                    # Extract phases at this temperature (properly handling multiple vertices)
+                    # Use looser tolerance (1e-4) for better boundary handling
+                    temp_phases = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
                     
-                    temp_phases = {}
-                    for i, phase in enumerate(stable_phases):
-                        if phase and not np.isnan(phase_fracs[i]):
-                            frac = float(phase_fracs[i])
-                            if frac > 1e-8:
-                                temp_phases[phase] = frac
-                                all_phases_seen.add(phase)
+                    for phase in temp_phases.keys():
+                        all_phases_seen.add(phase)
                     
                     # Store fractions for all seen phases
                     for phase in all_phases_seen:
@@ -700,11 +836,11 @@ class AIFunctionsMixin:
                 'composition_str': comp_str
             })
             
-            return "\n".join(response_lines)
+            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
             
         except Exception as e:
             _log.exception(f"Error calculating phase fractions vs temperature")
-            return f"Failed to calculate phase fractions vs temperature: {str(e)}"
+            return {"success": False, "error": f"Failed to calculate phase fractions vs temperature: {str(e)}", "citations": ["pycalphad"]}
     
     @ai_function(desc="Analyze whether a specific phase increases or decreases with temperature. Use to verify statements about precipitation or dissolution behavior.")
     async def analyze_phase_fraction_trend(
@@ -728,8 +864,9 @@ class AIFunctionsMixin:
         try:
             from pycalphad import Database, equilibrium
             
-            # Parse composition
-            comp_dict = self._parse_multicomponent_composition(composition)
+            # Parse composition (note: expected_trend doesn't have composition_type, default to atomic)
+            # Always returns atomic/mole fractions
+            comp_dict = self._parse_multicomponent_composition(composition, composition_type="atomic")
             if not comp_dict:
                 return f"Failed to parse composition: {composition}"
             
@@ -742,7 +879,14 @@ class AIFunctionsMixin:
                 return f"No thermodynamic database found for {system_str} system."
             
             db = Database(str(db_path))
-            phases = self._filter_phases_for_multicomponent(db, elements)
+            
+            # Get phases - use correct filter for binary vs multicomponent
+            if len(elements) == 2:
+                # Binary system - use binary-specific filter with activation pass
+                phases = self._filter_phases_for_system(db, tuple(elements))
+            else:
+                # Multicomponent system (3+ elements)
+                phases = self._filter_phases_for_multicomponent(db, elements)
             
             # Normalize phase name
             phase_name_upper = phase_name.upper()
@@ -768,14 +912,12 @@ class AIFunctionsMixin:
                 try:
                     eq = equilibrium(db, elements_with_va, phases, conditions)
                     
-                    # Find our phase
-                    stable_phases = eq.Phase.values.ravel()
-                    phase_fracs = eq.NP.values.ravel()
+                    # Extract phase fractions properly (handling multiple vertices)
+                    # Use looser tolerance (1e-4) for better boundary handling
+                    temp_phases = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
                     
-                    phase_frac = 0.0
-                    for i, phase in enumerate(stable_phases):
-                        if phase == phase_to_track and not np.isnan(phase_fracs[i]):
-                            phase_frac = max(phase_frac, float(phase_fracs[i]))
+                    # Find our phase
+                    phase_frac = temp_phases.get(phase_to_track, 0.0)
                     
                     fractions.append(phase_frac)
                     
@@ -853,8 +995,8 @@ class AIFunctionsMixin:
                 else:
                     response_lines.append(f"\n❌ **Verification**: The expected trend ('{expected_trend}') **does NOT match** the calculated behavior.")
             
-            return "\n".join(response_lines)
+            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
             
         except Exception as e:
             _log.exception(f"Error analyzing phase fraction trend")
-            return f"Failed to analyze phase fraction trend: {str(e)}"
+            return {"success": False, "error": f"Failed to analyze phase fraction trend: {str(e)}", "citations": ["pycalphad"]}

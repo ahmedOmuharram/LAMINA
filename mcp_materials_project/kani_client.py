@@ -10,7 +10,7 @@ from kani import Kani, ChatMessage as KChatMessage  # alias to avoid clashing wi
 
 from kani.engines.openai.engine import OpenAIEngine  # we subclass this
 
-from .handlers import MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler
+from .handlers import MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler, BatteryHandler
 from .handlers.calphad import CalPhadHandler
 from .prompts import KANI_SYSTEM_PROMPT
 
@@ -46,7 +46,7 @@ def _build_engine(model: str = "gpt-4.1") -> OpenAIEngine:
 # --------------------------------------------------------------------------------------
 # Kani wrapper
 # --------------------------------------------------------------------------------------
-class MPKani(MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler, CalPhadHandler, Kani):
+class MPKani(MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandler, Kani):
     def __init__(
         self,
         client: Optional[object] = None,
@@ -75,6 +75,7 @@ class MPKani(MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler
         MaterialDetailsHandler.__init__(self, mpr)
         MaterialSearchHandler.__init__(self, mpr)
         SearXNGSearchHandler.__init__(self)
+        BatteryHandler.__init__(self, mpr)
         CalPhadHandler.__init__(self)
         
         self.recent_tool_outputs: list[dict[str, Any]] = []

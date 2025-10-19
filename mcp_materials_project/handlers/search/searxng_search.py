@@ -8,17 +8,17 @@ allowing for scientific literature search and web search functionality.
 import json
 import logging
 import requests
-from typing import Any, Dict, List, Mapping, Optional, Annotated
+from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 import time
 
-from kani import ai_function, AIParam
-from .base import BaseHandler
+from ..base import BaseHandler
+from .ai_functions import SearchAIFunctionsMixin
 
 _log = logging.getLogger(__name__)
 
 
-class SearXNGSearchHandler(BaseHandler):
+class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
     """Handler for SearXNG search functionality."""
     
     def __init__(self, searxng_url: str = "http://localhost:8080"):
@@ -380,45 +380,6 @@ class SearXNGSearchHandler(BaseHandler):
         
         return search_results
 
-    @ai_function(desc="Search the web and scientific literature using SearXNG. Use this to find information on any topic - recent papers, articles, web resources, news, technical documentation, or general information. This is your primary tool for gathering current information and verifying facts.", auto_truncate=128000)
-    async def search_web(
-        self,
-        query: Annotated[str, AIParam(desc="Search query string - can be about any topic")],
-        search_type: Annotated[str, AIParam(desc="Type of search: 'general' for web search, 'scientific' for academic literature, 'materials_science' for materials-specific search")] = "general",
-        include_arxiv: Annotated[bool, AIParam(desc="Include arXiv preprints (for scientific search)")] = True,
-        include_pubmed: Annotated[bool, AIParam(desc="Include PubMed medical literature (for scientific search)")] = True,
-        include_scholar: Annotated[bool, AIParam(desc="Include Google Scholar (for scientific search)")] = True,
-        include_phase_diagrams: Annotated[bool, AIParam(desc="Include phase diagram related results (for materials science)")] = True,
-        include_thermodynamics: Annotated[bool, AIParam(desc="Include thermodynamic property results (for materials science)")] = True,
-        language: Annotated[str, AIParam(desc="Search language (auto, en, de, etc.)")] = "auto",
-        time_range: Annotated[str, AIParam(desc="Time range for results (empty, day, week, month, year)")] = "",
-        extract_content: Annotated[bool, AIParam(desc="Extract content from high-scoring URLs (score >= 5)")] = True,
-        min_score: Annotated[float, AIParam(desc="Minimum score threshold for content extraction")] = 5.0
-    ) -> Dict[str, Any]:
-        """Search the web and scientific literature using SearXNG for any topic."""
-        params = {
-            'query': query,
-            'search_type': search_type,
-            'include_arxiv': include_arxiv,
-            'include_pubmed': include_pubmed,
-            'include_scholar': include_scholar,
-            'include_phase_diagrams': include_phase_diagrams,
-            'include_thermodynamics': include_thermodynamics,
-            'language': language,
-            'time_range': time_range,
-            'extract_content': extract_content,
-            'min_score': min_score
-        }
-        
-        result = self.handle_searxng_search(params)
-        # Store the result for tooltip display
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "search_web",
-                "result": result
-            })
-        return result
-
     def extract_url_content(
         self,
         urls: List[str],
@@ -452,18 +413,6 @@ class SearXNGSearchHandler(BaseHandler):
             }
         }
         
-        return result
-
-    @ai_function(desc="Get information about available search engines and their status in SearXNG.", auto_truncate=128000)
-    async def get_search_engines(self) -> Dict[str, Any]:
-        """Get information about available search engines and their status."""
-        result = self.handle_searxng_engine_stats({})
-        # Store the result for tooltip display
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "get_search_engines",
-                "result": result
-            })
         return result
 
     def handle_searxng_search(self, params: Mapping[str, Any]) -> Dict[str, Any]:

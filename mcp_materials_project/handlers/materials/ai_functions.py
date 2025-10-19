@@ -1,19 +1,27 @@
 """
-Handler for material search endpoints (get_material, get_material_by_char).
+AI Functions for Materials Search and Details
+
+This module contains all AI-accessible functions for searching and retrieving
+material information from the Materials Project database.
 """
 
 import json
 import logging
-from typing import Any, Dict, Mapping, List, Annotated
+from typing import Any, Dict, List, Annotated, Optional
 
 from kani import ai_function, AIParam
-from .base import BaseHandler
+from .utils import (
+    get_elastic_properties,
+    find_alloy_compositions,
+    compare_material_properties,
+    analyze_doping_effect
+)
 
 _log = logging.getLogger(__name__)
 
 
-class MaterialSearchHandler(BaseHandler):
-    """Handler for material search endpoints."""
+class MaterialsAIFunctionsMixin:
+    """Mixin class containing AI function methods for Materials handlers."""
     
     @ai_function(desc="Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly (e.g., Li-Fe-O, Fe2O3, Li).", auto_truncate=128000)
     async def get_material(
@@ -36,6 +44,7 @@ class MaterialSearchHandler(BaseHandler):
         params["per_page"] = per_page
         
         result = self.handle_material_search(params)
+        result["citations"] = ["Materials Project"]
         # Store the result for tooltip display
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -203,6 +212,7 @@ class MaterialSearchHandler(BaseHandler):
         params["per_page"] = per_page
         
         result = self.handle_material_by_char(params)
+        result["citations"] = ["Materials Project"]
         # Store the result for tooltip display
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -211,141 +221,119 @@ class MaterialSearchHandler(BaseHandler):
             })
         return result
 
-    def handle_material_search(self, params: Mapping[str, Any]) -> Dict[str, Any]:
-        """Handle materials/summary/get_material endpoint."""
-        _log.info(f"GET materials/summary/get_material with params: {params}")
-        
-        kwargs = self._build_summary_search_kwargs(params)
-        if "__errors__" in kwargs:
-            return {
-                "total_count": None,
-                "error": {
-                    "type": "invalid_parameter",
-                    "message": "One or more range parameters are invalid.",
-                    "details": kwargs["__errors__"],
-                }
-            }
-
-        # Pagination: default page=1, per_page<=10
-        page, per_page = self._get_pagination(params)
-
-        # Always compute total count, regardless of chunking/limit
-        total = self._total_count_for_summary(kwargs)
-
-        # Do NOT pass any 'limit' param to upstream search; it is internal-only
-
-        docs = self.mpr.materials.summary.search(**kwargs)
-        data_all = self._convert_docs_to_dicts(docs)
-        data = self._slice_for_page(data_all, page, per_page)
-
-        # Envelope with pagination metadata
-        total_pages = None
-        try:
-            if total is not None and per_page:
-                total_pages = (int(total) + per_page - 1) // per_page
-        except Exception:
-            total_pages = None
-
-        return {
-            "total_count": total,
+    @ai_function(desc="Fetch one or more materials by their material IDs and return detailed information about them.", auto_truncate=128000)
+    async def get_material_details_by_ids(
+        self,
+        material_ids: Annotated[List[str], AIParam(desc="List of material IDs, e.g., ['mp-149', 'mp-150', 'mp-151'].")],
+        fields: Annotated[List[str], AIParam(desc="List of fields to include. Values include 'builder_meta', 'nsites', 'elements', 'nelements', 'composition', 'composition_reduced', 'formula_pretty', 'formula_anonymous', 'chemsys', 'volume', 'density', 'density_atomic', 'symmetry', 'property_name', 'material_id', 'deprecated', 'deprecation_reasons', 'last_updated', 'origins', 'warnings', 'structure', 'task_ids', 'uncorrected_energy_per_atom', 'energy_per_atom', 'formation_energy_per_atom', 'energy_above_hull', 'is_stable', 'equilibrium_reaction_energy_per_atom', 'decomposes_to', 'xas', 'grain_boundaries', 'band_gap', 'cbm', 'vbm', 'efermi', 'is_gap_direct', 'is_metal', 'es_source_calc_id', 'bandstructure', 'dos', 'dos_energy_up', 'dos_energy_down', 'is_magnetic', 'ordering', 'total_magnetization', 'total_magnetization_normalized_vol', 'total_magnetization_normalized_formula_units', 'num_magnetic_sites', 'num_unique_magnetic_sites', 'types_of_magnetic_species', 'bulk_modulus', 'shear_modulus', 'universal_anisotropy', 'homogeneous_poisson', 'e_total', 'e_ionic', 'e_electronic', 'n', 'e_ij_max', 'weighted_surface_energy_EV_PER_ANG2', 'weighted_surface_energy', 'weighted_work_function', 'surface_anisotropy', 'shape_factor', 'has_reconstructed', 'possible_species', 'has_props', 'theoretical', 'database_Ids'")] = None,
+        all_fields: Annotated[bool, AIParam(desc="Whether to return all document fields. Useful if the user wants to know about the material without explicitly asking for certain fields (default True).")] = True,
+        page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
+        per_page: Annotated[int, AIParam(desc="Items per page (max 10; default 10).")] = 10
+    ) -> Dict[str, Any]:
+        """Fetch one or more materials by their material IDs and return detailed information about them."""
+        params = {
+            "material_ids": material_ids,
+            "all_fields": all_fields,
             "page": page,
-            "per_page": per_page,
-            "total_pages": total_pages,
-            "data": data,
+            "per_page": per_page
         }
-
-    def handle_material_by_char(self, params: Mapping[str, Any]) -> Dict[str, Any]:
-        """Handle materials/summary/get_material_by_char endpoint."""
-        _log.info(f"GET materials/summary/get_material_by_char with params: {params}")
+        if fields is not None:
+            params["fields"] = fields
         
-        kwargs = self._build_summary_search_kwargs(params)
-        if "__errors__" in kwargs:
-            return {
-                "total_count": None,
-                "error": {
-                    "type": "invalid_parameter",
-                    "message": "One or more range parameters are invalid.",
-                    "details": kwargs["__errors__"],
-                }
-            }
+        result = self.handle_material_details(params)
+        result["citations"] = ["Materials Project"]
+        # Store the result for tooltip display
+        if hasattr(self, 'recent_tool_outputs'):
+            self.recent_tool_outputs.append({
+                "tool_name": "get_material_details_by_ids",
+                "result": result
+            })
+        return result
 
-        # Accept either identity selectors OR any numeric/range filters
-        selector_keys = {
-            "material_ids", "formula", "chemsys", "elements", "exclude_elements",
-            "spacegroup_number", "spacegroup_symbol", "crystal_system", "magnetic_ordering"
-        }
-        range_selector_keys = set(self.RANGE_KEYS)
+    @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, etc.) for a material.", auto_truncate=128000)
+    async def get_elastic_properties(
+        self,
+        material_id: Annotated[str, AIParam(desc="Material ID (e.g., 'mp-81' for Ag, 'mp-30' for Cu).")]
+    ) -> Dict[str, Any]:
+        """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, etc."""
+        result = get_elastic_properties(self.mpr, material_id)
+        result["citations"] = ["Materials Project", "pymatgen"]
+        if hasattr(self, 'recent_tool_outputs'):
+            self.recent_tool_outputs.append({
+                "tool_name": "get_elastic_properties",
+                "result": result
+            })
+        return result
 
-        has_selector = any(k in kwargs for k in selector_keys | range_selector_keys)
+    @ai_function(desc="Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% Cu).", auto_truncate=128000)
+    async def find_alloy_compositions(
+        self,
+        elements: Annotated[List[str], AIParam(desc="List of elements in the alloy, e.g., ['Ag', 'Cu'].")],
+        target_composition: Annotated[Optional[Dict[str, float]], AIParam(desc="Target atomic fractions as a dictionary, e.g., {'Ag': 0.875, 'Cu': 0.125} for 12.5% Cu. If None, returns all compositions.")] = None,
+        tolerance: Annotated[float, AIParam(desc="Tolerance for composition matching (default 0.05).")] = 0.05,
+        is_stable: Annotated[bool, AIParam(desc="Whether to filter for stable materials only (default True).")] = True,
+        ehull_max: Annotated[float, AIParam(desc="Maximum energy above hull for metastable entries in eV/atom (default 0.20).")] = 0.20,
+        require_binaries: Annotated[bool, AIParam(desc="Whether to require exactly 2 elements (default True).")] = True
+    ) -> Dict[str, Any]:
+        """Find materials with specific alloy compositions."""
+        result = find_alloy_compositions(
+            self.mpr,
+            elements,
+            target_composition,
+            tolerance,
+            is_stable,
+            ehull_max,
+            require_binaries
+        )
+        result["citations"] = ["Materials Project", "pymatgen"]
+        if hasattr(self, 'recent_tool_outputs'):
+            self.recent_tool_outputs.append({
+                "tool_name": "find_alloy_compositions",
+                "result": result
+            })
+        return result
 
-        if not has_selector:
-            return {
-                "total_count": None,
-                "error": {
-                    "type": "missing_parameter",
-                    "message": "Provide at least one selector (e.g., formula/chemsys/elements/material_ids) "
-                               "or a numeric/range filter (e.g., band_gap)."
-                }
-            }
+    @ai_function(desc="Compare a specific property (e.g., bulk modulus) between two materials.", auto_truncate=128000)
+    async def compare_material_properties(
+        self,
+        material_id1: Annotated[str, AIParam(desc="First material ID.")],
+        material_id2: Annotated[str, AIParam(desc="Second material ID.")],
+        property_name: Annotated[str, AIParam(desc="Property to compare: 'bulk_modulus', 'shear_modulus', 'poisson_ratio', etc. (default 'bulk_modulus').")] = "bulk_modulus"
+    ) -> Dict[str, Any]:
+        """Compare a specific property between two materials and calculate percent change."""
+        # Get properties for both materials
+        props1 = get_elastic_properties(self.mpr, material_id1)
+        props2 = get_elastic_properties(self.mpr, material_id2)
+        
+        result = compare_material_properties(props1, props2, property_name)
+        result["citations"] = ["Materials Project", "pymatgen"]
+        if hasattr(self, 'recent_tool_outputs'):
+            self.recent_tool_outputs.append({
+                "tool_name": "compare_material_properties",
+                "result": result
+            })
+        return result
 
-        # Always include material_id in fields without clobbering others.
-        existing_fields = kwargs.get("fields")
-        if existing_fields is None:
-            # Default to common fields that are usually needed
-            kwargs["fields"] = ["material_id", "formula_pretty", "elements", "chemsys"]
-        elif isinstance(existing_fields, list):
-            if "material_id" not in existing_fields:
-                kwargs["fields"] = existing_fields + ["material_id"]
-        else:
-            if existing_fields != "material_id":
-                kwargs["fields"] = [existing_fields, "material_id"]
-
-        _log.info(f"get_material_by_char -> summary.search kwargs: {kwargs}")
-
-        # Pagination: default page=1, per_page<=10
-        page, per_page = self._get_pagination(params)
-
-        # Always compute total count for the same filter criteria
-        total = self._total_count_for_summary(kwargs)
-
-        # Do NOT pass any 'limit' param to upstream search; it is internal-only
-
-        docs = self.mpr.materials.summary.search(**kwargs)
-        data_all = self._convert_docs_to_dicts(docs)
-        data = self._slice_for_page(data_all, page, per_page)
-
-        # Envelope with pagination metadata
-        total_pages = None
-        try:
-            if total is not None and per_page:
-                total_pages = (int(total) + per_page - 1) // per_page
-        except Exception:
-            total_pages = None
-
-        return {
-            "total_count": total,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": total_pages,
-            "data": data,
-        }
-
-
-def handle_material_search(handler: BaseHandler, params: Mapping[str, Any]) -> Dict[str, Any]:
-    """Convenience function for backward compatibility."""
-    if isinstance(handler, MaterialSearchHandler):
-        return handler.handle_material_search(params)
-    else:
-        # Create a new handler instance
-        search_handler = MaterialSearchHandler(handler.mpr)
-        return search_handler.handle_material_search(params)
-
-
-def handle_material_by_char(handler: BaseHandler, params: Mapping[str, Any]) -> Dict[str, Any]:
-    """Convenience function for backward compatibility."""
-    if isinstance(handler, MaterialSearchHandler):
-        return handler.handle_material_by_char(params)
-    else:
-        # Create a new handler instance
-        search_handler = MaterialSearchHandler(handler.mpr)
-        return search_handler.handle_material_by_char(params)
+    @ai_function(desc="Analyze the effect of doping a host material with a dopant element on a specific property.", auto_truncate=128000)
+    async def analyze_doping_effect(
+        self,
+        host_element: Annotated[str, AIParam(desc="Host element symbol (e.g., 'Ag').")],
+        dopant_element: Annotated[str, AIParam(desc="Dopant element symbol (e.g., 'Cu').")],
+        dopant_concentration: Annotated[float, AIParam(desc="Dopant atomic fraction (e.g., 0.125 for 12.5% doping).")],
+        property_name: Annotated[str, AIParam(desc="Property to analyze: 'bulk_modulus', 'shear_modulus', etc. (default 'bulk_modulus').")] = "bulk_modulus"
+    ) -> Dict[str, Any]:
+        """Analyze how doping a host material affects a specific property, comparing pure vs doped materials."""
+        result = analyze_doping_effect(
+            self.mpr,
+            host_element,
+            dopant_element,
+            dopant_concentration,
+            property_name
+        )
+        result["citations"] = ["Materials Project", "pymatgen"]
+        if hasattr(self, 'recent_tool_outputs'):
+            self.recent_tool_outputs.append({
+                "tool_name": "analyze_doping_effect",
+                "result": result
+            })
+        return result

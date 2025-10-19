@@ -749,27 +749,52 @@ class AnalysisMixin:
             liq = series.get("LIQUID", None)
             if liq is not None and np.any(liq > 0):
                 y = np.clip(np.nan_to_num(liq), 0, 1)
-                # ensure temps increasing; liquid decreases with cooling
-                # liquidus: first T where liquid < 95%
-                lo95 = np.where(y < 0.95)[0]
-                if lo95.size:
-                    T_liq = float(temps[lo95[0]])
+                
+                # Search from LOW to HIGH temperature (heating direction)
+                # Liquidus: temperature where material becomes fully liquid (liquid ≥ 95%)
+                # Solidus: temperature where liquid first appears (liquid ≥ 5%)
+                
+                # Liquidus: FIRST temperature (from low to high) where liquid >= 95%
+                hi95 = np.where(y >= 0.95)[0]
+                if hi95.size:
+                    idx_liq = hi95[0]  # FIRST (lowest temp) point where liquid >= 95%
+                    T_liq = float(temps[idx_liq])
+                    liq_note = ""
                 else:
-                    T_liq = None
-                # solidus: first T where liquid < 5%
-                lo05 = np.where(y < 0.05)[0]
-                if lo05.size:
-                    T_sol = float(temps[lo05[0]])
+                    # Never reaches 95% - probably a mixture composition
+                    # Find where liquid is maximum
+                    hi50 = np.where(y >= 0.5)[0]
+                    if hi50.size:
+                        T_liq = float(temps[hi50[0]])
+                        liq_note = " (mixture; liquid never reaches 95%)"
+                    else:
+                        T_liq = None
+                        liq_note = ""
+                
+                # Solidus: FIRST temperature (from low to high) where liquid >= 5%
+                hi05 = np.where(y >= 0.05)[0]
+                if hi05.size:
+                    idx_sol = hi05[0]  # FIRST point where liquid appears
+                    T_sol = float(temps[idx_sol])
+                    sol_note = ""
+                    
+                    # Sanity check: solidus should be below liquidus
+                    if T_liq is not None and T_sol > T_liq:
+                        # Something wrong, swap them or use midpoint
+                        T_sol = None
+                        sol_note = ""
                 else:
+                    # Liquid is always above 5% in range (unlikely)
                     T_sol = None
+                    sol_note = ""
 
                 out.append("\n### Melting/solidification (estimated):")
                 if T_liq is not None:
-                    out.append(f"- **Liquidus**: {T_liq:.0f} K ({T_liq - 273.15:.0f} °C)")
+                    out.append(f"- **Liquidus**: {T_liq:.0f} K ({T_liq - 273.15:.0f} °C){liq_note}")
                 else:
                     out.append("- **Liquidus**: not reached in this range.")
                 if T_sol is not None:
-                    out.append(f"- **Solidus**: {T_sol:.0f} K ({T_sol - 273.15:.0f} °C)")
+                    out.append(f"- **Solidus**: {T_sol:.0f} K ({T_sol - 273.15:.0f} °C){sol_note}")
                 else:
                     out.append("- **Solidus**: not reached in this range.")
                 if T_liq is not None and T_sol is not None and T_liq >= T_sol:

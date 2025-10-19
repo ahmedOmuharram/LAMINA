@@ -10,8 +10,10 @@ import numpy as np
 import plotly.graph_objects as go
 import pycalphad.variables as v
 from ...base import BaseHandler
-# Import from our new modules
-from .utils import _is_excluded_phase, _upper_symbol, _compose_alias_map, _pick_tdb_path
+
+# Import from utility modules
+from .database_utils import is_excluded_phase, upper_symbol, compose_alias_map, pick_tdb_path, get_db_elements, map_phase_name
+from .consts import weight_to_mole_fraction
 from .plotting import PlottingMixin
 from .analysis import AnalysisMixin
 from .ai_functions import AIFunctionsMixin
@@ -75,7 +77,7 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         # 1) exclude helpers/metastables unless explicitly included
         candidates = []
         for name in all_names:
-            if not include_metastable and _is_excluded_phase(name):
+            if not include_metastable and is_excluded_phase(name):
                 continue
             candidates.append(name)
 
@@ -122,7 +124,7 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         """Split phase instances that may have multiple regions."""
         try:
             # Get all instances of this phase
-            phase_data = eq.where(eq.Phase == phase_name)
+            phase_data = eq.where(eq["Phase"] == phase_name)
             
             if len(phase_data) == 0:
                 return []
@@ -150,12 +152,12 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
             
         except Exception as e:
             _log.warning(f"Error splitting phase instances for {phase_name}: {e}")
-            return [eq.where(eq.Phase == phase_name)]
+            return [eq.where(eq["Phase"] == phase_name)]
 
     def _split_by_region(self, eq, phase_name):
         """Split equilibrium data by phase regions."""
         try:
-            phase_data = eq.where(eq.Phase == phase_name)
+            phase_data = eq.where(eq["Phase"] == phase_name)
             if len(phase_data) == 0:
                 return []
             
@@ -194,11 +196,11 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
             
         except Exception as e:
             _log.warning(f"Error splitting by region for {phase_name}: {e}")
-            return [eq.where(eq.Phase == phase_name)]
+            return [eq.where(eq["Phase"] == phase_name)]
 
     def _normalize_system(self, system: str, db=None) -> Tuple[str, str]:
         """Normalize system string to (A, B) tuple of element symbols."""
-        system = system.strip().upper()
+        system = system.strip()
         
         # Handle common separators
         for sep in ['-', '_', ' ']:
@@ -206,20 +208,22 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
                 parts = system.split(sep)
                 if len(parts) == 2:
                     A, B = parts[0].strip(), parts[1].strip()
-                    return _upper_symbol(A), _upper_symbol(B)
+                    return upper_symbol(A), upper_symbol(B)
         
-        # Handle concatenated format like "ALZN"
-        if len(system) >= 4:
+        # Handle concatenated format like "ALZN" or "AlZn"
+        # Normalize to uppercase first
+        sysu = system.upper()
+        if len(sysu) >= 4:
             # Try to split at common element boundaries
-            for i in range(2, len(system) - 1):
-                A, B = system[:i], system[i:]
-                if _upper_symbol(A) != A or _upper_symbol(B) != B:
-                    continue
-                return A, B
+            for i in range(2, len(sysu) - 1):
+                A, B = sysu[:i], sysu[i:]
+                # Check if both substrings are valid normalized elements
+                if upper_symbol(A) == A and upper_symbol(B) == B:
+                    return A, B
         
         # Fallback: try to parse as single element
         if len(system) <= 3:
-            return _upper_symbol(system), "AL"  # Default to Al-based system
+            return upper_symbol(system), "AL"  # Default to Al-based system
         
         raise ValueError(f"Could not parse system: {system}")
 
@@ -234,36 +238,47 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         Returns:
             Path to appropriate .tdb file
         """
-        return _pick_tdb_path(self.tdb_dir, elements=elements)
+        return pick_tdb_path(self.tdb_dir, elements=elements)
 
     def _normalize_elements(self, elements: List[str], db=None) -> List[str]:
         """Normalize element symbols to database format."""
         if db is None:
-            return [_upper_symbol(el) for el in elements]
+            return [upper_symbol(el) for el in elements]
         
         # Use database-specific aliases
-        aliases = _compose_alias_map(db)
+        aliases = compose_alias_map(db)
         normalized = []
         for el in elements:
-            normalized_el = aliases.get(el.lower(), _upper_symbol(el))
+            normalized_el = aliases.get(el.lower(), upper_symbol(el))
             normalized.append(normalized_el)
         
         return normalized
 
     def _parse_composition(self, system_or_comp: str, composition_type: str = "atomic", db=None) -> Tuple[Tuple[str,str], Optional[float], str]:
-        """Parse composition string like 'Al20Zn80' or 'Al80Zn20'."""
+        """
+        Parse composition string like 'Al20Zn80' or 'Al80Zn20'.
+        
+        Args:
+            system_or_comp: Composition string
+            composition_type: 'atomic' for at% or 'weight' for wt%
+            db: Optional database for element validation
+            
+        Returns:
+            Tuple of ((element_A, element_B), mole_fraction_B, 'atomic')
+            Note: Always returns atomic (mole) fractions, converting from weight if needed
+        """
         system_or_comp = system_or_comp.strip()
         
         # Handle single element
         if len(system_or_comp) <= 3 and system_or_comp.isalpha():
-            element = _upper_symbol(system_or_comp)
-            return (element, "AL"), 0.0 if element == "AL" else 1.0, composition_type
+            element = upper_symbol(system_or_comp)
+            return (element, "AL"), 0.0 if element == "AL" else 1.0, "atomic"
         
         # Parse composition like "Al20Zn80"
         def norm_token(tok):
             tok = tok.strip().upper()
             if tok.isalpha():
-                return _upper_symbol(tok)
+                return upper_symbol(tok)
             return tok
         
         # Try to extract numbers and elements
@@ -281,30 +296,40 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
             num1 = float(num1)
             num2 = float(num2)
             
-            # Normalize to mole fractions
+            # Normalize to fractions
             total = num1 + num2
-            x1 = num1 / total
-            x2 = num2 / total
+            frac1 = num1 / total
+            frac2 = num2 / total
             
-            # Return in order (A, B) where B is the second element
-            return (elem1, elem2), x2, composition_type
+            # Convert weight% to mole fractions if needed
+            if composition_type.lower() in ('weight', 'wt', 'wt%', 'weight%'):
+                comp_dict = weight_to_mole_fraction({elem1: frac1, elem2: frac2})
+                x1 = comp_dict[elem1]
+                x2 = comp_dict[elem2]
+            else:
+                x1 = frac1
+                x2 = frac2
+            
+            # Return in order (A, B) where B is the second element, always as mole fractions
+            return (elem1, elem2), x2, "atomic"
         
         # Fallback: try to parse as system
         try:
             A, B = self._normalize_system(system_or_comp, db)
-            return (A, B), 0.5, composition_type  # Default to 50-50
+            return (A, B), 0.5, "atomic"  # Default to 50-50 atomic
         except:
             raise ValueError(f"Could not parse composition: {system_or_comp}")
     
-    def _parse_multicomponent_composition(self, comp_str: str) -> Optional[dict]:
+    def _parse_multicomponent_composition(self, comp_str: str, composition_type: str = "atomic") -> Optional[dict]:
         """
         Parse multicomponent composition string like 'Al30Si55C15' into {AL: 0.30, SI: 0.55, C: 0.15}.
         
         Args:
             comp_str: Composition string with format ElementNumber pairs (e.g., 'Al30Si55C15')
+            composition_type: 'atomic' for at% or 'weight' for wt%
             
         Returns:
-            Dictionary mapping element symbols to mole fractions, or None if parsing fails
+            Dictionary mapping element symbols to mole fractions (always atomic), or None if parsing fails
         """
         import re
         
@@ -320,7 +345,7 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         total = 0.0
         
         for elem, amount_str in matches:
-            elem_upper = _upper_symbol(elem)
+            elem_upper = upper_symbol(elem)
             amount = float(amount_str)
             comp_dict[elem_upper] = amount
             total += amount
@@ -331,6 +356,10 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         # Normalize to sum to 1.0
         for elem in comp_dict:
             comp_dict[elem] /= total
+        
+        # Convert weight% to mole fractions if needed
+        if composition_type.lower() in ('weight', 'wt', 'wt%', 'weight%'):
+            comp_dict = weight_to_mole_fraction(comp_dict)
         
         return comp_dict
     
@@ -351,7 +380,7 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         
         # Filter out excluded phases unless metastable requested
         for phase in all_phases:
-            if not include_metastable and _is_excluded_phase(phase):
+            if not include_metastable and is_excluded_phase(phase):
                 continue
             candidates.append(phase)
         
@@ -376,7 +405,7 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
     def _calculate_equilibrium_at_T(self, db, elements, phases, T, xB, comp_var):
         """Calculate equilibrium at a specific temperature."""
         try:
-            from pycalphad import calculate
+            from pycalphad import equilibrium
             
             # Set up calculation conditions
             conditions = {
@@ -386,8 +415,8 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
                 v.N: 1
             }
             
-            # Calculate equilibrium
-            result = calculate(db, elements, phases, conditions)
+            # Calculate equilibrium (this will give us phase fractions)
+            result = equilibrium(db, elements, phases, conditions)
             
             return result
             
@@ -398,27 +427,89 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
             return xr.Dataset()
 
     def _create_interactive_plot(self, temps, phase_data, A, B, xB, comp_type, temp_range):
-        """Create interactive Plotly plot for composition-temperature data."""
-        # This method would be implemented in the plotting module
-        # For now, return a simple figure
+        """Create interactive Plotly plot for composition-temperature data with filled regions."""
+        import logging
+        _log = logging.getLogger(__name__)
+        
         fig = go.Figure()
         
-        # Add basic plot
-        for phase, fractions in phase_data.items():
-            if max(fractions) > 0.01:
-                fig.add_trace(go.Scatter(
-                    x=temps,
-                    y=fractions,
-                    mode='lines',
-                    name=phase,
-                    fill='tonexty' if phase != list(phase_data.keys())[0] else 'tozeroy'
-                ))
+        # Convert temps to numpy array for safety
+        temps_array = np.array(temps)
+        _log.info(f"Creating Plotly figure with temps range: {temps_array[0]:.1f}-{temps_array[-1]:.1f} K")
         
+        # Color palette for phases
+        colors = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+        ]
+        
+        # Add traces for each phase with stacked area
+        traces_added = 0
+        for idx, (phase, fractions) in enumerate(phase_data.items()):
+            fractions_array = np.array(fractions)
+            max_frac = np.max(fractions_array) if len(fractions_array) > 0 else 0
+            
+            if max_frac > 0.01:
+                color = colors[traces_added % len(colors)]
+                
+                # Map phase name to readable form (e.g., CSI -> SiC)
+                readable_phase = map_phase_name(phase)
+                
+                fig.add_trace(go.Scatter(
+                    x=temps_array,
+                    y=fractions_array,
+                    mode='lines',
+                    name=readable_phase,
+                    line=dict(width=0.5, color=color),
+                    fillcolor=color,
+                    fill='tonexty' if traces_added > 0 else 'tozeroy',
+                    stackgroup='one',  # This creates a stacked area chart
+                    groupnorm='',  # Don't normalize (we want actual fractions)
+                    hovertemplate=f'<b>{readable_phase}</b><br>T: %{{x:.1f}} K<br>Fraction: %{{y:.3f}}<extra></extra>'
+                ))
+                traces_added += 1
+                _log.info(f"  Added trace for {phase} -> {readable_phase} (max fraction: {max_frac:.3f})")
+        
+        if traces_added == 0:
+            _log.warning("No phases with significant fractions to plot!")
+        
+        # Update layout with explicit axis ranges
         fig.update_layout(
-            title=f"Phase Stability: {A}{100-xB*100:.0f}{B}{xB*100:.0f}",
-            xaxis_title="Temperature (K)",
-            yaxis_title="Phase Fraction",
-            hovermode='x unified'
+            title=dict(
+                text=f"Phase Stability: {A}{round((1-xB)*100)}{B}{round(xB*100)}",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=18)
+            ),
+            xaxis=dict(
+                title="Temperature (K)",
+                range=[temps_array[0], temps_array[-1]],
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='lightgray'
+            ),
+            yaxis=dict(
+                title="Phase Fraction",
+                range=[0, 1],
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='lightgray'
+            ),
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="right",
+                x=0.99,
+                bgcolor='rgba(255,255,255,0.8)',
+                bordercolor='black',
+                borderwidth=1
+            ),
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            height=600,
+            width=900
         )
         
         return fig

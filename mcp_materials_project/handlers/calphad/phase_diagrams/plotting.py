@@ -29,50 +29,6 @@ _log = logging.getLogger(__name__)
 
 class PlottingMixin:
     """Mixin class containing plotting-related methods for CalPhadHandler."""
-    
-    
-
-    def _add_phase_labels(self, axes, temp_range: Tuple[float, float], phases: List[str], db=None, elements=None, comp_var=None) -> None:
-        """Add enhanced phase labels with colored backgrounds to the plot."""
-        if not phases:
-            return
-            
-        # Get phase colors from the plot
-        phase_colors = self._extract_phase_colors_from_plot(axes, phases)
-        
-        # Position labels near bottom in axes-fraction coordinates
-        label_y = 0.05  # 5% from bottom
-        
-        # Add labels for each phase
-        for i, phase in enumerate(phases):
-            # Get color for this phase
-            color = phase_colors.get(phase, '#888888')
-            
-            # Calculate x position (spread across composition range)
-            x_pos = 0.1 + (i * 0.8) / max(1, len(phases) - 1)
-            x_pos = min(0.9, max(0.1, x_pos))  # Clamp to [0.1, 0.9]
-            
-            # Create label text
-            label_text = phase
-            
-            # Add special annotations for key phases
-            if phase in ["FCC_A1", "HCP_A3", "BCC_A2"]:
-                label_text = f"{phase}\n(crystal)"
-            elif "AL" in phase.upper() and "ZN" in phase.upper():
-                label_text = f"{phase}\n(intermetallic)"
-            
-            # Add the label with colored background using axes-fraction coordinates
-            axes.text(x_pos, label_y, label_text, 
-                     transform=axes.transAxes,
-                     fontsize=10, fontweight='bold',
-                     bbox=dict(boxstyle="round,pad=0.3", 
-                              facecolor=color, 
-                              alpha=0.7,
-                              edgecolor='black',
-                              linewidth=0.5),
-                     ha='center', va='bottom',
-                     zorder=10)
- 
     def _save_plot_to_file(self, fig, filename: str, extra_artists=None) -> str:
         """Save matplotlib figure to file and return URL."""
         from pathlib import Path
@@ -92,11 +48,36 @@ class PlottingMixin:
         fig.savefig(file_path, format='png', dpi=150, 
                    bbox_inches='tight',
                    bbox_extra_artists=(extra_artists or []))
-        print(f"Plotting: Saved plot to {file_path}", flush=True)
+        _log.info(f"Saved plot to {file_path}")
         
         # Return URL
         url = f"http://localhost:8000/static/plots/{file_path.name}"
-        print(f"Plotting: Plot URL: {url}", flush=True)
+        _log.info(f"Plot URL: {url}")
+        return url
+    
+    def _save_html_to_file(self, html_content: str, filename: str) -> str:
+        """Save HTML content to file and return URL."""
+        from pathlib import Path
+        import time
+        
+        # Create directory if it doesn't exist
+        plots_dir = Path(__file__).parent.parent.parent.parent.parent / "interactive_plots"
+        plots_dir.mkdir(exist_ok=True)
+        
+        # Generate unique filename with timestamp
+        timestamp = int(time.time() * 1000)
+        safe_filename = filename.replace(" ", "_").replace("/", "_")
+        file_path = plots_dir / f"{safe_filename}_{timestamp}.html"
+        
+        # Write HTML content to file
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        _log.info(f"Saved HTML plot to {file_path}")
+        
+        # Return URL
+        url = f"http://localhost:8000/static/plots/{file_path.name}"
+        _log.info(f"HTML plot URL: {url}")
         return url
 
     def _plotly_comp_temp(self, temps, phase_data, labels, colors, special_Ts, title, subtitle) -> go.Figure:

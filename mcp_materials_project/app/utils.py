@@ -95,7 +95,7 @@ def to_kani_history(api_messages: List[ChatMessage]) -> list[KChatMessage]:
         # else: ignore unknown roles
     return out
 
-def _format_nested_value(value: Any, depth: int = 0, max_depth: int = 3) -> Any:
+def _format_nested_value(value: Any, depth: int = 0, max_depth: int = 5) -> Any:
     """Recursively format nested values with depth limit."""
     # Prevent infinite recursion
     if depth > max_depth:
@@ -171,7 +171,7 @@ def pretty_print_tool_output(obj: Any) -> str:
                 continue
             
             # Recursively handle nested structures with depth limit
-            display_obj[key] = _format_nested_value(value, depth=0, max_depth=3)
+            display_obj[key] = _format_nested_value(value, depth=0, max_depth=5)
         
         try:
             pretty = json.dumps(display_obj, indent=2, ensure_ascii=False, default=str)
