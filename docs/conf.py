@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath('..'))
 
 # -- Project information -----------------------------------------------------
 
-project = 'LAMINA: LLM-Assisted Material INformatics and Analysis'
+project = 'LAMINA'
 copyright = '2025, Ahmed Muharram'
 author = 'Ahmed Muharram'
 release = '0.0.1'
