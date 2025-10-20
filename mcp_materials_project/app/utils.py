@@ -7,21 +7,117 @@ from typing import Any, List
 from .schemas import ChatMessage
 from kani import ChatMessage as KChatMessage
 
-def details_block(summary: str, body_md: str = "", open_: bool = False) -> str:
-    """Produce a collapsible <details> block."""
-    open_attr = " open" if open_ else ""
-    body_md = (body_md or "").strip()
-    inner = f"{body_md}\n" if body_md else ""
-    # blank lines around details so it doesn't glue to text
-    return f"\n<details{open_attr}>\n  <summary>{summary}</summary>\n\n{inner}</details>\n\n"
+def tool_start_event(tool_name: str, tool_id: str, model_name: str, tool_input: Any = None) -> str:
+    """Send a structured tool start event."""
+    tool_call_data = {
+        "id": tool_id,
+        "name": tool_name,
+        "status": "started"
+    }
+    if tool_input is not None:
+        tool_call_data["input"] = tool_input
+    
+    payload = {
+        "id": f"chatcmpl-{int(time.time()*10_000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_call": tool_call_data
+            },
+            "finish_reason": None
+        }],
+    }
+    return f"data: {json.dumps(payload)}\n\n"
 
-def tool_panel_done(tool_name: str, duration: float, logs_md: str = "") -> str:
-    """Standardized 'tool finished' panel."""
-    return details_block(f"✅ {tool_name} — done ({duration:.2f}s)", logs_md, open_=False)
+def tool_end_event(tool_name: str, tool_id: str, duration: float, output: Any, model_name: str, tool_input: Any = None) -> str:
+    """Send a structured tool end event."""
+    tool_call_data = {
+        "id": tool_id,
+        "name": tool_name,
+        "status": "completed",
+        "duration": duration,
+        "output": output
+    }
+    if tool_input is not None:
+        tool_call_data["input"] = tool_input
+    
+    payload = {
+        "id": f"chatcmpl-{int(time.time()*10_000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_call": tool_call_data
+            },
+            "finish_reason": None
+        }],
+    }
+    return f"data: {json.dumps(payload)}\n\n"
 
-def tool_panel_general(tool_name: str, logs_md: str = "") -> str:
-    """Standardized 'tool finished' panel."""
-    return details_block(f"{tool_name}", logs_md, open_=False)
+def image_event(image_url: str, metadata: dict, model_name: str) -> str:
+    """Send a structured image event."""
+    payload = {
+        "id": f"chatcmpl-{int(time.time()*10_000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "image": {
+                    "url": image_url,
+                    "metadata": metadata
+                }
+            },
+            "finish_reason": None
+        }],
+    }
+    return f"data: {json.dumps(payload)}\n\n"
+
+def analysis_event(analysis: str, model_name: str) -> str:
+    """Send a structured analysis event."""
+    payload = {
+        "id": f"chatcmpl-{int(time.time()*10_000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "analysis": {
+                    "content": analysis
+                }
+            },
+            "finish_reason": None
+        }],
+    }
+    return f"data: {json.dumps(payload)}\n\n"
+
+def usage_event(prompt_tokens: int, completion_tokens: int, total_tokens: int, model_name: str) -> str:
+    """Send a usage/token count event."""
+    payload = {
+        "id": f"chatcmpl-{int(time.time()*10_000)}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens
+                }
+            },
+            "finish_reason": None
+        }],
+    }
+    return f"data: {json.dumps(payload)}\n\n"
 
 def linkify_mp_numbers(text: str) -> str:
     """Auto-link mp-<digits> to Materials Project, excluding code spans."""

@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 import logging
 from .schemas import ChatMessage, ChatRequest
-from .utils import role_header_chunk, final_stop_chunk, linkify_mp_numbers, delta_chunk_raw
+from .utils import role_header_chunk, final_stop_chunk, delta_chunk_raw, usage_event
 from .stream_state import StreamState
 from ..kani_client import MPKani
 from kani import ChatRole
@@ -14,11 +14,71 @@ import os
 import json
 import openai
 from pydantic import BaseModel
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
 
 DEFAULT_MODEL = "gpt-4.1"
 _log = logging.getLogger(__name__)
 
-async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str]:
+def count_tokens(text: str, model: str) -> int:
+    """Count tokens using tiktoken for the given model."""
+    if not tiktoken or not text:
+        # Fallback to rough estimate if tiktoken not available
+        return len(text.split()) if text else 0
+    
+    try:
+        # Map model names to tiktoken encodings
+        if "gpt-4" in model.lower() or "gpt-4o" in model.lower():
+            encoding = tiktoken.encoding_for_model("gpt-4o")
+        elif "gpt-3.5" in model.lower():
+            encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        else:
+            # Default to cl100k_base (used by gpt-4, gpt-3.5-turbo, gpt-4o)
+            encoding = tiktoken.get_encoding("cl100k_base")
+        
+        return len(encoding.encode(text))
+    except Exception as e:
+        print(f"Error counting tokens: {e}", flush=True)
+        # Fallback to word count estimate (roughly 1.3 tokens per word for English)
+        return int(len(text.split()) * 1.3) if text else 0
+
+def count_message_tokens(messages: List[ChatMessage], model: str) -> int:
+    """Count tokens for a list of messages including formatting overhead."""
+    if not tiktoken:
+        return sum(len(extract_text_from_message_content(msg.content).split()) for msg in messages)
+    
+    try:
+        # Map model names to tiktoken encodings
+        if "gpt-4" in model.lower() or "gpt-4o" in model.lower():
+            encoding = tiktoken.encoding_for_model("gpt-4o")
+        elif "gpt-3.5" in model.lower():
+            encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        else:
+            encoding = tiktoken.get_encoding("cl100k_base")
+        
+        tokens_per_message = 3  # Every message follows <|start|>{role/name}\n{content}<|end|>\n
+        tokens_per_name = 1  # If there's a name, the role is omitted
+        
+        num_tokens = 0
+        for message in messages:
+            num_tokens += tokens_per_message
+            num_tokens += len(encoding.encode(message.role))
+            
+            # Get text content
+            content = extract_text_from_message_content(message.content)
+            num_tokens += len(encoding.encode(content))
+        
+        num_tokens += 3  # Every reply is primed with <|start|>assistant<|message|>
+        
+        return num_tokens
+    except Exception as e:
+        print(f"Error counting message tokens: {e}", flush=True)
+        # Fallback
+        return sum(len(extract_text_from_message_content(msg.content).split()) * 1.3 for msg in messages)
+
+async def sse_generator(messages: List[ChatMessage], model: str, request: Any = None) -> Iterable[str]:
     """Produce SSE chunks for a single chat round."""
     if not messages:
         _log.error("sse_generator: no messages provided")
@@ -28,6 +88,48 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
         _log.error("sse_generator: last message must be from user (got role=%s)", messages[-1].role)
         print(f"sse_generator: last message must be from user (got role={messages[-1].role})", flush=True)
         raise HTTPException(status_code=400, detail="Last message must be from user")
+    
+    # Shared cancellation flag
+    cancelled = {"value": False}
+    
+    # Helper to check if client disconnected
+    async def is_disconnected() -> bool:
+        if request is None:
+            return False
+        try:
+            disconnected = await request.is_disconnected()
+            if disconnected:
+                cancelled["value"] = True
+            return disconnected
+        except Exception:
+            return False
+    
+    # Background task to periodically check for disconnection
+    import asyncio
+    async def monitor_connection():
+        """Continuously check if client is still connected."""
+        while not cancelled["value"]:
+            try:
+                if await is_disconnected():
+                    print("monitor_connection: Client disconnected!", flush=True)
+                    cancelled["value"] = True
+                    break
+                await asyncio.sleep(0.5)  # Check every 500ms
+            except asyncio.CancelledError:
+                print("monitor_connection: Monitor cancelled", flush=True)
+                cancelled["value"] = True
+                break
+            except Exception as e:
+                print(f"monitor_connection: Error - {e}", flush=True)
+                break
+    
+    # Start monitoring task
+    monitor_task = asyncio.create_task(monitor_connection())
+    
+    # Wrapper to check cancellation flag
+    def check_cancelled():
+        if cancelled["value"]:
+            raise asyncio.CancelledError("Client disconnected")
 
     model_name = model or DEFAULT_MODEL
     user_prompt = extract_text_from_message_content(messages[-1].content)
@@ -39,14 +141,28 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
     kani_instance = MPKani(model=model_name, chat_history=kani_chat_history)
     state = StreamState(model_name=model_name)
     state._kani_instance = kani_instance  # Pass kani instance for image access
+    
+    # Track tokens
+    prompt_tokens = 0
+    completion_tokens = 0
+    accumulated_text = ""
+    
+    # Count prompt tokens using proper message formatting
+    prompt_tokens = count_message_tokens(messages, model_name)
 
     try:
-        async for stream in kani_instance.full_round_stream(user_prompt):
+        stream_iterator = kani_instance.full_round_stream(user_prompt)
+        async for stream in stream_iterator:
+            # Check cancellation flag (set by background monitor)
+            check_cancelled()
+            
             role = getattr(stream, "role", None)
 
             if role == ChatRole.FUNCTION:
+                check_cancelled()
                 tool_msg = await stream.message()
                 for chunk in state.complete_next_tool(tool_msg, kani_instance):
+                    check_cancelled()
                     yield chunk
                 continue
 
@@ -55,16 +171,26 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
 
             tmp_tokens: list[str] = []
             async for token in stream:
+                check_cancelled()
                 if token is not None:
                     tmp_tokens.append(token)
 
             msg = await stream.message()
-            state.register_tool_calls(msg)
-
+            
             has_tools = bool(
                 getattr(msg, "tool_calls", None) or
                 getattr(msg, "function_call", None)  # older field, just in case
             )
+            
+            # Register and emit tool start events
+            if has_tools:
+                state.register_tool_calls(msg)
+                # Emit tool start events for each registered tool
+                for tc_id in list(state.tool_fifo):  # Copy to avoid modification during iteration
+                    if tc_id not in state.completed_tools:
+                        tool_name = state.tool_name_by_id.get(tc_id, "tool")
+                        tool_input = state.tool_input_by_id.get(tc_id, None)
+                        yield state.emit_tool_start(tool_name, tc_id, tool_input)
 
             # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
             raw = "".join(tmp_tokens)
@@ -74,31 +200,37 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
                 for tok in tmp_tokens:
                     chunk = state.emit_stream_text(tok)
                     if chunk:
+                        accumulated_text += tok
                         yield chunk
             # else: drop the prelude & markup entirely
-
-        # End-of-stream safety: flush any remaining linkifier tail
-        tail_chunk = state.flush_linkbuf()
-        if tail_chunk:
-            yield tail_chunk
 
         # End-of-stream safety: flush anything still buffered
         for chunk in state.flush_buffer_if_any():
             yield chunk
 
-        # Close any orphan tools with zero-duration panels
+        # Close any orphan tools with zero-duration events
         for chunk in state.close_orphan_tools():
             yield chunk
 
-        # Emit any pending interactive plot link right at the end
-        plot_link_chunk = state.emit_pending_plot_link()
-        if plot_link_chunk:
-            yield plot_link_chunk
+        # Use the tracked text from StreamState for accurate token counting
+        completion_text = state.all_emitted_text
+        completion_tokens = count_tokens(completion_text, model_name)
+        total_tokens = prompt_tokens + completion_tokens
+        
+        print(f"DEBUG: Token counts - prompt: {prompt_tokens}, completion: {completion_tokens}, total: {total_tokens}", flush=True)
+        print(f"DEBUG: Completion text length: {len(completion_text)} chars", flush=True)
+        
+        # Send usage information
+        yield usage_event(prompt_tokens, completion_tokens, total_tokens, model_name)
 
         # Final stop
         yield final_stop_chunk(model_name)
         yield "data: [DONE]\n\n"
 
+    except asyncio.CancelledError:
+        print("sse_generator: Cancelled by client disconnection", flush=True)
+        _log.info("sse_generator: Cancelled")
+        # Don't re-raise, just stop gracefully
     except Exception as e:
         _log.exception("sse_generator: Error during streaming")
         print(f"sse_generator: ERROR - {type(e).__name__}: {str(e)}", flush=True)
@@ -114,6 +246,16 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
             _log.exception("sse_generator: Failed to send error message")
             print(f"sse_generator: Failed to send error message: {inner_e}", flush=True)
         raise
+    finally:
+        # Cancel the background monitor task
+        cancelled["value"] = True
+        if not monitor_task.done():
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+        print("sse_generator: Cleanup complete", flush=True)
 
     # Clear any saved tool outputs on the kani wrapper (if present)
     try:
@@ -121,9 +263,38 @@ async def sse_generator(messages: List[ChatMessage], model: str) -> Iterable[str
     except Exception:
         pass
 
-async def do_stream_response(messages: List[ChatMessage], model: str = DEFAULT_MODEL) -> StreamingResponse:
+async def do_stream_response(messages: List[ChatMessage], model: str = DEFAULT_MODEL, request: Any = None) -> StreamingResponse:
     """Return a StreamingResponse wrapping the SSE generator."""
-    return StreamingResponse(sse_generator(messages, model), media_type="text/event-stream")
+    import asyncio
+    
+    async def cancellable_generator():
+        """Wrapper to make the generator properly cancellable."""
+        generator = sse_generator(messages, model, request)
+        try:
+            async for chunk in generator:
+                yield chunk
+        except asyncio.CancelledError:
+            print("do_stream_response: Stream cancelled by client", flush=True)
+            _log.info("do_stream_response: Stream cancelled")
+            # Try to close the generator
+            if hasattr(generator, 'aclose'):
+                try:
+                    await generator.aclose()
+                except Exception as e:
+                    print(f"do_stream_response: Error closing generator: {e}", flush=True)
+            raise
+        except GeneratorExit:
+            print("do_stream_response: Generator exit", flush=True)
+            raise
+    
+    return StreamingResponse(
+        cancellable_generator(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 async def do_json_response(messages: List[ChatMessage] | ChatRequest, model: str) -> JSONResponse:
     """Run a non-streaming round and return OpenAI-style JSON.

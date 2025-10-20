@@ -9,9 +9,9 @@ from dotenv import load_dotenv
 from typing import Any, List
 from pathlib import Path
 
-APP_TITLE = "MPKani OpenWebUI Integration"
-APP_VERSION = "1.1.6"
-DEFAULT_MODEL = "gpt-4.1"
+APP_TITLE = "LAMINA: LLM-Assisted Material INformatics and Analysis"
+DEFAULT_MODEL = "gpt-4o-mini"
+APP_VERSION = "0.0.1"
 
 load_dotenv()
 
@@ -257,7 +257,7 @@ async def chat_completions(request: ChatRequest, raw: Request):
         if not has_input and not has_image:
             _log.info("/v1/chat/completions: streaming path selected (no images)")
             print("/v1/chat/completions: streaming path selected (no images)", flush=True)
-            return await do_stream_response(request.messages, model)
+            return await do_stream_response(request.messages, model, raw)
         # Images present and stream requested → OpenAI streaming
         _log.info("/v1/chat/completions: OpenAI streaming path selected (images present)")
         print("/v1/chat/completions: OpenAI streaming path selected (images present)", flush=True)
@@ -412,7 +412,7 @@ async def responses(raw: Request):
         # No images: preserve streaming behavior
         if stream_req:
             print(f"/v1/responses: streaming via Kani (text-only)", flush=True)
-            return await do_stream_response(norm_messages, model)
+            return await do_stream_response(norm_messages, model, raw)
         req = ChatRequest(
             messages=norm_messages,
             stream=False,
