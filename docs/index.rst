@@ -1,5 +1,5 @@
-Kani-Enhanced Materials Science
-================================
+LAMINA: LLM-Assisted Material INformatics and Analysis
+======================================================
 
 .. toctree::
    :maxdepth: 2

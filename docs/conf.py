@@ -16,10 +16,10 @@ sys.path.insert(0, os.path.abspath('..'))
 
 # -- Project information -----------------------------------------------------
 
-project = 'Kani-Enhanced Materials Science'
+project = 'LAMINA: LLM-Assisted Material INformatics and Analysis'
 copyright = '2025, Ahmed Muharram'
 author = 'Ahmed Muharram'
-release = '1.0.0'
+release = '0.0.1'
 
 # -- General configuration ---------------------------------------------------
 
