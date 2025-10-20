@@ -30,7 +30,7 @@ class MaterialsAIFunctionsMixin:
         formula: Annotated[str, AIParam(desc="Formula(s), anonymized formula, or wildcard(s) (e.g., Li2FeO3,Fe2O3,Fe*O*). Use chemical symbols directly.")] = None,
         element: Annotated[str, AIParam(desc="Element(s) or comma-separated list (e.g., Li,Fe,O). Use chemical symbols directly.")] = None,
         page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
-        per_page: Annotated[int, AIParam(desc="Items per page (max 10; default 10).")] = 10
+        per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
         """Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly."""
         params = {}
@@ -106,7 +106,7 @@ class MaterialsAIFunctionsMixin:
         temperature: Annotated[float, AIParam(desc="Temperature in Kelvin (optional).")] = None,
         pressure: Annotated[float, AIParam(desc="Pressure in GPa (optional).")] = None,
         page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
-        per_page: Annotated[int, AIParam(desc="Items per page (max 10; default 10).")] = 10
+        per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
         """Fetch a material id and formula by a characteristic of the material"""
         params = {}
@@ -228,7 +228,7 @@ class MaterialsAIFunctionsMixin:
         fields: Annotated[List[str], AIParam(desc="List of fields to include. Values include 'builder_meta', 'nsites', 'elements', 'nelements', 'composition', 'composition_reduced', 'formula_pretty', 'formula_anonymous', 'chemsys', 'volume', 'density', 'density_atomic', 'symmetry', 'property_name', 'material_id', 'deprecated', 'deprecation_reasons', 'last_updated', 'origins', 'warnings', 'structure', 'task_ids', 'uncorrected_energy_per_atom', 'energy_per_atom', 'formation_energy_per_atom', 'energy_above_hull', 'is_stable', 'equilibrium_reaction_energy_per_atom', 'decomposes_to', 'xas', 'grain_boundaries', 'band_gap', 'cbm', 'vbm', 'efermi', 'is_gap_direct', 'is_metal', 'es_source_calc_id', 'bandstructure', 'dos', 'dos_energy_up', 'dos_energy_down', 'is_magnetic', 'ordering', 'total_magnetization', 'total_magnetization_normalized_vol', 'total_magnetization_normalized_formula_units', 'num_magnetic_sites', 'num_unique_magnetic_sites', 'types_of_magnetic_species', 'bulk_modulus', 'shear_modulus', 'universal_anisotropy', 'homogeneous_poisson', 'e_total', 'e_ionic', 'e_electronic', 'n', 'e_ij_max', 'weighted_surface_energy_EV_PER_ANG2', 'weighted_surface_energy', 'weighted_work_function', 'surface_anisotropy', 'shape_factor', 'has_reconstructed', 'possible_species', 'has_props', 'theoretical', 'database_Ids'")] = None,
         all_fields: Annotated[bool, AIParam(desc="Whether to return all document fields. Useful if the user wants to know about the material without explicitly asking for certain fields (default True).")] = True,
         page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
-        per_page: Annotated[int, AIParam(desc="Items per page (max 10; default 10).")] = 10
+        per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
         """Fetch one or more materials by their material IDs and return detailed information about them."""
         params = {

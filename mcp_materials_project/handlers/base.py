@@ -47,7 +47,6 @@ class BaseHandler:
         per_page = self._parse_int(params.get("per_page")) or 10
         if page < 1:
             page = 1
-        # Enforce maximum page size of 10 items
         if per_page is None or per_page < 1:
             per_page = 10
         return page, per_page

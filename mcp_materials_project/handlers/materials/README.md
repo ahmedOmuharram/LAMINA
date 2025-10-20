@@ -19,7 +19,7 @@ Search for materials by chemical system, formula, or elements.
 - `formula` (optional): Chemical formula(s), anonymized formula, or wildcard(s) (e.g., "Li2FeO3", "Fe2O3", "Fe*O*")
 - `element` (optional): Element(s) or comma-separated list (e.g., "Li,Fe,O")
 - `page` (optional): Page number (default 1)
-- `per_page` (optional): Items per page (max 10; default 10)
+- `per_page` (optional): Items per page (default 10)
 
 **Returns**: Dictionary containing:
 - `total_count`: Total number of materials found
