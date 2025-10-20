@@ -1,6 +1,6 @@
 LAMINA
 ======================================================
-LAMINA (**L**LM-**A**ssisted **M**aterial **IN**formatics and **A**nalysis) is a system that uses Large Language Models (LLMs) to assist in material science research.
+LAMINA (**L**\ LM-\ **A**\ ssisted **M**\ aterial **IN**\ formatics and **A**\ nalysis) is a system that uses Large Language Models (LLMs) to assist in material science research.
 
 Project Description
 ===================
