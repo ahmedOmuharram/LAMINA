@@ -7,6 +7,7 @@ Kani-Enhanced Materials Science
 
    overview
    api/index
+   references
 
 Indices and tables
 ==================
