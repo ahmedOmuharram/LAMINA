@@ -49,8 +49,8 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
   // Simplify model names
   const getDisplayName = (model: Model) => {
     if (model.id === 'gpt-4o-mini') return '4o-mini';
+    else if (model.id === 'gpt-4o') return '4o';
     else if (model.id === 'o1') return 'o1';
-    else if (model.id === 'gpt-4.1') return '4.1';
     return model.name;
   };
 
@@ -58,8 +58,8 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
     <div className="flex flex-col gap-2">
       <label className="text-xs font-medium text-gray-600 uppercase tracking-wider">Model</label>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-full bg-white/30 border-gray-200/30 text-gray-800 backdrop-blur-xl hover:bg-white/40 shadow-sm text-left">
-          <div className="flex items-center gap-2 w-full overflow-hidden">
+        <SelectTrigger className="w-full bg-white/30 border-gray-200/30 text-gray-800 backdrop-blur-xl hover:bg-white/40 shadow-sm text-left !h-auto !min-h-[48px]">
+          <div className="flex items-center gap-2 w-full overflow-hidden py-0.25">
             <img src="/gpt.svg" alt="GPT" className="w-4 h-4 flex-shrink-0" />
             {selectedModel ? (
               <div className="flex flex-col flex-1 min-w-0">

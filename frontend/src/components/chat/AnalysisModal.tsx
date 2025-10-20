@@ -16,22 +16,29 @@ export function AnalysisModal({ analysis, title, open, onOpenChange }: AnalysisM
   const renderMarkdownLine = (line: string, idx: number) => {
     // Skip empty lines
     if (!line.trim()) {
-      return <div key={idx} className="h-2" />;
+      return <div key={idx} className="h-1" />;
     }
 
     // Headers
     if (line.startsWith('### ')) {
       return (
-        <h3 key={idx} className="text-lg font-semibold text-gray-800 mt-4 mb-2">
+        <h3 key={idx} className="text-sm font-semibold text-gray-900 mt-2 mb-1">
           {line.replace('### ', '')}
         </h3>
       );
     }
     if (line.startsWith('## ')) {
       return (
-        <h2 key={idx} className="text-xl font-bold text-gray-900 mt-5 mb-3">
+        <h2 key={idx} className="text-base font-bold text-gray-900 mt-3 mb-1.5">
           {line.replace('## ', '')}
         </h2>
+      );
+    }
+    if (line.startsWith('# ')) {
+      return (
+        <h1 key={idx} className="text-lg font-bold text-gray-900 mt-3 mb-2">
+          {line.replace('# ', '')}
+        </h1>
       );
     }
 
@@ -41,12 +48,14 @@ export function AnalysisModal({ analysis, title, open, onOpenChange }: AnalysisM
       // Handle bold **text**
       let formatted = content.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
       // Handle code `text`
-      formatted = formatted.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded text-sm font-mono">$1</code>');
+      formatted = formatted.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] font-mono">$1</code>');
       // Handle inline math $...$
       formatted = formatted.replace(/\$([^$]+)\$/g, '<em class="italic text-gray-700">$1</em>');
+      // Handle Materials Project IDs
+      formatted = formatted.replace(/\b(mp-[a-zA-Z0-9]+)\b/g, '<a href="https://next-gen.materialsproject.org/materials/$1" class="text-purple-600 hover:underline font-semibold" target="_blank" rel="noopener noreferrer" title="View on Materials Project">$1</a>');
       
       return (
-        <li key={idx} className="ml-6 mb-1.5 text-gray-700 leading-relaxed" dangerouslySetInnerHTML={{ __html: formatted }} />
+        <li key={idx} className="ml-4 mb-0.5 text-xs text-gray-700 leading-snug list-disc" dangerouslySetInnerHTML={{ __html: formatted }} />
       );
     }
 
@@ -55,12 +64,14 @@ export function AnalysisModal({ analysis, title, open, onOpenChange }: AnalysisM
     // Handle bold **text**
     formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>');
     // Handle code `text`
-    formatted = formatted.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded text-sm font-mono">$1</code>');
+    formatted = formatted.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] font-mono">$1</code>');
     // Handle inline math $...$
     formatted = formatted.replace(/\$([^$]+)\$/g, '<em class="italic text-gray-700">$1</em>');
+    // Handle Materials Project IDs
+    formatted = formatted.replace(/\b(mp-[a-zA-Z0-9]+)\b/g, '<a href="https://next-gen.materialsproject.org/materials/$1" class="text-purple-600 hover:underline font-semibold" target="_blank" rel="noopener noreferrer" title="View on Materials Project">$1</a>');
     
     return (
-      <p key={idx} className="mb-2 text-gray-700 leading-relaxed" dangerouslySetInnerHTML={{ __html: formatted }} />
+      <p key={idx} className="mb-1 text-xs text-gray-700 leading-snug" dangerouslySetInnerHTML={{ __html: formatted }} />
     );
   };
 

@@ -120,9 +120,49 @@ export function ChatMessage({ message, streamingImages = [], streamingAnalyses =
               isUser ? 'rounded-tr-sm' : 'rounded-tl-sm'
             }`}
           >
-            <div className="prose prose-sm max-w-none text-gray-800 prose-headings:text-gray-900 prose-p:text-gray-800 prose-strong:text-gray-900 prose-code:text-gray-800 prose-pre:bg-gray-100/50 text-xs leading-relaxed">
+            <div className="prose prose-sm max-w-none text-gray-800 prose-headings:text-gray-900 prose-p:text-gray-800 prose-strong:text-gray-900 prose-code:text-gray-800 prose-pre:bg-gray-100/50 text-xs leading-snug">
               {textContent.split('\n').map((line, lineIdx) => {
-                // Simple markdown-like formatting
+                // Empty lines
+                if (!line.trim()) {
+                  return <div key={lineIdx} className="h-1" />;
+                }
+                
+                // Headers
+                if (line.startsWith('### ')) {
+                  const text = line.replace('### ', '');
+                  return <h3 key={lineIdx} className="text-sm font-semibold text-gray-900 mt-2 mb-1">{text}</h3>;
+                }
+                if (line.startsWith('## ')) {
+                  const text = line.replace('## ', '');
+                  return <h2 key={lineIdx} className="text-base font-bold text-gray-900 mt-3 mb-1.5">{text}</h2>;
+                }
+                if (line.startsWith('# ')) {
+                  const text = line.replace('# ', '');
+                  return <h1 key={lineIdx} className="text-lg font-bold text-gray-900 mt-3 mb-2">{text}</h1>;
+                }
+                
+                // List items
+                if (line.match(/^[-*]\s/)) {
+                  let formattedLine = line.replace(/^[-*]\s/, '');
+                  
+                  // Apply inline formatting
+                  formattedLine = formattedLine.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                  formattedLine = formattedLine.replace(/\*(.+?)\*/g, '<em>$1</em>');
+                  formattedLine = formattedLine.replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 bg-gray-200 rounded text-[10px]">$1</code>');
+                  formattedLine = formattedLine.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">$1</a>');
+                  formattedLine = formattedLine.replace(/\b(mp-[a-zA-Z0-9]+)\b/g, '<a href="https://next-gen.materialsproject.org/materials/$1" class="text-purple-600 hover:underline font-semibold" target="_blank" rel="noopener noreferrer" title="View on Materials Project">$1</a>');
+                  formattedLine = formattedLine.replace(/\b(mp-[a-zA-Z0-9]+-Li)\b/g, '<a href="https://next-gen.materialsproject.org/batteries/$1" class="text-purple-600 hover:underline font-semibold" target="_blank" rel="noopener noreferrer" title="View on Materials Project">$1</a>');
+                  
+                  return (
+                    <li 
+                      key={lineIdx} 
+                      className="ml-4 mb-0.5 text-xs list-disc"
+                      dangerouslySetInnerHTML={{ __html: formattedLine }}
+                    />
+                  );
+                }
+                
+                // Regular paragraphs
                 let formattedLine = line;
                 
                 // Bold
@@ -132,16 +172,22 @@ export function ChatMessage({ message, streamingImages = [], streamingAnalyses =
                 formattedLine = formattedLine.replace(/\*(.+?)\*/g, '<em>$1</em>');
                 
                 // Code
-                formattedLine = formattedLine.replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 bg-gray-200 rounded text-sm">$1</code>');
+                formattedLine = formattedLine.replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 bg-gray-200 rounded text-[10px]">$1</code>');
                 
                 // Links
                 formattedLine = formattedLine.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer">$1</a>');
                 
+                // Materials Project IDs (mp-XXX) - auto-link to Materials Project
+                formattedLine = formattedLine.replace(/\b(mp-[a-zA-Z0-9]+)\b/g, '<a href="https://next-gen.materialsproject.org/materials/$1" class="text-purple-600 hover:underline font-semibold" target="_blank" rel="noopener noreferrer" title="View on Materials Project">$1</a>');
+
+                // Materials Project IDs for batteries (mp-XXX-Li) - auto-link to Materials Project
+                formattedLine = formattedLine.replace(/\b(mp-[a-zA-Z0-9]+-Li)\b/g, '<a href="https://next-gen.materialsproject.org/batteries/$1" class="text-purple-600 hover:underline font-semibold" target="_blank" rel="noopener noreferrer" title="View on Materials Project">$1</a>');
+                
                 return (
                   <p 
                     key={lineIdx} 
-                    className="mb-3 last:mb-0 text-xs"
-                    dangerouslySetInnerHTML={{ __html: formattedLine || '\u00A0' }}
+                    className="mb-1 last:mb-0 text-xs"
+                    dangerouslySetInnerHTML={{ __html: formattedLine }}
                   />
                 );
               })}
