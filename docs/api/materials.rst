@@ -27,93 +27,164 @@ Available Fields
 The Materials Project database provides extensive material properties organized by category:
 
 **Basic Information:**
+
 - ``material_id``: Materials Project ID
+
 - ``formula_pretty``: Prettified chemical formula
+
 - ``formula_anonymous``: Anonymous chemical formula
+
 - ``chemsys``: Chemical system
+
 - ``elements``: List of elements
+
 - ``nelements``: Number of elements
+
 - ``composition``: Composition dictionary
+
 - ``composition_reduced``: Reduced composition
+
 - ``nsites``: Number of sites
 
 **Structural Properties:**
+
 - ``structure``: Crystal structure object
+
 - ``volume``: Unit cell volume
+
 - ``density``: Density
+
 - ``density_atomic``: Atomic density
+
 - ``symmetry``: Symmetry information
+
 - ``spacegroup``: Space group information
 
 **Electronic Properties:**
+
 - ``band_gap``: Band gap in eV
+
 - ``cbm``: Conduction band minimum
+
 - ``vbm``: Valence band maximum
+
 - ``efermi``: Fermi energy
+
 - ``is_gap_direct``: Whether band gap is direct
+
 - ``is_metal``: Whether material is metallic
+
 - ``bandstructure``: Band structure data
+
 - ``dos``: Density of states
+
 - ``dos_energy_up``: DOS energy up
+
 - ``dos_energy_down``: DOS energy down
 
 **Thermodynamic Properties:**
+
 - ``formation_energy_per_atom``: Formation energy per atom
+
 - ``energy_per_atom``: Energy per atom
+
 - ``uncorrected_energy_per_atom``: Uncorrected energy per atom
+
 - ``energy_above_hull``: Energy above convex hull
+
 - ``equilibrium_reaction_energy_per_atom``: Equilibrium reaction energy
+
 - ``is_stable``: Whether material is stable
+
 - ``decomposes_to``: Decomposition products
 
 **Elastic Properties:**
+
 - ``bulk_modulus``: Bulk modulus
+
 - ``shear_modulus``: Shear modulus
+
 - ``universal_anisotropy``: Universal anisotropy
+
 - ``homogeneous_poisson``: Homogeneous Poisson ratio
 
 **Magnetic Properties:**
+
 - ``is_magnetic``: Whether material is magnetic
+
 - ``ordering``: Magnetic ordering
+
 - ``total_magnetization``: Total magnetization
+
 - ``total_magnetization_normalized_vol``: Volume-normalized magnetization
+
 - ``total_magnetization_normalized_formula_units``: Formula-normalized magnetization
+
 - ``num_magnetic_sites``: Number of magnetic sites
+
 - ``num_unique_magnetic_sites``: Number of unique magnetic sites
+
 - ``types_of_magnetic_species``: Types of magnetic species
 
+
 **Dielectric Properties:**
+
 - ``e_total``: Total dielectric constant
+
 - ``e_ionic``: Ionic dielectric constant
+
 - ``e_electronic``: Electronic dielectric constant
 
 **Surface Properties:**
+
 - ``weighted_surface_energy``: Weighted surface energy
+
 - ``weighted_surface_energy_EV_PER_ANG2``: Surface energy in eV/ang^2
+
 - ``weighted_work_function``: Weighted work function
+
 - ``surface_anisotropy``: Surface anisotropy
+
 - ``shape_factor``: Shape factor
+
 - ``has_reconstructed``: Whether has reconstructed surfaces
 
 **Other Properties:**
+
 - ``n``: Number of atoms
+
 - ``e_ij_max``: Maximum elastic constant
+
 - ``possible_species``: Possible species
+
 - ``has_props``: Available properties
+
 - ``theoretical``: Whether theoretical
+
 - ``xas``: X-ray absorption spectroscopy data
+
 - ``grain_boundaries``: Grain boundary data
 
 **Metadata (not typically used by the user):**
+
 - ``es_source_calc_id``: Source calculation ID
+
 - ``builder_meta``
+
 - ``property_name``
+
 - ``deprecated``
+
 - ``deprecation_reasons``
+
 - ``last_updated``
+
 - ``origins``
+
 - ``warnings``
+
 - ``task_ids``
+
 - ``database_Ids``
 
 .. _get_material:
@@ -126,9 +197,13 @@ Query materials by their chemical system and return their material IDs and formu
 **Parameters:**
 
 - ``chemsys`` (str, optional): Chemical system(s) or comma-separated list (e.g., "Li-Fe-O", "Si-*")
+
 - ``formula`` (str, optional): Formula(s), anonymized formula, or wildcard(s) (e.g., "Li2FeO3", "Fe2O3", "Fe*O*")
+
 - ``element`` (str, optional): Element(s) or comma-separated list (e.g., "Li,Fe,O")
+
 - ``page`` (int, optional): Page number (default 1)
+
 - ``per_page`` (int, optional): Items per page (default 10)
 
 **Returns:** Dictionary containing total_count, page info, and list of materials with material_id and formula_pretty
@@ -157,78 +232,129 @@ Fetch materials by their characteristics (properties).
 **Parameters:**
 
 **Electronic Properties:**
+
 - ``band_gap`` (List[float], optional): Min,max range of band gap in eV
+
 - ``efermi`` (List[float], optional): Min,max fermi energy in eV
+
 - ``is_gap_direct`` (bool, optional): Whether the material has a direct band gap
+
 - ``is_metal`` (bool, optional): Whether the material is considered a metal
 
 **Dielectric Properties:**
+
 - ``e_electronic`` (List[float], optional): Min,max electronic dielectric constant
+
 - ``e_ionic`` (List[float], optional): Min,max ionic dielectric constant
+
 - ``e_total`` (List[float], optional): Min,max total dielectric constant
 
 **Elastic Properties:**
+
 - ``k_reuss`` (List[float], optional): Min,max Reuss bulk modulus in GPa
+
 - ``k_voigt`` (List[float], optional): Min,max Voigt bulk modulus in GPa
+
 - ``k_vrh`` (List[float], optional): Min,max Voigt-Reuss-Hill bulk modulus in GPa
+
 - ``g_reuss`` (List[float], optional): Min,max Reuss grain boundary energy in eV/atom
+
 - ``g_voigt`` (List[float], optional): Min,max Voigt grain boundary energy in eV/atom
+
 - ``g_vrh`` (List[float], optional): Min,max Voigt-Reuss-Hill grain boundary energy in eV/atom
+
 - ``poisson_ratio`` (List[float], optional): Min,max Poisson's ratio
+
 - ``elastic_anisotropy`` (List[float], optional): Min,max elastic anisotropy
 
 **Thermodynamic Properties:**
+
 - ``formation_energy`` (List[float], optional): Min,max formation energy in eV/atom
+
 - ``energy_above_hull`` (List[float], optional): Min,max energy above hull in eV/atom
+
 - ``equilibrium_reaction_energy`` (List[float], optional): Min,max equilibrium reaction energy in eV/atom
+
 - ``total_energy`` (List[float], optional): Min,max total energy in eV/atom
+
 - ``uncorrected_energy`` (List[float], optional): Min,max uncorrected energy in eV/atom
 
 **Magnetic Properties:**
+
 - ``total_magnetization`` (List[float], optional): Min,max total magnetization in Bohr magnetons/atom
+
 - ``total_magnetization_normalized_formula_units`` (List[float], optional): Min,max total magnetization normalized to formula units
+
 - ``total_magnetization_normalized_vol`` (List[float], optional): Min,max total magnetization normalized to volume
+
 - ``magnetic_ordering`` (str, optional): Magnetic ordering ('paramagnetic', 'ferromagnetic', 'antiferromagnetic', 'ferrimagnetic')
+
 - ``num_magnetic_sites`` (List[int], optional): Min,max number of magnetic sites
+
 - ``num_unique_magnetic_sites`` (List[int], optional): Min,max number of unique magnetic sites
 
 **Structural Properties:**
+
 - ``crystal_system`` (str, optional): Crystal system ('Triclinic', 'Monoclinic', 'Orthorhombic', 'Tetragonal', 'Trigonal', 'Hexagonal', 'Cubic')
+
 - ``spacegroup_number`` (int, optional): Spacegroup number of material
+
 - ``spacegroup_symbol`` (str, optional): Spacegroup symbol of material
+
 - ``density`` (List[float], optional): Min,max density range
+
 - ``volume`` (List[float], optional): Min,max volume in bohr^3
+
 - ``n`` (List[int], optional): Min,max number of atoms
+
 - ``nelements`` (List[int], optional): Min,max number of elements
+
 - ``num_sites`` (List[int], optional): Min,max number of sites
 
 **Surface Properties:**
+
 - ``weighted_surface_energy`` (List[float], optional): Min,max weighted surface energy in eV/ang^2
+
 - ``weighted_work_function`` (List[float], optional): Min,max weighted work function in eV
+
 - ``surface_energy_anisotropy`` (List[float], optional): Min,max surface energy anisotropy
+
 - ``surface_anisotropy`` (List[float], optional): Min,max surface anisotropy
+
 - ``has_reconstructed`` (bool, optional): Whether the entry has reconstructed surfaces
+
 - ``shape_factor`` (List[float], optional): Min,max shape factor
 
 **Piezoelectric Properties:**
+
 - ``piezoelectric_modulus`` (List[float], optional): Min,max piezoelectric modulus in C/m^2
 
 **Composition and Elements:**
+
 - ``elements`` (List[str], optional): List of elements (e.g., ['Li', 'Fe', 'O'])
+
 - ``exclude_elements`` (str, optional): Elements to exclude (e.g., 'Li,Fe,O')
+
 - ``possible_species`` (str, optional): Possible species of material (e.g., 'Li,Fe,O')
 
 **Stability and Classification:**
+
 - ``is_stable`` (bool, optional): Whether the material lies on the convex energy hull
+
 - ``theoretical`` (bool, optional): Whether the entry is theoretical (true) or experimental (false)
+
 - ``has_props`` (str, optional): Calculated properties available
 
 **Conditions:**
+
 - ``temperature`` (float, optional): Temperature in Kelvin
+
 - ``pressure`` (float, optional): Pressure in GPa
 
 **Pagination:**
+
 - ``page`` (int, optional): Page number (default 1)
+
 - ``per_page`` (int, optional): Items per page (default 10; can be changed using the per_page parameter)
 
 **Returns:** Dictionary containing matching materials with their properties, as well as pagination information
@@ -263,9 +389,13 @@ Fetch one or more materials by their material IDs and return detailed informatio
 **Parameters:**
 
 - ``material_ids`` (List[str]): List of material IDs (e.g., ['mp-149', 'mp-150', 'mp-151'])
+
 - ``fields`` (List[str], optional): List of fields to include (see :ref:`Available Fields <materials-available-fields>`)
+
 - ``all_fields`` (bool, optional): Whether to return all document fields (default True)
+
 - ``page`` (int, optional): Page number (default 1)
+
 - ``per_page`` (int, optional): Items per page (default 10; can be changed using the per_page parameter)
 
 **Returns:** Dictionary containing detailed material information, as well as pagination information
@@ -327,10 +457,15 @@ Find materials with specific alloy compositions.
 **Parameters:**
 
 - ``elements`` (List[str]): List of elements in the alloy (e.g., ['Ag', 'Cu'])
+
 - ``target_composition`` (Dict[str, float], optional): Target atomic fractions (e.g., {'Ag': 0.875, 'Cu': 0.125})
+
 - ``tolerance`` (float, optional): Tolerance for composition matching (default 0.05)
+
 - ``is_stable`` (bool, optional): Filter for stable materials only (default True)
+
 - ``ehull_max`` (float, optional): Maximum energy above hull for metastable entries in eV/atom (default 0.20)
+
 - ``require_binaries`` (bool, optional): Require exactly 2 elements (default True)
 
 **Returns:** Dictionary containing matching alloy materials with composition analysis, elastic properties, and stability information
@@ -363,7 +498,9 @@ Compare a specific property between two materials.
 **Parameters:**
 
 - ``material_id1`` (str): First material ID
+
 - ``material_id2`` (str): Second material ID
+
 - ``property_name`` (str, optional): Property to compare (default 'bulk_modulus')
 
 **Returns:** Dictionary containing comparison results including absolute difference, percent change, ratio, and interpretation
@@ -398,8 +535,11 @@ Analyze the effect of doping a host material with a dopant element on a specific
 **Parameters:**
 
 - ``host_element`` (str): Host element symbol (e.g., 'Ag')
+
 - ``dopant_element`` (str): Dopant element symbol (e.g., 'Cu')
+
 - ``dopant_concentration`` (float): Dopant atomic fraction (e.g., 0.125 for 12.5% doping)
+
 - ``property_name`` (str, optional): Property to analyze (default 'bulk_modulus')
 
 **Returns:** Dictionary containing comprehensive doping effect analysis including pure element properties, alloy comparisons, and theoretical estimates
