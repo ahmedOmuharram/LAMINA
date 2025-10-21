@@ -146,6 +146,7 @@ export interface TestQuestion {
   timestamp?: string;
   duration?: number;
   error?: string;
+  toolCalls?: ToolCall[];
 }
 
 export interface TestRun {
@@ -157,5 +158,14 @@ export interface TestRun {
   createdAt: string;
   completedAt?: string;
   status: 'draft' | 'running' | 'completed' | 'error';
+}
+
+export interface TestTemplate {
+  id: string;
+  name: string;
+  prompt: string;
+  questions: string[];
+  createdAt: string;
+  updatedAt?: string;
 }
 
