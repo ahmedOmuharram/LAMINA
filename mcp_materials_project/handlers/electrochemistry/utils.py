@@ -12,7 +12,9 @@ from .constants import FARADAY_CONSTANT, PYMATGEN_AVAILABLE
 from .api_utils import (
     build_electrode_query_params,
     process_electrode_documents,
-    extract_voltage_profile
+    extract_voltage_profile,
+    get_framework_elements,
+    filter_electrodes_by_framework
 )
 
 # Re-export voltage calculation utilities
@@ -45,7 +47,8 @@ __all__ = [
     'build_electrode_query_params',
     'process_electrode_documents',
     'extract_voltage_profile',
-    
+    'get_framework_elements',
+    'filter_electrodes_by_framework',
     # Voltage utilities
     'compute_alloy_voltage_via_hull',
     'calculate_voltage_from_insertion_electrode',

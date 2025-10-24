@@ -17,7 +17,7 @@ from typing_extensions import Annotated
 from kani import AIParam
 
 from .database_utils import get_db_elements, map_phase_name
-from .equilibrium_utils import extract_phase_fractions_from_equilibrium
+from .equilibrium_utils import extract_phase_fractions_from_equilibrium, get_phase_fraction
 
 _log = logging.getLogger(__name__)
 
@@ -880,6 +880,10 @@ class AIFunctionsMixin:
             
             db = Database(str(db_path))
             
+            # Debug: List all available phases in the database
+            available_phases = {p.name for p in db.phases.values()}
+            _log.info(f"Available phases in database: {sorted(available_phases)}")
+            
             # Get phases - use correct filter for binary vs multicomponent
             if len(elements) == 2:
                 # Binary system - use binary-specific filter with activation pass
@@ -887,6 +891,8 @@ class AIFunctionsMixin:
             else:
                 # Multicomponent system (3+ elements)
                 phases = self._filter_phases_for_multicomponent(db, elements)
+            
+            _log.info(f"Filtered phases for calculation: {sorted(phases)}")
             
             # Normalize phase name
             phase_name_upper = phase_name.upper()
@@ -916,8 +922,18 @@ class AIFunctionsMixin:
                     # Use looser tolerance (1e-4) for better boundary handling
                     temp_phases = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
                     
-                    # Find our phase
-                    phase_frac = temp_phases.get(phase_to_track, 0.0)
+                    # Find our phase, summing all instances (e.g., SIC#1 + SIC#2)
+                    phase_frac = get_phase_fraction(temp_phases, phase_to_track)
+                    
+                    # Debug: Log phase fractions at a few sample temperatures
+                    if len(fractions) < 3 or len(fractions) == len(temps) // 2:
+                        # Collapse instances to base names for debugging
+                        base_phases = {}
+                        for k, v in temp_phases.items():
+                            base_name = str(k).split('#')[0].upper()
+                            base_phases[base_name] = base_phases.get(base_name, 0.0) + v
+                        top_phases = sorted(base_phases.items(), key=lambda x: x[1], reverse=True)[:5]
+                        _log.info(f"At {T:.0f}K: top phases = {top_phases}, {phase_to_track} fraction = {phase_frac:.4f}")
                     
                     fractions.append(phase_frac)
                     

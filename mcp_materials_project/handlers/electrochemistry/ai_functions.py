@@ -100,14 +100,26 @@ class BatteryAIFunctionsMixin:
                 # Process electrode documents using utility function
                 electrode_data = utils.process_electrode_documents(results, working_ion)
                 
-                # If curated DB returns nothing, fall back to convex-hull computation
+                # Post-filter by framework composition if elements were specified
+                # This is CRITICAL because MP's query may use OR logic
+                if elements and electrode_data:
+                    el_list = {e.strip() for e in elements.split(",") if e.strip()}
+                    original_count = len(electrode_data)
+                    electrode_data = utils.filter_electrodes_by_framework(electrode_data, el_list)
+                    filtered_count = original_count - len(electrode_data)
+                    if filtered_count > 0:
+                        _log.info(f"Post-filtered {filtered_count} electrodes with frameworks outside {el_list}")
+                
+                # If curated DB returns nothing (or all filtered out), fall back to convex-hull computation
                 if not electrode_data and (formula or elements):
                     host_formula = formula
                     if not host_formula and elements:
                         el_list = [e.strip() for e in elements.split(",") if e.strip()]
+                        # For binary/ternary, create simple formula like "AlMg"
                         host_formula = "".join(el_list) if el_list else None
 
                     if host_formula:
+                        _log.info(f"No curated electrodes found; computing voltage via convex hull for {host_formula}")
                         synth = utils.compute_alloy_voltage_via_hull(
                             self.mpr, host_formula, working_ion=working_ion
                         )
@@ -123,7 +135,8 @@ class BatteryAIFunctionsMixin:
                         f"Found {len(electrode_data)} electrode materials"
                         + (" (computed from convex hull)" if electrode_data and electrode_data[0].get("source") == "computed_from_phase_diagram" else ""),
                         "Voltages are reported vs. the working ion (e.g., Li/Li+)",
-                        "capacity_grav is in mAh/g, energy_grav is in Wh/kg"
+                        "capacity_grav is in mAh/g, energy_grav is in Wh/kg",
+                        "Framework compositions verified to match requested elements" if elements else ""
                     ],
                     "citations": ["Materials Project", "pymatgen"]
                 }

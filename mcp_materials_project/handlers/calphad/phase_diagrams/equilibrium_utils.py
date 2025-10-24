@@ -12,6 +12,35 @@ import pycalphad.variables as v
 _log = logging.getLogger(__name__)
 
 
+def get_phase_fraction(phases_dict: Dict[str, float], target: str) -> float:
+    """
+    Sum phase fractions by base name, handling PyCalphad instance suffixes.
+    
+    PyCalphad often labels phase instances as SIC#1, AL4C3#2, etc.
+    This function sums all instances with the same base name.
+    
+    Args:
+        phases_dict: Dictionary of phase_name: fraction from equilibrium
+        target: Base phase name to look for (e.g., 'SIC', 'AL4C3')
+        
+    Returns:
+        Total fraction summed across all instances
+        
+    Example:
+        phases = {'SIC#1': 0.3, 'SIC#2': 0.2, 'FCC_A1': 0.5}
+        get_phase_fraction(phases, 'SIC')  # Returns 0.5
+    """
+    base = target.upper()
+    tot = 0.0
+    for k, v in phases_dict.items():
+        if k is None: 
+            continue
+        # Split by '#' to get base name, compare case-insensitively
+        if str(k).split('#')[0].upper() == base:
+            tot += float(v)
+    return tot
+
+
 def extract_phase_fractions_from_equilibrium(eq: Any, tolerance: float = 1e-4) -> Dict[str, float]:
     """
     Properly extract phase fractions from equilibrium result, handling multiple vertices.
