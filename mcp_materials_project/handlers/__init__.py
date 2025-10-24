@@ -24,6 +24,7 @@ from .search import (
 )
 from .electrochemistry import BatteryHandler
 from .alloys import AlloyHandler
+from .superconductors import SuperconductorHandler
 from .semiconductors import SemiconductorHandler, create_semiconductor_handler
 
 __all__ = [
@@ -49,6 +50,9 @@ __all__ = [
     
     # Alloys handlers
     "AlloyHandler",
+    
+    # Superconductor handlers
+    "SuperconductorHandler",
     
     # Semiconductor handlers
     "SemiconductorHandler",

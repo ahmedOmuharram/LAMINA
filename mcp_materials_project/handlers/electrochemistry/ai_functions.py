@@ -16,6 +16,157 @@ from . import utils
 _log = logging.getLogger(__name__)
 
 
+def _classify_electrode_structure(host: str, user_input: Optional[str]) -> str:
+    """Classify electrode structure type from formula or user hint."""
+    if user_input:
+        s = user_input.lower().strip()
+        if "layer" in s or "2d" in s:
+            return "layered"
+        if "1d" in s or "channel" in s:
+            return "1D-channel"
+        if "3d" in s or "frame" in s or "spinel" in s:
+            return "3D"
+        if "olivine" in s or "lfp" in s:
+            return "olivine"
+    
+    # Pattern matching on known materials
+    h_lower = host.lower()
+    
+    # Graphite / layered carbons
+    if "c" in h_lower and ("6" in h_lower or "graphite" in h_lower):
+        return "layered"
+    
+    # Common layered materials (TMDs, LCO, NCA, etc.)
+    if any(x in h_lower for x in ("coo", "nio", "mno2", "tis2", "mos2", "ws2", "nca", "nmc")):
+        return "layered"
+    
+    # Olivines (LiFePO4, etc.)
+    if "po4" in h_lower or "fep" in h_lower:
+        return "olivine"
+    
+    # 1D channels (some titanates, vanadates)
+    if any(x in h_lower for x in ("tio2", "v2o5", "vo2")):
+        return "1D-channel"
+    
+    # 3D frameworks (spinels, garnets)
+    if any(x in h_lower for x in ("mn2o4", "ti4o8", "lto", "llzo")):
+        return "3D"
+    
+    return "unknown"
+
+
+def _estimate_barrier_from_structure(host: str, ion: str, struct_type: str) -> Dict[str, Any]:
+    """Return barrier estimate based on structure class and known literature values."""
+    
+    # Known priors (literature benchmarks in eV)
+    KNOWN_BARRIERS = {
+        # Graphite (in-plane). Stage-specific values from NEB (Persson 2010) + μSR (Umegaki 2017).
+        ("C6", "Li"): {
+            "Ea": 0.28,  # stage I (LiC6)
+            "range": [0.20, 0.35],
+            "note": "Graphite stage I (LiC6), in-plane hopping",
+            "citations": [
+                "Persson et al., Phys. Rev. B 82, 125416 (2010), Table II (≈293 meV)",
+                "Umegaki et al., PCCP 19, 19058 (2017): Ea(C6Li)=270(5) meV"
+            ],
+            "descriptors": {"stage": "I", "path": "in-plane"}
+        },
+        ("C12", "Li"): {
+            "Ea": 0.20,  # stage II (LiC12)
+            "range": [0.15, 0.28],
+            "note": "Graphite stage II (LiC12), in-plane hopping",
+            "citations": [
+                "Persson et al., Phys. Rev. B 82, 125416 (2010), Table II (≈218-283 meV)",
+                "Umegaki et al., PCCP 19, 19058 (2017): Ea(C12Li)=170(20) meV"
+            ],
+            "descriptors": {"stage": "II", "path": "in-plane"}
+        },
+        ("graphite", "Li"): {
+            "Ea": 0.22,  # stage unspecified → midpoint between stage I/II
+            "range": [0.15, 0.30],
+            "note": "Graphite (stage unspecified), in-plane hopping",
+            "citations": [
+                "Persson et al., PRB 82, 125416 (2010)",
+                "Umegaki et al., PCCP 19, 19058 (2017)"
+            ],
+            "descriptors": {"stage": "unspecified", "path": "in-plane"}
+        },
+    }
+    
+    # 1) Exact formula match first (e.g., 'C6', 'C12')
+    for (mat, i), info in KNOWN_BARRIERS.items():
+        if ion == i and host.strip().lower() == mat.lower():
+            d = {"literature_value": True, "note": info["note"]}
+            d.update(info.get("descriptors", {}))
+            return {
+                "Ea_eV": info["Ea"],
+                "range_eV": info["range"],
+                "confidence": "high",
+                "descriptors": d,
+                "citations": info.get("citations", ["Literature benchmark values"]),
+            }
+    
+    # 2) Relaxed contains match (e.g., 'graphite', 'LiC6 (graphite)')
+    for (mat, i), info in KNOWN_BARRIERS.items():
+        if ion == i and mat.lower() in host.lower():
+            d = {"literature_value": True, "note": info["note"]}
+            d.update(info.get("descriptors", {}))
+            return {
+                "Ea_eV": info["Ea"],
+                "range_eV": info["range"],
+                "confidence": "medium" if mat.lower() == "graphite" else "high",
+                "descriptors": d,
+                "citations": info.get("citations", ["Literature benchmark values"]),
+            }
+    
+    # Structure-based estimates (generic)
+    STRUCTURE_DEFAULTS = {
+        "layered": {
+            "Ea": 0.30,
+            "range": [0.15, 0.50],
+            "confidence": "medium",
+            "note": "Layered hosts: graphite in-plane ~0.17–0.30 eV (stage dependent); layered oxides/sulfides typically ~0.3–0.5 eV",
+        },
+        "1D-channel": {
+            "Ea": 0.30,
+            "range": [0.15, 0.50],
+            "confidence": "medium",
+            "note": "1D channels: moderate barriers along channel direction",
+        },
+        "olivine": {
+            "Ea": 0.25,
+            "range": [0.15, 0.35],
+            "confidence": "medium",
+            "note": "Olivine structures: 1D channels with typical barriers ~0.2-0.3 eV",
+        },
+        "3D": {
+            "Ea": 0.40,
+            "range": [0.20, 0.70],
+            "confidence": "low",
+            "note": "3D frameworks: higher barriers, more tortuous paths",
+        },
+        "unknown": {
+            "Ea": 0.35,
+            "range": [0.10, 0.80],
+            "confidence": "low",
+            "note": "Structure unknown; wide uncertainty",
+        },
+    }
+    
+    defaults = STRUCTURE_DEFAULTS.get(struct_type, STRUCTURE_DEFAULTS["unknown"])
+    
+    return {
+        "Ea_eV": defaults["Ea"],
+        "range_eV": defaults["range"],
+        "confidence": defaults["confidence"],
+        "descriptors": {
+            "structure_type": struct_type,
+            "note": defaults["note"],
+        },
+        "citations": ["Structure-based heuristics from battery literature"],
+    }
+
+
 class BatteryAIFunctionsMixin:
     """Mixin class containing AI function methods for BatteryHandler."""
 
@@ -592,4 +743,53 @@ class BatteryAIFunctionsMixin:
         )
         result["citations"] = ["Materials Project", "pymatgen"]
         return result
+
+    @ai_function(
+        desc=(
+            "Estimate the ion hopping/diffusion barrier (activation energy, eV) for an intercalating ion "
+            "(e.g., Li, Na, Mg) moving between sites in an electrode material (e.g., graphite, LiFePO4). "
+            "Use this for questions about ion mobility, diffusion barriers, or lithium hopping in electrodes."
+        ),
+        auto_truncate=128000,
+    )
+    async def estimate_ion_hopping_barrier(
+        self,
+        host_material: Annotated[str, AIParam(desc="Host electrode material formula, e.g., 'C6' (graphite), 'LiFePO4', 'TiS2'.")],
+        ion: Annotated[str, AIParam(desc="Intercalating ion, e.g., 'Li', 'Na', 'Mg'.")] = "Li",
+        structure_type: Annotated[Optional[str], AIParam(desc="Structure type/dimensionality: 'layered', '1D-channel', '3D', or 'olivine'. Optional.")] = None,
+    ) -> Dict[str, Any]:
+        """
+        Estimate ion hopping barrier in electrode materials using structure-based heuristics.
+        """
+        try:
+            # Normalize inputs
+            ion_sym = ion.strip().capitalize()
+            host = host_material.strip()
+            
+            # Classify structure type if not provided or normalize user input
+            struct_type = _classify_electrode_structure(host, structure_type)
+            
+            # Get typical barrier ranges and confidence based on structure + known priors
+            barrier_info = _estimate_barrier_from_structure(host, ion_sym, struct_type)
+            
+            return {
+                "success": True,
+                "host_material": host,
+                "ion": ion_sym,
+                "structure_type": struct_type,
+                "activation_energy_eV": barrier_info["Ea_eV"],
+                "energy_range_eV": barrier_info["range_eV"],
+                "confidence": barrier_info["confidence"],
+                "method": "structure_heuristic_v1",
+                "descriptors": barrier_info.get("descriptors", {}),
+                "caveats": (
+                    "Heuristic estimate based on material class and structure dimensionality. "
+                    "Actual barriers depend on crystallographic pathway, site occupancy, lattice strain, "
+                    "and defect concentration. Use DFT+NEB or impedance spectroscopy for accuracy."
+                ),
+                "citations": barrier_info.get("citations", []),
+            }
+        except Exception as e:
+            _log.error(f"Error estimating ion hopping barrier for {host_material}/{ion}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
