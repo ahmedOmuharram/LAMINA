@@ -16,7 +16,8 @@ from .utils import (
     compare_magnetic_properties,
     calculate_defect_formation_energy,
     analyze_doping_site_preference,
-    analyze_structure_temperature_dependence
+    analyze_structure_temperature_dependence,
+    predict_site_preference
 )
 
 _log = logging.getLogger(__name__)
@@ -284,8 +285,7 @@ class SemiconductorAIFunctionsMixin:
                     "material_id", "formula_pretty", "composition",
                     "energy_above_hull", "is_stable", "symmetry",
                     "is_magnetic", "ordering", "total_magnetization"
-                ],
-                _limit=max_results * 2
+                ]
             )
             
             if not docs:
@@ -344,6 +344,83 @@ class SemiconductorAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error searching doped materials: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @ai_function(
+        desc=(
+            "Predict whether a dopant prefers substitutional or interstitial sites in a semiconductor. "
+            "By default uses physics-based heuristics; if you pass DFT formation energies, they take precedence."
+        ),
+        auto_truncate=128000,
+    )
+    async def predict_defect_site_preference(
+        self,
+        host: Annotated[str, AIParam(desc='Host element symbol, e.g., Si, Ga, Zn')],
+        dopant: Annotated[str, AIParam(desc='Dopant element symbol, e.g., P, B, As')],
+        mp_material_id: Annotated[Optional[str], AIParam(desc='Optional Materials Project ID for the host (for structure).')] = None,
+        E_sub_eV: Annotated[Optional[float], AIParam(desc='Optional DFT formation energy for substitutional (eV).')] = None,
+        E_int_tet_eV: Annotated[Optional[float], AIParam(desc='Optional DFT formation energy for tetra interstitial (eV).')] = None,
+        E_int_oct_eV: Annotated[Optional[float], AIParam(desc='Optional DFT formation energy for octa interstitial (eV).')] = None,
+    ) -> Dict[str, Any]:
+        """
+        Predict whether dopant prefers substitutional or interstitial sites.
+        
+        Uses physics-based heuristics considering:
+        - Size mismatch (covalent radii)
+        - Valence group differences
+        - Electronegativity differences
+        - Steric strain for interstitials
+        
+        If DFT formation energies are provided, they override heuristics.
+        """
+        try:
+            dft = None
+            if any(v is not None for v in (E_sub_eV, E_int_tet_eV, E_int_oct_eV)):
+                dft = {
+                    k: v for k, v in {
+                        "sub": E_sub_eV, "int_tet": E_int_tet_eV, "int_oct": E_int_oct_eV
+                    }.items() if v is not None
+                }
+            
+            res = predict_site_preference(
+                host=host,
+                dopant=dopant,
+                mpr=self.mpr,
+                material_id=mp_material_id,
+                dft_formation_energies=dft
+            )
+            
+            result = {
+                "success": res.success,
+                "host": res.host,
+                "dopant": res.dopant,
+                "method": res.method,
+                "preferred_site": res.preferred_site,
+                "formation_energy_proxies_eV": {
+                    "substitutional": res.E_sub_eV,
+                    "interstitial_tetra": res.E_int_tet_eV,
+                    "interstitial_hex": res.E_int_hex_eV  # hex for diamond, oct for fcc/hcp
+                },
+                "margin_eV": res.margin_eV,
+                "verdict": res.verdict,
+                "notes": res.notes,
+                "diagnostics": res.diagnostics,
+                "citations": ["Zhang–Northrup defect formation framework", "Van de Walle–Neugebauer"]
+            }
+            
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "predict_defect_site_preference",
+                    "result": result
+                })
+            
+            return result
+            
+        except Exception as e:
+            _log.error(f"Error in predict_defect_site_preference: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)

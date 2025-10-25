@@ -7,6 +7,7 @@ This package contains organized handlers for different aspects of materials scie
 - electrochemistry/: Battery and electrode calculations
 - calphad/: Phase diagram calculations
 - semiconductors/: Semiconductor defect and doping analysis
+- magnets/: Permanent magnet strength assessment and doping effects
 """
 
 from .base import BaseHandler, InvalidRangeError, RANGE_KEYS
@@ -26,6 +27,7 @@ from .electrochemistry import BatteryHandler
 from .alloys import AlloyHandler
 from .superconductors import SuperconductorHandler
 from .semiconductors import SemiconductorHandler, create_semiconductor_handler
+from .magnets import MagnetHandler, create_magnet_handler
 
 __all__ = [
     # Base classes
@@ -57,4 +59,8 @@ __all__ = [
     # Semiconductor handlers
     "SemiconductorHandler",
     "create_semiconductor_handler",
+    
+    # Magnet handlers
+    "MagnetHandler",
+    "create_magnet_handler",
 ]

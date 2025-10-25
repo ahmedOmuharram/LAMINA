@@ -422,7 +422,6 @@ def calculate_defect_formation_energy(
                 "material_id", "formula_pretty", "composition",
                 "energy_per_atom", "nsites", "energy_above_hull"
             ],
-            _limit=20
         )
         
         # Find best match
@@ -521,7 +520,7 @@ def analyze_doping_site_preference(
             }
         
         # Get the most stable entry
-        host_doc = sorted(host_docs, key=lambda x: getattr(x, 'energy_above_hull', float('inf')))[0]
+        host_doc = sorted(host_docs, key=lambda x: getattr(x, 'energy_above_hull', None) or float('inf'))[0]
         host_energy = host_doc.energy_per_atom if hasattr(host_doc, 'energy_per_atom') else None
         
         if host_energy is None:
@@ -559,7 +558,6 @@ def analyze_doping_site_preference(
                 "material_id", "formula_pretty", "composition",
                 "energy_per_atom", "energy_above_hull", "is_stable"
             ],
-            _limit=50
         )
         
         # Analyze compositions to identify substitution sites
@@ -741,3 +739,416 @@ def analyze_structure_temperature_dependence(
             "error": str(e)
         }
 
+"""
+General-purpose tool to assess whether a dopant prefers substitutional
+or interstitial sites in a crystalline semiconductor (e.g., Si:P).
+
+It supports three modes:
+  (A) If you provide DFT formation energies -> uses them directly.
+  (B) Else, if an MPRester is given -> fetches structure and computes
+      geometric/chemical descriptors for a physics-based heuristic.
+  (C) Else -> falls back to host-class defaults (still transparent).
+
+Outputs a comparative 'formation-energy proxy' and a verdict.
+
+Design choices & physics:
+- Substitutional formation 'cost' ~ bond rehybridization + size mismatch.
+- Interstitial formation 'cost' ~ strong steric strain + bond breaking.
+- For covalent hosts (diamond/zincblende), interstitial sites are tiny;
+  large dopants are heavily penalized (P in Si is a classic example).
+- Group-V on Si (substitutional) is a shallow donor; interstitial P
+  typically unstable/metastable and converts via kick-out to substitutional.
+
+References (conceptual, not hard-coded):
+- Zhang–Northrup / Van de Walle–Neugebauer defect formation framework.
+- Site-size/strain arguments; kick-out mechanism in covalent semiconductors.
+"""
+
+import math
+from dataclasses import dataclass
+from typing import Literal
+
+# Use mendeleev for covalent radii/electronegativity if available
+try:
+    from mendeleev import element as md_element  # type: ignore
+except Exception:
+    md_element = None  # type: ignore
+
+
+# ---- Basic data helpers ------------------------------------------------------
+
+def _to_Angstrom(val: Optional[float]) -> Optional[float]:
+    """Convert pm-ish values to Å. If > 4.5, assume pm and /100."""
+    if val is None:
+        return None
+    return val / 100.0 if val > 4.5 else val
+
+def _covalent_radius_A(sym: str) -> Optional[float]:
+    """Get covalent radius in Å; supports mendeleev (pm) and pymatgen (Å)."""
+    # mendeleev first, but convert pm -> Å
+    if md_element:
+        try:
+            e = md_element(sym)
+            # Prefer Pyykkö single-bond; fall back sanely.
+            r = getattr(e, "covalent_radius_pyykko", None)
+            # Some mendeleev versions store multiple bonds in a dict
+            if isinstance(r, dict):
+                r = r.get("single") or r.get(1)
+            if r is None:
+                r = getattr(e, "covalent_radius", None)
+            r = _to_Angstrom(float(r)) if r is not None else None
+            if r:
+                return r
+        except Exception:
+            pass
+    # pymatgen (already in Å)
+    try:
+        r = Element(sym).average_covalent_radius
+        if r:
+            return float(r)
+    except Exception:
+        pass
+    # small fallback table, in Å
+    fallback = {
+        "H": 0.31, "B": 0.85, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57,
+        "Si": 1.11, "P": 1.07, "S": 1.05, "Ge": 1.22, "As": 1.19
+    }
+    return fallback.get(sym)
+
+
+def _pauling_en(sym: str) -> Optional[float]:
+    if md_element:
+        try:
+            e = md_element(sym)
+            return float(e.en_pauling) if e.en_pauling is not None else None
+        except Exception:
+            pass
+    try:
+        return Element(sym).X
+    except Exception:
+        pass
+    return None
+
+
+def _valence_group(sym: str) -> Optional[int]:
+    """Return periodic group number for lightweight valence heuristic."""
+    if md_element:
+        try:
+            g = md_element(sym).group_id
+            return int(g) if g else None
+        except Exception:
+            pass
+    try:
+        return Element(sym).group
+    except Exception:
+        pass
+    # Fallback for a few common species
+    f = {"B": 13, "C": 14, "N": 15, "O": 16, "Si": 14, "P": 15, "S": 16, "Ge": 14, "As": 15}
+    return f.get(sym)
+
+
+# ---- Geometry helpers --------------------------------------------------------
+
+@dataclass
+class VoidSizes:
+    r_tet_A: float
+    r_hex_A: float
+
+def _nn_distance_A(struct: Structure) -> float:
+    """Approximate nearest-neighbor distance from CrystalNN or simple min distance."""
+    # Robust: use CrystalNN and honor periodic images; fall back to radial neighbors
+    try:
+        from pymatgen.analysis.local_env import CrystalNN
+        cnn = CrystalNN()
+        nn = cnn.get_nn_info(struct, 0)
+        dists = []
+        for n in nn:
+            j = n['site_index']
+            img = n.get('image', (0, 0, 0))
+            d = struct.get_distance(0, j, jimage=img)  # <- honors periodic images
+            if d > 1e-6:  # exclude self/near-self
+                dists.append(d)
+        if dists:
+            return float(sorted(dists)[0])  # first NN
+    except Exception:
+        pass
+    # Fallback: smallest non-zero distance from distance_matrix
+    dm = struct.distance_matrix
+    mind = min(dm[i][j] for i in range(len(dm)) for j in range(len(dm)) if i != j and dm[i][j] > 1e-6)
+    return float(mind)
+
+def _estimate_void_sizes(struct: Optional[Structure], host_sym: str) -> Tuple[VoidSizes, float]:
+    """
+    Estimate tetrahedral and hexagonal/octahedral void radii (Å), and return the
+    NN distance used (Å) for diagnostics.
+    """
+    if struct is not None:
+        d = _nn_distance_A(struct)
+    else:
+        r = _covalent_radius_A(host_sym) or 1.1
+        d = 2.0 * r
+
+    # Host-specific sanity clamps
+    if host_sym in {"Si", "Ge", "C"}:  # diamond
+        expected = {"Si": 2.35, "Ge": 2.45, "C": 1.54}.get(host_sym, 2.35)
+        if not (0.9 * expected <= d <= 1.1 * expected):
+            _log.warning(f"NN distance {d:.2f} Å for {host_sym} outside expected range; using {expected:.2f} Å")
+            d = expected
+    else:
+        if d < 1.5 or d > 4.0:
+            d = 2.0 * (_covalent_radius_A(host_sym) or 1.1)
+
+    # Diamond: T ~ 0.225 d, H ~ 0.414 d. Add small floors.
+    r_tet = max(0.40, 0.225 * d)
+    r_hex = max(0.60, 0.414 * d)
+
+    return VoidSizes(float(r_tet), float(r_hex)), float(d)
+
+
+# ---- Formation-energy proxies (heuristic) ------------------------------------
+
+@dataclass
+class SiteScores:
+    Eproxy_sub_eV: float
+    Eproxy_int_tet_eV: float
+    Eproxy_int_hex_eV: float  # hex for diamond, oct for fcc/hcp
+    details: Dict[str, Any]
+    diagnostics: Dict[str, Any]
+
+def _formation_proxy_subst(host: str, dopant: str, struct: Optional[Structure]) -> float:
+    """
+    Substitutional 'formation energy proxy' (lower is better).
+    Terms:
+      + size_mismatch_penalty ~ k_s * (Δr / r_host)^2
+      + valence_mismatch_penalty ~ k_v * max(0, |Δgroup| - 1)  (one electron off is OK for doping)
+      + en_mismatch_penalty    ~ k_en * |Δχ|  (large χ difference can be unfavorable in covalents)
+    Tuned to keep magnitudes reasonable; absolute values meaningless, comparison is key.
+    """
+    r_host = _covalent_radius_A(host) or 1.1
+    r_dop  = _covalent_radius_A(dopant) or 1.1
+    dgrp   = 0
+    g_h = _valence_group(host)
+    g_d = _valence_group(dopant)
+    if g_h and g_d:
+        dgrp = abs(g_d - g_h)
+    dchi = 0.0
+    chi_h = _pauling_en(host)
+    chi_d = _pauling_en(dopant)
+    if chi_h is not None and chi_d is not None:
+        dchi = abs(chi_d - chi_h)
+
+    k_s, k_v, k_en = 3.0, 0.5, 0.3
+    size_pen = k_s * ( (r_dop - r_host) / r_host )**2
+    val_pen  = k_v * max(0, dgrp - 1)  # allow ±1 as dopant
+    en_pen   = k_en * dchi
+
+    # Small bonus for classic shallow dopants in group-IV hosts (e.g., P->Si, B->Si)
+    bonus = 0.0
+    if host in {"Si", "Ge", "C"} and g_h == 14 and g_d in {13, 15}:
+        bonus = -0.5
+
+    return float(size_pen + val_pen + en_pen + bonus)
+
+def _formation_proxy_interstitial(host: str, dopant: str, struct: Optional[Structure]) -> Dict[str, Any]:
+    """
+    Interstitial proxy for tetra (T) and hex (H) in diamond (or octa in fcc/hcp).
+    """
+    r_dop = _covalent_radius_A(dopant) or 1.1
+    voids, d_used = _estimate_void_sizes(struct, host)
+    chi_h = _pauling_en(host)
+    chi_d = _pauling_en(dopant)
+    dchi = abs(chi_d - chi_h) if (chi_h is not None and chi_d is not None) else 0.0
+
+    # Tuned coefficients: diamond has higher network-disruption baseline.
+    if host in {"Si", "Ge", "C"}:
+        k_i, k_en, b0 = 14.0, 0.3, 2.5
+    else:
+        k_i, k_en, b0 = 20.0, 0.3, 1.0
+
+    diagnostics = {
+        "d_nn_A": d_used,
+        "radii_A": {
+            "dopant": r_dop,
+            "tet_void": voids.r_tet_A,
+            "hex_void": voids.r_hex_A,
+        },
+        "overfill": {},
+        "cap_hit": {},
+        "warnings": []
+    }
+
+    def strain(r_void, site_name: str):
+        r_void = max(r_void, 0.40)  # Å
+        overfill_raw = max(0.0, r_dop / r_void - 1.0)
+        cap_hit = overfill_raw >= 2.0
+        overfill = min(overfill_raw, 2.0)  # soft cap mainly for pathologies
+        diagnostics["overfill"][site_name] = float(overfill_raw)
+        diagnostics["cap_hit"][site_name] = bool(cap_hit)
+        if cap_hit:
+            diagnostics["warnings"].append(
+                f"{site_name.capitalize()} interstitial strain hit cap (overfill={overfill_raw:.2f}); proxy is a lower bound"
+            )
+        return k_i * (overfill ** 2)
+
+    E_tet = b0 + strain(voids.r_tet_A, "tet") + k_en * dchi
+    E_hex = b0 + strain(voids.r_hex_A, "hex") + k_en * dchi
+
+    return {
+        "tet": float(E_tet),
+        "hex": float(E_hex),
+        "r_tet_A": voids.r_tet_A,
+        "r_hex_A": voids.r_hex_A,
+        "r_dop_A": r_dop,
+        "diagnostics": diagnostics
+    }
+
+
+def _score_sites(host: str, dopant: str, struct: Optional[Structure]) -> SiteScores:
+    E_sub = _formation_proxy_subst(host, dopant, struct)
+    ints = _formation_proxy_interstitial(host, dopant, struct)
+    
+    return SiteScores(
+        Eproxy_sub_eV=E_sub,
+        Eproxy_int_tet_eV=ints["tet"],
+        Eproxy_int_hex_eV=ints["hex"],
+        details={
+            "radii_A": {
+                "host": _covalent_radius_A(host),
+                "dopant": ints["r_dop_A"],
+                "tet_void": ints["r_tet_A"],
+                "hex_void": ints["r_hex_A"],
+            }
+        },
+        diagnostics=ints["diagnostics"]
+    )
+
+
+# ---- Public API --------------------------------------------------------------
+
+@dataclass
+class SitePreferenceResult:
+    success: bool
+    host: str
+    dopant: str
+    method: Literal["DFT-provided", "heuristic-structure", "heuristic-generic"]
+    preferred_site: Literal["substitutional", "interstitial-tetra", "interstitial-hex"]
+    E_sub_eV: float
+    E_int_tet_eV: float
+    E_int_hex_eV: float  # hex for diamond, oct for fcc/hcp
+    margin_eV: float
+    verdict: str
+    notes: Dict[str, Any]
+    diagnostics: Optional[Dict[str, Any]] = None
+
+def predict_site_preference(
+    host: str,
+    dopant: str,
+    mpr: Optional[Any] = None,
+    material_id: Optional[str] = None,
+    dft_formation_energies: Optional[Dict[str, float]] = None,
+) -> SitePreferenceResult:
+    """
+    Decide whether dopant prefers substitutional or interstitial sites.
+
+    Args:
+      host: host element symbol (e.g., "Si")
+      dopant: dopant element symbol (e.g., "P")
+      mpr: optional MPRester; if given, we fetch a representative bulk structure
+      material_id: optional MP id to disambiguate structure
+      dft_formation_energies: optional dict with keys in
+            {"sub","int_tet","int_oct"} and values (eV). If provided, these
+            override heuristics.
+
+    Returns:
+      SitePreferenceResult with a clear verdict and margins.
+    """
+    host = host.strip().capitalize()
+    dopant = dopant.strip().capitalize()
+
+    # (A) If DFT energies are given, use them directly
+    diagnostics = None
+    if dft_formation_energies:
+        E_sub = float(dft_formation_energies.get("sub", math.inf))
+        E_tet = float(dft_formation_energies.get("int_tet", math.inf))
+        E_hex = float(dft_formation_energies.get("int_oct", math.inf))  # accept "int_oct" for backwards compat
+        method = "DFT-provided"
+        struct = None
+    else:
+        # Try to fetch a structure
+        struct = None
+        method = "heuristic-generic"
+        if mpr:
+            try:
+                if material_id:
+                    docs = mpr.materials.summary.search(
+                        material_ids=[material_id],
+                        fields=["structure"],
+                    )
+                else:
+                    docs = mpr.materials.summary.search(
+                        formula=f"{host}",
+                        fields=["structure", "formula_pretty", "is_stable", "energy_above_hull"],
+                    )
+                if docs:
+                    struct = docs[0].structure
+                    method = "heuristic-structure"
+            except Exception as e:
+                _log.warning(f"MP fetch failed; falling back to generic heuristic: {e}")
+
+        scores = _score_sites(host, dopant, struct)
+        E_sub, E_tet, E_hex = scores.Eproxy_sub_eV, scores.Eproxy_int_tet_eV, scores.Eproxy_int_hex_eV
+        diagnostics = scores.diagnostics
+        
+        # Sanity check: if any proxy is unphysical, fall back to structure-free generic heuristic
+        if not all(np.isfinite([E_sub, E_tet, E_hex])) or any(v > 100.0 for v in [E_sub, E_tet, E_hex]):
+            _log.warning(f"Unphysical proxy values detected (sub={E_sub:.1e}, tet={E_tet:.1e}, hex={E_hex:.1e}); falling back to generic heuristic")
+            scores = _score_sites(host, dopant, struct=None)  # generic, structure-free fallback
+            E_sub, E_tet, E_hex = scores.Eproxy_sub_eV, scores.Eproxy_int_tet_eV, scores.Eproxy_int_hex_eV
+            diagnostics = scores.diagnostics
+            method = "heuristic-generic"
+
+    # Pick preference and margin
+    site_map = {
+        "substitutional": E_sub,
+        "interstitial-tetra": E_tet,
+        "interstitial-hex": E_hex
+    }
+    preferred = min(site_map, key=site_map.get)
+    others = [v for k, v in site_map.items() if k != preferred]
+    margin = min([x - site_map[preferred] for x in others])
+
+    # Craft verdict
+    if preferred == "substitutional":
+        verdict = (
+            f"{dopant} prefers the substitutional site in {host} by ~{margin:.2f} eV "
+            f"(vs interstitial). Interstitial configurations are predicted unstable/higher in energy."
+        )
+    else:
+        verdict = (
+            f"{dopant} tends to occupy {preferred} over substitutional in {host} by ~{margin:.2f} eV."
+        )
+
+    # Build notes with warnings from diagnostics
+    notes = {"caveats": [
+        "Proxies compare relative stabilities; absolute values are not DFT formation energies.",
+        "If you have DFT or experimental defect energies, pass them in dft_formation_energies to override.",
+        "Results are most reliable for covalent semiconductors (diamond/zincblende/wurtzite)."
+    ]}
+    
+    if diagnostics and diagnostics.get("warnings"):
+        notes["warnings"] = diagnostics["warnings"]
+    
+    return SitePreferenceResult(
+        success=True,
+        host=host,
+        dopant=dopant,
+        method=method,  # "DFT-provided", "heuristic-structure", or "heuristic-generic"
+        preferred_site=preferred,
+        E_sub_eV=float(E_sub),
+        E_int_tet_eV=float(E_tet),
+        E_int_hex_eV=float(E_hex),
+        margin_eV=float(margin),
+        verdict=verdict,
+        notes=notes,
+        diagnostics=diagnostics
+    )
