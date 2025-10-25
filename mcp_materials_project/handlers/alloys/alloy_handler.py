@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
-from typing import Any, Dict, Optional, Annotated, Tuple
+from typing import Any, Dict, Optional, Annotated, Tuple, List
+from pathlib import Path
 
 from kani import ai_function, AIParam
 from ..base import BaseHandler
@@ -232,3 +233,731 @@ class AlloyHandler(BaseHandler):
         except Exception as e:
             _log.error(f"Error estimating surface diffusion barrier for {adatom_element} on {host_element}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+    
+    def _compute_equilibrium_microstructure(
+        self,
+        db,
+        system_elems: Tuple[str, str],
+        composition: Dict[str, float],
+        temperature_K: float
+    ) -> Dict[str, Any]:
+        """
+        Compute equilibrium phase fractions at a specific composition and temperature.
+        
+        Args:
+            db: pycalphad Database
+            system_elems: tuple like ("Fe", "Al")
+            composition: dict like {"Fe": 30.0, "Al": 70.0}  # at.%
+            temperature_K: float
+            
+        Returns:
+            {
+                "phases": [{"name": "AL5FE2", "fraction": 0.70}, ...],
+                "matrix_phase": "AL5FE2" or "BCC_A2",
+                "secondary_phases": [...],
+            }
+        """
+        try:
+            from pycalphad import equilibrium, variables as v
+            from ..calphad.phase_diagrams.equilibrium_utils import extract_phase_fractions_from_equilibrium
+            from ..calphad.phase_diagrams.database_utils import get_db_elements
+            
+            A, B = system_elems
+            
+            # Get actual elements from database and verify
+            db_elems = get_db_elements(db)
+            A_upper = A.upper()
+            B_upper = B.upper()
+            
+            if A_upper not in db_elems or B_upper not in db_elems:
+                return {
+                    "success": False,
+                    "error": f"Elements {A} and {B} not found in database. Available: {sorted(db_elems)}",
+                    "phases": [],
+                    "matrix_phase": None,
+                    "secondary_phases": []
+                }
+            
+            # Use uppercase element names as they appear in database
+            elements = [A_upper, B_upper, 'VA']
+            
+            # Get phases for this system - import from CALPHAD handler
+            from ..calphad.phase_diagrams.phase_diagrams import CalPhadHandler
+            temp_handler = CalPhadHandler()
+            phases = temp_handler._filter_phases_for_system(db, (A_upper, B_upper))
+            
+            # Convert composition to mole fractions
+            # Use original capitalization for dict lookup
+            total = sum(composition.values())
+            x_A = composition.get(A, 0.0) / total
+            x_B = composition.get(B, 0.0) / total
+            
+            # Calculate equilibrium using uppercase element for pycalphad
+            conditions = {v.X(B_upper): x_B, v.T: temperature_K, v.P: 101325, v.N: 1}
+            eq = equilibrium(db, elements, phases, conditions)
+            
+            # Extract phase fractions
+            phase_fractions = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
+            
+            # Build phase list
+            phase_list = [
+                {"name": phase, "fraction": frac}
+                for phase, frac in sorted(phase_fractions.items(), key=lambda x: -x[1])
+                if frac > 0.01
+            ]
+            
+            if not phase_list:
+                return {
+                    "success": False,
+                    "error": "No stable phases found at this condition",
+                    "phases": [],
+                    "matrix_phase": None,
+                    "secondary_phases": []
+                }
+            
+            # Matrix is the phase with maximum fraction
+            matrix_phase = max(phase_fractions.items(), key=lambda x: x[1])[0]
+            
+            # Secondary phases are all others
+            secondary_phases = [
+                {"name": phase, "fraction": frac}
+                for phase, frac in phase_fractions.items()
+                if phase != matrix_phase and frac > 0.01
+            ]
+            
+            return {
+                "success": True,
+                "phases": phase_list,
+                "matrix_phase": matrix_phase,
+                "secondary_phases": secondary_phases,
+                "phase_fractions": phase_fractions
+            }
+            
+        except Exception as e:
+            _log.error(f"Error computing equilibrium microstructure: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "phases": [],
+                "matrix_phase": None,
+                "secondary_phases": []
+            }
+    
+    def _get_phase_mech_descriptors(
+        self,
+        phase_name: str,
+        composition_hint: Dict[str, float],
+        system_elems: Tuple[str, str]
+    ) -> Dict[str, Any]:
+        """
+        Get mechanical descriptors for a phase using Materials Project API.
+        
+        Args:
+            phase_name: CALPHAD phase label (e.g., "AL2FE", "BCC_A2")
+            composition_hint: dict with element percentages
+            system_elems: tuple of elements in system
+            
+        Returns:
+            {
+                "is_intermetallic": bool,
+                "is_bcc_like": bool,
+                "is_fcc_like": bool,
+                "bulk_modulus_GPa": float | None,
+                "shear_modulus_GPa": float | None,
+                "pugh_ratio": float | None,
+                "brittle_flag": bool | None,
+                "crystal_system": str | None
+            }
+        """
+        try:
+            phase_upper = phase_name.upper()
+            
+            # Classify based on CALPHAD phase label patterns
+            is_bcc_like = "BCC" in phase_upper or "A2" in phase_upper
+            is_fcc_like = "FCC" in phase_upper or "A1" in phase_upper
+            is_hcp_like = "HCP" in phase_upper or "A3" in phase_upper
+            
+            # Solid solutions (disordered) vs ordered intermetallics
+            is_solid_solution = is_bcc_like or is_fcc_like or is_hcp_like
+            is_intermetallic = not is_solid_solution
+            
+            result = {
+                "is_intermetallic": is_intermetallic,
+                "is_bcc_like": is_bcc_like,
+                "is_fcc_like": is_fcc_like,
+                "is_hcp_like": is_hcp_like,
+                "bulk_modulus_GPa": None,
+                "shear_modulus_GPa": None,
+                "pugh_ratio": None,
+                "brittle_flag": None,
+                "crystal_system": None,
+                "source": "classification_only"
+            }
+            
+            # Try to get elastic data from Materials Project
+            if self.mpr and is_intermetallic:
+                try:
+                    # Parse stoichiometry from phase name (e.g., AL2FE -> Al2Fe)
+                    # This is a simple heuristic parser
+                    formula = self._parse_phase_to_formula(phase_name, system_elems)
+                    
+                    if formula:
+                        _log.info(f"Searching MP for phase {phase_name} with formula {formula}")
+                        
+                        # Search for materials with this composition
+                        from mp_api.client import MPRester
+                        from pymatgen.core import Composition
+                        
+                        # Search for materials matching the formula
+                        docs = self.mpr.materials.summary.search(
+                            formula=formula,
+                            fields=["material_id", "formula_pretty", "symmetry", 
+                                   "bulk_modulus", "shear_modulus"]
+                        )
+                        
+                        if docs:
+                            # Take first match with elasticity data
+                            for doc in docs[:3]:  # Check up to 3 matches
+                                try:
+                                    if hasattr(doc, 'symmetry'):
+                                        result["crystal_system"] = doc.symmetry.crystal_system
+                                    
+                                    # Get elastic properties if available (VRH averages)
+                                    bulk_mod = getattr(doc, 'bulk_modulus', None)
+                                    shear_mod = getattr(doc, 'shear_modulus', None)
+                                    
+                                    # bulk_modulus and shear_modulus might be dict with 'vrh' key
+                                    if isinstance(bulk_mod, dict):
+                                        bulk_mod = bulk_mod.get('vrh', None)
+                                    if isinstance(shear_mod, dict):
+                                        shear_mod = shear_mod.get('vrh', None)
+                                    
+                                    if bulk_mod is not None and shear_mod is not None:
+                                        result["bulk_modulus_GPa"] = float(bulk_mod)
+                                        result["shear_modulus_GPa"] = float(shear_mod)
+                                        
+                                        # Calculate Pugh ratio (G/B)
+                                        # Pugh ratio > 0.57 typically indicates brittle behavior
+                                        pugh = float(shear_mod) / float(bulk_mod)
+                                        result["pugh_ratio"] = pugh
+                                        result["brittle_flag"] = (pugh >= 0.57)
+                                        result["source"] = f"MP:{doc.material_id}"
+                                        
+                                        _log.info(f"Found elastic data for {phase_name}: B={bulk_mod:.1f} GPa, G={shear_mod:.1f} GPa, Pugh={pugh:.3f}")
+                                        break
+                                except Exception as e:
+                                    _log.debug(f"Error processing MP doc: {e}")
+                                    continue
+                                    
+                except Exception as e:
+                    _log.warning(f"Could not fetch MP data for {phase_name}: {e}")
+            
+            # Fallback heuristics if no MP data
+            if result["brittle_flag"] is None:
+                # Heuristic: Intermetallics are typically more brittle
+                # Solid solutions (BCC, FCC, HCP) are typically more ductile
+                if is_intermetallic:
+                    result["brittle_flag"] = True  # Assume brittle for intermetallics
+                    result["source"] = "heuristic:intermetallic"
+                elif is_bcc_like:
+                    result["brittle_flag"] = False  # BCC can be ductile at high T
+                    result["source"] = "heuristic:bcc"
+                elif is_fcc_like:
+                    result["brittle_flag"] = False  # FCC typically ductile
+                    result["source"] = "heuristic:fcc"
+                else:
+                    result["brittle_flag"] = None  # Unknown
+                    result["source"] = "unknown"
+            
+            # Special cases: Near-equiatomic ordered intermetallics that may be labeled as BCC/FCC
+            # but are actually brittle ordered phases
+            if is_bcc_like or is_fcc_like:
+                A, B = [e.upper() for e in system_elems]
+                total = sum(composition_hint.values())
+                
+                # Get composition fractions (try both cases)
+                fracs = {}
+                for elem in [A, B]:
+                    fracs[elem] = (
+                        composition_hint.get(elem, 0.0) + 
+                        composition_hint.get(elem.capitalize(), 0.0)
+                    ) / total
+                
+                elem_pair = {A, B}
+                
+                # Fe-Al near 50:50 → B2-ordered FeAl (brittle)
+                if elem_pair == {"FE", "AL"} and 0.40 <= fracs.get("FE", 0) <= 0.60:
+                    result["brittle_flag"] = True
+                    result["source"] = "heuristic:B2_FeAl_ordered"
+                    result["notes"] = "BCC_A2 at ~50:50 Fe-Al is B2-ordered FeAl (brittle due to limited slip systems)"
+                    _log.info(f"Special case: {phase_name} at ~50:50 Fe-Al likely B2-ordered FeAl (brittle)")
+                
+                # Ni-Al near 50:50 → B2-ordered NiAl (brittle)
+                elif elem_pair == {"NI", "AL"} and 0.40 <= fracs.get("NI", 0) <= 0.60:
+                    result["brittle_flag"] = True
+                    result["source"] = "heuristic:B2_NiAl_ordered"
+                    result["notes"] = "BCC_A2 at ~50:50 Ni-Al is B2-ordered NiAl (brittle intermetallic)"
+                    _log.info(f"Special case: {phase_name} at ~50:50 Ni-Al likely B2-ordered NiAl (brittle)")
+                
+                # Ti-Al near 50:50 → Ordered TiAl (L10 or B2, both brittle at room T)
+                elif elem_pair == {"TI", "AL"} and 0.40 <= fracs.get("TI", 0) <= 0.60:
+                    result["brittle_flag"] = True
+                    result["source"] = "heuristic:TiAl_ordered"
+                    result["notes"] = "FCC/BCC at ~50:50 Ti-Al is likely ordered TiAl (L10/B2, brittle at ambient T)"
+                    _log.info(f"Special case: {phase_name} at ~50:50 Ti-Al likely ordered TiAl (brittle)")
+            
+            return result
+            
+        except Exception as e:
+            _log.error(f"Error getting mechanical descriptors for {phase_name}: {e}", exc_info=True)
+            return {
+                "is_intermetallic": False,
+                "is_bcc_like": False,
+                "is_fcc_like": False,
+                "bulk_modulus_GPa": None,
+                "shear_modulus_GPa": None,
+                "pugh_ratio": None,
+                "brittle_flag": None,
+                "crystal_system": None,
+                "source": "error"
+            }
+    
+    def _parse_phase_to_formula(self, phase_name: str, system_elems: Tuple[str, str]) -> Optional[str]:
+        """
+        Parse CALPHAD phase name to chemical formula.
+        Examples: AL2FE -> Al2Fe, AL5FE2 -> Al5Fe2
+        """
+        try:
+            import re
+            phase_upper = phase_name.upper()
+            
+            # Skip solid solution phases
+            if any(x in phase_upper for x in ["BCC", "FCC", "HCP", "LIQUID", "A1", "A2", "A3", "B2"]):
+                return None
+            
+            # Try to parse element-number patterns
+            A, B = [e.upper() for e in system_elems]
+            
+            # Look for patterns like AL2FE, AL5FE2, etc.
+            # Replace element symbols with proper case
+            formula = phase_upper
+            for elem in system_elems:
+                elem_upper = elem.upper()
+                # Replace with proper case (e.g., AL -> Al, FE -> Fe)
+                formula = re.sub(elem_upper, elem.capitalize(), formula, flags=re.IGNORECASE)
+            
+            # Remove common suffixes that aren't part of formula
+            for suffix in ["_D03", "_L12", "_C15", "_DELTA"]:
+                formula = formula.replace(suffix, "")
+            
+            # Validate it looks like a formula
+            if any(char.isdigit() for char in formula) and any(char.isalpha() for char in formula):
+                return formula
+            
+            return None
+            
+        except Exception as e:
+            _log.debug(f"Could not parse phase name {phase_name}: {e}")
+            return None
+    
+    def _assess_mech_effect(
+        self,
+        matrix_desc: Dict[str, Any],
+        sec_descs: Dict[str, Dict[str, Any]],
+        microstructure: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Assess strengthening and embrittlement based on microstructure and mechanical properties.
+        
+        Returns:
+            {
+                "strengthening_likelihood": "high"/"moderate"/"low",
+                "embrittlement_risk": "high"/"moderate"/"low",
+                "explanations": {...}
+            }
+        """
+        try:
+            matrix_name = microstructure["matrix_phase"]
+            matrix_frac = microstructure["phase_fractions"].get(matrix_name, 0.0)
+            
+            total_secondary_frac = 1.0 - matrix_frac
+            
+            # Check if we have hard intermetallic secondaries
+            hard_secondary_present = any(
+                desc.get("is_intermetallic", False) 
+                for desc in sec_descs.values()
+            )
+            
+            # Strengthening assessment
+            # Classic precipitation strengthening: 5-30% hard phase in ductile matrix
+            if hard_secondary_present and 0.05 <= total_secondary_frac <= 0.30:
+                if not matrix_desc.get("brittle_flag", True):
+                    strengthening = "high"
+                else:
+                    strengthening = "moderate"
+            elif hard_secondary_present and 0.01 <= total_secondary_frac < 0.05:
+                strengthening = "moderate"
+            elif hard_secondary_present and total_secondary_frac > 0.30:
+                strengthening = "mixed"  # Too much precipitate
+            else:
+                strengthening = "low"
+            
+            # Embrittlement assessment
+            brittle_secondaries = []
+            for phase_info in microstructure["secondary_phases"]:
+                phase_name = phase_info["name"]
+                phase_frac = phase_info["fraction"]
+                desc = sec_descs.get(phase_name, {})
+                
+                # Large brittle secondary phases are concerning
+                if desc.get("brittle_flag") and phase_frac >= 0.15:
+                    brittle_secondaries.append({
+                        "name": phase_name,
+                        "fraction": phase_frac,
+                        "pugh_ratio": desc.get("pugh_ratio")
+                    })
+            
+            # Embrittlement logic
+            if matrix_desc.get("brittle_flag"):
+                embrittle = "high"
+                embrittle_reason = "Matrix phase itself is predicted to be brittle"
+            elif brittle_secondaries:
+                embrittle = "high"
+                embrittle_reason = f"Large fraction of brittle secondary phases: {', '.join(b['name'] for b in brittle_secondaries)}"
+            elif hard_secondary_present and total_secondary_frac > 0.40:
+                embrittle = "moderate"
+                embrittle_reason = "Very high secondary phase fraction may reduce ductility"
+            else:
+                embrittle = "low"
+                embrittle_reason = "Matrix dominates and is ductile; secondary fraction is limited"
+            
+            # Build explanations
+            explanations = {
+                "matrix": {
+                    "phase": matrix_name,
+                    "fraction": round(matrix_frac, 3),
+                    "brittle_flag": matrix_desc.get("brittle_flag"),
+                    "pugh_ratio": matrix_desc.get("pugh_ratio"),
+                    "type": "BCC" if matrix_desc.get("is_bcc_like") else "FCC" if matrix_desc.get("is_fcc_like") else "other",
+                    "source": matrix_desc.get("source")
+                },
+                "secondary": {
+                    "total_fraction": round(total_secondary_frac, 3),
+                    "hard_intermetallic_present": hard_secondary_present,
+                    "brittle_secondaries": brittle_secondaries,
+                    "phases": [
+                        {
+                            "name": p["name"],
+                            "fraction": round(p["fraction"], 3),
+                            "is_intermetallic": sec_descs.get(p["name"], {}).get("is_intermetallic"),
+                            "brittle_flag": sec_descs.get(p["name"], {}).get("brittle_flag"),
+                            "pugh_ratio": sec_descs.get(p["name"], {}).get("pugh_ratio"),
+                            "source": sec_descs.get(p["name"], {}).get("source")
+                        }
+                        for p in microstructure["secondary_phases"]
+                    ]
+                },
+                "rationale": {
+                    "strength": self._get_strengthening_rationale(
+                        strengthening, hard_secondary_present, total_secondary_frac, matrix_desc
+                    ),
+                    "embrittlement": embrittle_reason
+                }
+            }
+            
+            return {
+                "strengthening_likelihood": strengthening,
+                "embrittlement_risk": embrittle,
+                "explanations": explanations
+            }
+            
+        except Exception as e:
+            _log.error(f"Error assessing mechanical effect: {e}", exc_info=True)
+            return {
+                "strengthening_likelihood": "unknown",
+                "embrittlement_risk": "unknown",
+                "explanations": {"error": str(e)}
+            }
+    
+    def _get_strengthening_rationale(
+        self, 
+        level: str, 
+        has_hard_phase: bool, 
+        sec_frac: float,
+        matrix_desc: Dict[str, Any]
+    ) -> str:
+        """Generate human-readable strengthening rationale."""
+        if level == "high":
+            return (
+                f"Secondary hard intermetallic precipitates ({sec_frac*100:.1f}% volume fraction) "
+                "in a ductile matrix are expected to impede dislocation motion via "
+                "Orowan strengthening, increasing yield strength significantly."
+            )
+        elif level == "moderate":
+            if sec_frac < 0.05:
+                return (
+                    f"Small volume fraction ({sec_frac*100:.1f}%) of hard phase present. "
+                    "Some strengthening expected but limited by low precipitate density."
+                )
+            else:
+                return (
+                    "Moderate strengthening expected, though matrix brittleness may limit effectiveness."
+                )
+        elif level == "mixed":
+            return (
+                f"Very high secondary phase fraction ({sec_frac*100:.1f}%) exceeds typical "
+                "precipitation strengthening regime. The alloy is essentially a multi-phase "
+                "material rather than a precipitate-strengthened alloy."
+            )
+        else:
+            return (
+                "No significant hard secondary phase fraction detected. "
+                "Limited precipitation strengthening expected. Strength primarily from "
+                "solid solution strengthening (if present) or base matrix properties."
+            )
+    
+    @ai_function(
+        desc=(
+            "Assess claims about alloy microstructure, strengthening, and embrittlement. "
+            "Given a binary alloy system, composition, and temperature, this tool: "
+            "(1) calculates which phases are at equilibrium using CALPHAD, "
+            "(2) determines which is the matrix vs secondary phases, "
+            "(3) estimates mechanical properties (brittleness) using Materials Project elastic data, "
+            "(4) assesses whether secondary phases likely strengthen or embrittle the alloy, "
+            "(5) verifies claims about phase formation and mechanical effects. "
+            "Works for Fe-Al, Ni-Al, Ti-Al, and other binary metallic systems."
+        ),
+        auto_truncate=128000,
+    )
+    async def assess_phase_strength_claim(
+        self,
+        system: Annotated[str, AIParam(desc="Binary system, e.g. 'Fe-Al', 'Ni-Al', 'Ti-Al'")],
+        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Fe30Al70', 'Ni75Al25'). Numbers are at.%")],
+        temperature_K: Annotated[float, AIParam(desc="Temperature in Kelvin")],
+        claimed_secondary_phase: Annotated[Optional[str], AIParam(desc="Name of alleged strengthening phase (e.g., 'AL2FE', 'Ni3Al', 'AL5FE2'). Optional.")] = None,
+        claimed_matrix_phase: Annotated[Optional[str], AIParam(desc="Name of alleged matrix phase (e.g., 'BCC_A2', 'FCC_A1'). Optional.")] = None,
+    ) -> Dict[str, Any]:
+        """
+        Comprehensive assessment of alloy microstructure and mechanical effects.
+        
+        Returns verification of claims about phase formation, strengthening, and embrittlement
+        based on thermodynamic calculations and mechanical property estimates.
+        """
+        try:
+            # Parse system
+            parts = system.replace(" ", "").split("-")
+            if len(parts) != 2:
+                return {
+                    "success": False,
+                    "error": f"Invalid system format: '{system}'. Expected 'Element1-Element2' (e.g., 'Fe-Al')"
+                }
+            
+            A, B = [p.capitalize() for p in parts]
+            system_elems = (A, B)
+            
+            # Parse composition (e.g., "Fe30Al70" or "Fe30-Al70")
+            import re
+            comp_dict = {}
+            matches = re.findall(r'([A-Z][a-z]?)(\d+\.?\d*)', composition)
+            if not matches:
+                return {
+                    "success": False,
+                    "error": f"Could not parse composition: '{composition}'. Expected format like 'Fe30Al70'"
+                }
+            
+            for elem, pct in matches:
+                comp_dict[elem] = float(pct)
+            
+            # Validate composition
+            if set(comp_dict.keys()) != {A, B}:
+                return {
+                    "success": False,
+                    "error": f"Composition elements {list(comp_dict.keys())} don't match system {A}-{B}"
+                }
+            
+            _log.info(f"Assessing {system} at composition {comp_dict} and T={temperature_K}K")
+            
+            # Load CALPHAD database
+            from pycalphad import Database
+            from ..calphad.phase_diagrams.phase_diagrams import CalPhadHandler
+            
+            temp_handler = CalPhadHandler()
+            db_path = temp_handler._get_database_path(system, elements=[A, B])
+            
+            if not db_path:
+                return {
+                    "success": False,
+                    "error": f"No thermodynamic database found for {system} system"
+                }
+            
+            db = Database(str(db_path))
+            
+            # Step 1: Compute equilibrium microstructure
+            _log.info("Step 1: Computing equilibrium microstructure...")
+            microstructure = self._compute_equilibrium_microstructure(
+                db, system_elems, comp_dict, temperature_K
+            )
+            
+            if not microstructure.get("success"):
+                return {
+                    "success": False,
+                    "error": f"Failed to compute equilibrium: {microstructure.get('error')}",
+                    "equilibrium_microstructure": microstructure
+                }
+            
+            # Step 2: Get mechanical descriptors for all phases
+            _log.info("Step 2: Fetching mechanical descriptors...")
+            matrix_desc = self._get_phase_mech_descriptors(
+                microstructure["matrix_phase"],
+                comp_dict,
+                system_elems
+            )
+            
+            sec_descs = {}
+            for sec_phase in microstructure["secondary_phases"]:
+                sec_descs[sec_phase["name"]] = self._get_phase_mech_descriptors(
+                    sec_phase["name"],
+                    comp_dict,
+                    system_elems
+                )
+            
+            # Step 3: Assess mechanical effects
+            _log.info("Step 3: Assessing mechanical effects...")
+            mech_assessment = self._assess_mech_effect(matrix_desc, sec_descs, microstructure)
+            
+            # Step 4: Verify claims
+            _log.info("Step 4: Verifying claims...")
+            claim_check = self._verify_claims(
+                microstructure,
+                mech_assessment,
+                claimed_secondary_phase,
+                claimed_matrix_phase
+            )
+            
+            return {
+                "success": True,
+                "system": system,
+                "composition": comp_dict,
+                "temperature_K": temperature_K,
+                "equilibrium_microstructure": microstructure,
+                "mechanical_assessment": mech_assessment,
+                "claim_check": claim_check,
+                "citations": ["pycalphad", "Materials Project"]
+            }
+            
+        except Exception as e:
+            _log.error(f"Error in assess_phase_strength_claim: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+    
+    def _verify_claims(
+        self,
+        microstructure: Dict[str, Any],
+        mech_assessment: Dict[str, Any],
+        claimed_secondary: Optional[str],
+        claimed_matrix: Optional[str]
+    ) -> Dict[str, Any]:
+        """Verify user's claims against calculated results."""
+        try:
+            results = {}
+            
+            # Check matrix claim
+            actual_matrix = microstructure["matrix_phase"]
+            if claimed_matrix:
+                matrix_matches = (claimed_matrix.upper() == actual_matrix.upper())
+                results["matrix_matches_claim"] = matrix_matches
+                results["claimed_matrix"] = claimed_matrix
+                results["actual_matrix"] = actual_matrix
+            else:
+                results["matrix_matches_claim"] = None
+                results["actual_matrix"] = actual_matrix
+            
+            # Check secondary phase claim
+            secondary_names = [p["name"] for p in microstructure["secondary_phases"]]
+            if claimed_secondary:
+                claimed_upper = claimed_secondary.upper()
+                secondary_present = any(claimed_upper == name.upper() for name in secondary_names)
+                results["secondary_phase_present"] = secondary_present
+                results["claimed_secondary"] = claimed_secondary
+                
+                # If present, check if it's a "small fraction"
+                if secondary_present:
+                    frac = next(
+                        (p["fraction"] for p in microstructure["secondary_phases"] 
+                         if p["name"].upper() == claimed_upper),
+                        0.0
+                    )
+                    results["secondary_fraction"] = frac
+                    # "Small" is typically 5-30% for precipitation strengthening
+                    results["secondary_is_small_fraction"] = (0.05 <= frac <= 0.30)
+                else:
+                    results["secondary_fraction"] = 0.0
+                    results["secondary_is_small_fraction"] = False
+            else:
+                results["secondary_phase_present"] = None
+                results["actual_secondary_phases"] = secondary_names
+            
+            # Overall assessment
+            results["strengthening_plausible"] = mech_assessment["strengthening_likelihood"]
+            results["embrittlement_risk"] = mech_assessment["embrittlement_risk"]
+            
+            # Generate final interpretation
+            interpretation_lines = []
+            
+            if claimed_matrix:
+                if results["matrix_matches_claim"]:
+                    interpretation_lines.append(f"✅ Matrix phase claim VERIFIED: {actual_matrix} confirmed as primary phase")
+                else:
+                    interpretation_lines.append(f"❌ Matrix phase claim NOT VERIFIED: Predicted {actual_matrix}, claimed {claimed_matrix}")
+            
+            if claimed_secondary:
+                if results["secondary_phase_present"]:
+                    frac_pct = results["secondary_fraction"] * 100
+                    if results["secondary_is_small_fraction"]:
+                        interpretation_lines.append(
+                            f"✅ Secondary phase claim VERIFIED: {claimed_secondary} present at {frac_pct:.1f}% "
+                            "(suitable for precipitation strengthening)"
+                        )
+                    else:
+                        if frac_pct < 5:
+                            interpretation_lines.append(
+                                f"⚠️ Secondary phase claim PARTIALLY VERIFIED: {claimed_secondary} present but only {frac_pct:.1f}% "
+                                "(too small for significant strengthening)"
+                            )
+                        else:
+                            interpretation_lines.append(
+                                f"⚠️ Secondary phase claim PARTIALLY VERIFIED: {claimed_secondary} present at {frac_pct:.1f}% "
+                                "(exceeds typical precipitation strengthening range, may be co-matrix)"
+                            )
+                else:
+                    interpretation_lines.append(
+                        f"❌ Secondary phase claim NOT VERIFIED: {claimed_secondary} not found. "
+                        f"Actual secondary phases: {', '.join(secondary_names) if secondary_names else 'none'}"
+                    )
+            
+            # Strengthening assessment
+            strength_level = results["strengthening_plausible"]
+            if strength_level == "high":
+                interpretation_lines.append("✅ STRENGTHENING: High likelihood based on microstructure")
+            elif strength_level == "moderate":
+                interpretation_lines.append("⚠️ STRENGTHENING: Moderate likelihood")
+            elif strength_level == "mixed":
+                interpretation_lines.append("⚠️ STRENGTHENING: Mixed (high secondary fraction)")
+            else:
+                interpretation_lines.append("❌ STRENGTHENING: Low likelihood (insufficient hard phase)")
+            
+            # Embrittlement assessment
+            embritt_level = results["embrittlement_risk"]
+            if embritt_level == "low":
+                interpretation_lines.append("✅ EMBRITTLEMENT: Low risk - ductile matrix dominates")
+            elif embritt_level == "moderate":
+                interpretation_lines.append("⚠️ EMBRITTLEMENT: Moderate risk - significant hard phase fraction")
+            else:
+                interpretation_lines.append("❌ EMBRITTLEMENT: High risk - brittle phases detected")
+            
+            results["final_interpretation"] = "\n".join(interpretation_lines)
+            
+            return results
+            
+        except Exception as e:
+            _log.error(f"Error verifying claims: {e}", exc_info=True)
+            return {"error": str(e)}

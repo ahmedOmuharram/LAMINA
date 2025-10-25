@@ -11,7 +11,6 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 from pymatgen.core import Structure, Element
-from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 _log = logging.getLogger(__name__)
 
@@ -487,9 +486,15 @@ def analyze_doping_site_preference(
     pressure: float = 1.0
 ) -> Dict[str, Any]:
     """
-    Analyze doping site preference for compound semiconductors.
-    
-    For example, N doping in GaAs: does N prefer Ga sites or As sites?
+    Predict which sublattice (site_a_element vs site_b_element) the dopant_element prefers
+    in a binary compound host_formula (e.g. GaAs, ZnO, etc.).
+
+    Strategy:
+    1. Try to find Ga–As–N-like compounds in Materials Project and infer which
+       site N sits on based on valence-chemistry similarity, then compare energies.
+    2. If that fails (common for dilute alloys), fall back to a chemistry heuristic:
+         - The dopant prefers the site whose group / electronegativity is
+           closest to the dopant's.
     
     Args:
         mpr: MPRester client instance
@@ -503,133 +508,179 @@ def analyze_doping_site_preference(
     Returns:
         Dictionary with site preference analysis
     """
+
+    def _chem_distance_score(dop, host):
+        # lower = "more similar", i.e. easier substitution
+        g_d = _valence_group(dop) or 0
+        g_h = _valence_group(host) or 0
+        chi_d = _pauling_en(dop) or 0.0
+        chi_h = _pauling_en(host) or 0.0
+        return abs(g_d - g_h) + 0.5 * abs(chi_d - chi_h)
+
     try:
-        # Get host material
+        # --- 0. Fetch host info (stable GaAs, etc.) ---
         host_docs = mpr.materials.summary.search(
             formula=host_formula,
             fields=[
                 "material_id", "formula_pretty", "composition",
-                "energy_per_atom", "structure", "is_stable"
-            ]
+                "energy_per_atom", "energy_above_hull", "structure",
+                "is_stable"
+            ],
         )
-        
         if not host_docs:
             return {
                 "success": False,
                 "error": f"Host material {host_formula} not found"
             }
-        
-        # Get the most stable entry
-        host_doc = sorted(host_docs, key=lambda x: getattr(x, 'energy_above_hull', None) or float('inf'))[0]
-        host_energy = host_doc.energy_per_atom if hasattr(host_doc, 'energy_per_atom') else None
-        
-        if host_energy is None:
-            return {
-                "success": False,
-                "error": "Host material energy not available"
-            }
-        
+
+        # Pick the most stable (lowest energy_above_hull)
+        host_doc = sorted(
+            host_docs,
+            key=lambda x: getattr(x, "energy_above_hull", float("inf"))
+        )[0]
+
+        host_energy = getattr(host_doc, "energy_per_atom", None)
         result = {
             "success": True,
             "host_material": {
-                "material_id": host_doc.material_id if hasattr(host_doc, 'material_id') else None,
-                "formula": host_doc.formula_pretty if hasattr(host_doc, 'formula_pretty') else host_formula,
-                "energy_per_atom": float(host_energy),
-                "unit": "eV/atom"
+                "material_id": getattr(host_doc, "material_id", None),
+                "formula": getattr(host_doc, "formula_pretty", host_formula),
+                "energy_per_atom": float(host_energy) if host_energy is not None else None,
+                "unit": "eV/atom",
             },
             "dopant_element": dopant_element,
             "site_a": site_a_element,
             "site_b": site_b_element,
             "temperature_K": temperature,
-            "pressure_atm": pressure
+            "pressure_atm": pressure,
         }
-        
-        # Search for materials with dopant substituting each site
-        # For GaAs with N: look for NGa (N on Ga site) and NAs (N on As site)
-        
-        # Try to find materials with dopant
-        elements = [site_a_element, site_b_element, dopant_element]
-        
-        # Search for ternary compounds
+
+        # --- 1. Pull candidate doped structures (Ga-As-N style) ---
+        # We don't force num_elements==3 because MP might store off-stoichiometric
+        # or ordered supercells with the same 3 elements but more sites.
         doped_docs = mpr.materials.summary.search(
-            elements=elements,
-            num_elements=3,
+            elements=[site_a_element, site_b_element, dopant_element],
             fields=[
                 "material_id", "formula_pretty", "composition",
                 "energy_per_atom", "energy_above_hull", "is_stable"
             ],
         )
-        
-        # Analyze compositions to identify substitution sites
-        site_a_candidates = []  # Dopant on site A (replaces site_a_element)
-        site_b_candidates = []  # Dopant on site B (replaces site_b_element)
-        
+
+        site_a_candidates = []
+        site_b_candidates = []
+
         for doc in doped_docs:
             comp = doc.composition.as_dict()
-            
-            # Check if this could be dopant on site A or B
-            # Site A: more of site_b_element, less of site_a_element
-            # Site B: more of site_a_element, less of site_b_element
-            
-            a_count = comp.get(site_a_element, 0)
-            b_count = comp.get(site_b_element, 0)
-            d_count = comp.get(dopant_element, 0)
-            
-            # Simple heuristic: if dopant count is close to one of the sites
-            if d_count > 0:
-                if a_count < b_count:  # Dopant likely on A site
-                    site_a_candidates.append({
-                        "material_id": doc.material_id if hasattr(doc, 'material_id') else None,
-                        "formula": doc.formula_pretty if hasattr(doc, 'formula_pretty') else str(doc.composition),
-                        "composition": comp,
-                        "energy_per_atom": float(doc.energy_per_atom) if hasattr(doc, 'energy_per_atom') and doc.energy_per_atom else None,
-                        "energy_above_hull": float(doc.energy_above_hull) if hasattr(doc, 'energy_above_hull') and doc.energy_above_hull is not None else None
-                    })
-                elif b_count < a_count:  # Dopant likely on B site
-                    site_b_candidates.append({
-                        "material_id": doc.material_id if hasattr(doc, 'material_id') else None,
-                        "formula": doc.formula_pretty if hasattr(doc, 'formula_pretty') else str(doc.composition),
-                        "composition": comp,
-                        "energy_per_atom": float(doc.energy_per_atom) if hasattr(doc, 'energy_per_atom') and doc.energy_per_atom else None,
-                        "energy_above_hull": float(doc.energy_above_hull) if hasattr(doc, 'energy_above_hull') and doc.energy_above_hull is not None else None
-                    })
-        
-        # Find the most stable candidate for each site
-        if site_a_candidates:
-            site_a_best = min(site_a_candidates, key=lambda x: x.get("energy_above_hull", float('inf')))
-            result["site_a_substitution"] = site_a_best
-        else:
-            result["site_a_substitution"] = None
-        
-        if site_b_candidates:
-            site_b_best = min(site_b_candidates, key=lambda x: x.get("energy_above_hull", float('inf')))
-            result["site_b_substitution"] = site_b_best
-        else:
-            result["site_b_substitution"] = None
-        
-        # Compare energies to determine preference
-        if result["site_a_substitution"] and result["site_b_substitution"]:
-            e_a = result["site_a_substitution"]["energy_above_hull"]
-            e_b = result["site_b_substitution"]["energy_above_hull"]
-            
-            if e_a is not None and e_b is not None:
-                result["site_preference"] = {
-                    "preferred_site": site_a_element if e_a < e_b else site_b_element,
-                    "energy_difference": float(abs(e_a - e_b)),
-                    "unit": "eV/atom",
-                    "interpretation": f"Dopant prefers {site_a_element} sites (more stable by {abs(e_a - e_b):.3f} eV/atom)" if e_a < e_b else f"Dopant prefers {site_b_element} sites (more stable by {abs(e_a - e_b):.3f} eV/atom)"
-                }
-                
-                result["site_a_more_stable"] = bool(e_a < e_b)
+            # skip anything that doesn't actually contain all 3 required species
+            if (site_a_element not in comp or
+                site_b_element not in comp or
+                dopant_element not in comp):
+                continue
+
+            # figure out which sublattice dopant is *most like* chemically
+            score_a = _chem_distance_score(dopant_element, site_a_element)
+            score_b = _chem_distance_score(dopant_element, site_b_element)
+
+            inferred_site = None
+            if score_a < score_b:
+                inferred_site = "A"
+            elif score_b < score_a:
+                inferred_site = "B"
             else:
-                result["site_preference"] = None
-                result["note"] = "Energy comparison not possible (missing energy data)"
+                # tie-breaker: pick site with closer electronegativity
+                chi_d = _pauling_en(dopant_element) or 0.0
+                chi_a = _pauling_en(site_a_element) or 0.0
+                chi_b = _pauling_en(site_b_element) or 0.0
+                inferred_site = "A" if abs(chi_d - chi_a) <= abs(chi_d - chi_b) else "B"
+
+            doc_summary = {
+                "material_id": getattr(doc, "material_id", None),
+                "formula": getattr(doc, "formula_pretty", str(doc.composition)),
+                "composition": comp,
+                "energy_per_atom": float(getattr(doc, "energy_per_atom", np.nan)),
+                "energy_above_hull": float(getattr(doc, "energy_above_hull", np.nan)),
+                "is_stable": bool(getattr(doc, "is_stable", False)),
+                "inferred_substitution_site": (
+                    site_a_element if inferred_site == "A" else site_b_element
+                )
+            }
+
+            if inferred_site == "A":
+                site_a_candidates.append(doc_summary)
+            else:
+                site_b_candidates.append(doc_summary)
+
+        # --- 2. Pick "best" (lowest energy_above_hull) example for each site ---
+        site_a_best = None
+        if site_a_candidates:
+            site_a_best = min(
+                site_a_candidates,
+                key=lambda x: x.get("energy_above_hull", float("inf"))
+            )
+
+        site_b_best = None
+        if site_b_candidates:
+            site_b_best = min(
+                site_b_candidates,
+                key=lambda x: x.get("energy_above_hull", float("inf"))
+            )
+
+        result["site_a_substitution"] = site_a_best
+        result["site_b_substitution"] = site_b_best
+
+        # --- 3. Decide preference ---
+        # Case 3a: we actually have energy info for both
+        if site_a_best and site_b_best:
+            e_a = site_a_best.get("energy_above_hull", None)
+            e_b = site_b_best.get("energy_above_hull", None)
+
+            if e_a is not None and e_b is not None and np.isfinite(e_a) and np.isfinite(e_b):
+                preferred = site_a_element if e_a < e_b else site_b_element
+                delta = abs(e_a - e_b)
+
+                result["site_preference"] = {
+                    "preferred_site": preferred,
+                    "energy_difference": float(delta),
+                    "unit": "eV/atom",
+                    "interpretation": (
+                        f"{dopant_element} prefers the {preferred} sublattice "
+                        f"(more stable by {delta:.3f} eV/atom among available {site_a_element}–{site_b_element}–{dopant_element} phases)."
+                    )
+                }
+                return result
+
+        # Case 3b: fallback — use pure chemistry heuristic if database was inconclusive
+        score_a = _chem_distance_score(dopant_element, site_a_element)
+        score_b = _chem_distance_score(dopant_element, site_b_element)
+
+        preferred = site_a_element if score_a < score_b else site_b_element
+        score_margin = abs(score_a - score_b)
+
+        result["site_preference"] = {
+            "preferred_site": preferred,
+            "energy_difference": None,
+            "unit": None,
+            "interpretation": (
+                f"{dopant_element} is chemically closer to {preferred} "
+                f"(valence/electronegativity match). "
+                f"Score margin ~{score_margin:.2f} (lower score = better match)."
+            ),
+            "method": "chem-heuristic-fallback"
+        }
+
+        if not (site_a_best or site_b_best):
+            result["note"] = (
+                f"No explicit {site_a_element}–{site_b_element}–{dopant_element} supercells/alloys found in the database. "
+                "Returned heuristic site preference based on group/electronegativity matching."
+            )
         else:
-            result["site_preference"] = None
-            result["note"] = "Could not find structures for both substitution sites"
-        
+            result["note"] = (
+                "Only one doped sublattice had candidate structures with energies; "
+                "fell back to valence/electronegativity heuristic for final comparison."
+            )
+
         return result
-        
+
     except Exception as e:
         _log.error(f"Error analyzing doping site preference: {e}", exc_info=True)
         return {

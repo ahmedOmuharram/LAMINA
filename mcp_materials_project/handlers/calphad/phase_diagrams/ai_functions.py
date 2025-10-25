@@ -89,6 +89,14 @@ class AIFunctionsMixin:
                 T_lo = min_temperature or 300.0
                 T_hi = max_temperature or 1000.0
 
+            # Handle degenerate case where min == max
+            if T_lo == T_hi:
+                # Expand range by ±100K around the point
+                T_center = T_lo
+                T_lo = max(200.0, T_center - 100.0)  # Don't go below 200K
+                T_hi = T_center + 100.0
+                _log.info(f"Temperature range was degenerate ({T_center:.0f}K), expanded to {T_lo:.0f}-{T_hi:.0f} K")
+
             # clamp number of temperature points so auto doesn't get heavy
             temp_points = 60 if auto_T else max(12, min(60, int((T_hi - T_lo) / 20)))
 
@@ -321,6 +329,14 @@ class AIFunctionsMixin:
                 T_lo = min_temperature or 300.0
                 T_hi = max_temperature or 1000.0
                 _log.info(f"Using specified temperature range: {T_lo:.0f}-{T_hi:.0f} K")
+            
+            # Handle degenerate case where min == max
+            if T_lo == T_hi:
+                # Expand range by ±100K around the point
+                T_center = T_lo
+                T_lo = max(200.0, T_center - 100.0)  # Don't go below 200K
+                T_hi = T_center + 100.0
+                _log.info(f"Temperature range was degenerate ({T_center:.0f}K), expanded to {T_lo:.0f}-{T_hi:.0f} K")
             
             temp_range = (T_lo, T_hi)
             
@@ -1016,3 +1032,218 @@ class AIFunctionsMixin:
         except Exception as e:
             _log.exception(f"Error analyzing phase fraction trend")
             return {"success": False, "error": f"Failed to analyze phase fraction trend: {str(e)}", "citations": ["pycalphad"]}
+    
+    @ai_function(desc="Verify phase formation statements across a composition range. Use to check claims like 'beyond X% of element B, phase Y forms' or 'at compositions greater than X%, phase Z appears'. Analyzes which phases form at different compositions.")
+    async def verify_phase_formation_across_composition(
+        self,
+        system: Annotated[str, AIParam(desc="Binary system (e.g., 'Fe-Al', 'Al-Zn')")],
+        phase_name: Annotated[str, AIParam(desc="Name of the phase to check (e.g., 'AL2FE', 'FCC_A1', 'HCP_A3')")],
+        composition_threshold: Annotated[float, AIParam(desc="Composition threshold to verify (e.g., 50.0 for '50 at.%')")],
+        threshold_element: Annotated[str, AIParam(desc="Element being thresholded (e.g., 'Al' in 'beyond 50% Al')")],
+        temperature: Annotated[float, AIParam(desc="Temperature in Kelvin to check phase formation. Default: 300K")] = 300.0,
+        composition_type: Annotated[Optional[str], AIParam(desc="'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = "atomic"
+    ) -> str:
+        """
+        Verify whether a specific phase forms above/below a composition threshold.
+        
+        This tool checks statements like:
+        - "Beyond 50 at.% Al in Fe-Al, the Al2Fe phase forms"
+        - "Above 30 wt.% Zn in Al-Zn, HCP phase appears"
+        - "At compositions greater than 20% Si, the FCC phase disappears"
+        
+        Returns detailed analysis showing:
+        - Which phases are present below the threshold
+        - Which phases are present above the threshold
+        - Whether the specified phase forms above/below threshold
+        - Phase fractions across the composition range
+        """
+        try:
+            from pycalphad import Database, equilibrium, variables as v
+            import numpy as np
+            
+            # Normalize system
+            A, B = self._normalize_system(system, db=None)
+            system_str = f"{A}-{B}"
+            
+            # Determine which element is the composition variable
+            threshold_elem = threshold_element.strip().upper()
+            if threshold_elem not in [A, B]:
+                return f"Element '{threshold_element}' not found in system {A}-{B}. Must be one of: {A}, {B}"
+            
+            # Load database
+            db_path = self._get_database_path(system_str, elements=[A, B])
+            if not db_path:
+                return f"No thermodynamic database found for {system_str} system."
+            
+            db = Database(str(db_path))
+            
+            # Get phases
+            phases = self._filter_phases_for_system(db, (A, B))
+            
+            # Normalize phase name
+            phase_name_upper = phase_name.upper()
+            available_phases = sorted(phases)
+            
+            # Debug: List all available phases
+            _log.info(f"Available phases in {system_str} database: {available_phases}")
+            
+            # Check if the phase exists in the database
+            if phase_name_upper not in phases and phase_name not in phases:
+                return f"Phase '{phase_name}' not found in database. Available phases: {', '.join(available_phases)}"
+            
+            phase_to_check = phase_name_upper if phase_name_upper in phases else phase_name
+            
+            # Set up composition variable (B is x-axis by convention)
+            comp_el = B
+            if threshold_elem == B:
+                # Threshold is in terms of B (x-axis element)
+                threshold_fraction = composition_threshold / 100.0
+            else:
+                # Threshold is in terms of A, convert to B fraction
+                threshold_fraction = 1.0 - (composition_threshold / 100.0)
+            
+            # Sample compositions around the threshold
+            # Check compositions from 0% to 100% with focus around threshold
+            n_points = 21
+            compositions = np.linspace(0.0, 1.0, n_points)
+            
+            # Also add specific points around threshold for precision
+            threshold_nearby = [
+                max(0.0, threshold_fraction - 0.05),
+                max(0.0, threshold_fraction - 0.02),
+                threshold_fraction,
+                min(1.0, threshold_fraction + 0.02),
+                min(1.0, threshold_fraction + 0.05)
+            ]
+            compositions = np.unique(np.sort(np.concatenate([compositions, threshold_nearby])))
+            
+            elements = [A, B, 'VA']
+            results = []
+            
+            _log.info(f"Checking phase '{phase_to_check}' formation across {len(compositions)} compositions at T={temperature}K")
+            
+            for x_B in compositions:
+                try:
+                    # Calculate equilibrium at this composition
+                    conditions = {v.X(B): x_B, v.T: temperature, v.P: 101325, v.N: 1}
+                    eq = equilibrium(db, elements, phases, conditions)
+                    
+                    # Extract phase fractions
+                    from .equilibrium_utils import extract_phase_fractions_from_equilibrium
+                    phase_fractions = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
+                    
+                    # Check if our target phase is present
+                    phase_present = phase_to_check in phase_fractions and phase_fractions[phase_to_check] > 0.01
+                    phase_fraction = phase_fractions.get(phase_to_check, 0.0)
+                    
+                    # Calculate actual at.% for both elements
+                    at_pct_B = x_B * 100
+                    at_pct_A = (1 - x_B) * 100
+                    
+                    results.append({
+                        'x_B': x_B,
+                        'at_pct_A': at_pct_A,
+                        'at_pct_B': at_pct_B,
+                        'phase_present': phase_present,
+                        'phase_fraction': phase_fraction,
+                        'all_phases': phase_fractions
+                    })
+                    
+                except Exception as e:
+                    _log.warning(f"Equilibrium calculation failed at x_{B}={x_B:.3f}: {e}")
+                    continue
+            
+            if not results:
+                return f"Failed to calculate equilibrium for any compositions in {system_str} at {temperature}K"
+            
+            # Analyze results around threshold
+            threshold_pct = composition_threshold
+            
+            # Map threshold_elem to 'A' or 'B' for dictionary key lookup
+            if threshold_elem == A:
+                threshold_key = 'at_pct_A'
+            elif threshold_elem == B:
+                threshold_key = 'at_pct_B'
+            else:
+                return f"Internal error: threshold element {threshold_elem} doesn't match system elements {A}, {B}"
+            
+            # Find compositions below and above threshold
+            below_threshold = [r for r in results if r[threshold_key] < threshold_pct]
+            above_threshold = [r for r in results if r[threshold_key] >= threshold_pct]
+            
+            # Count how many times the phase appears in each region
+            phase_count_below = sum(1 for r in below_threshold if r['phase_present'])
+            phase_count_above = sum(1 for r in above_threshold if r['phase_present'])
+            
+            # Build response
+            response_lines = [
+                f"## Phase Formation Analysis: {system_str} System",
+                f"**Phase**: {phase_to_check}",
+                f"**Temperature**: {temperature:.1f} K",
+                f"**Threshold**: {threshold_pct:.1f} at.% {threshold_elem}",
+                f"",
+                f"### Results:",
+                f""
+            ]
+            
+            # Summary statistics
+            total_below = len(below_threshold)
+            total_above = len(above_threshold)
+            
+            if total_below > 0:
+                fraction_below = phase_count_below / total_below
+                response_lines.append(f"**Below threshold** (<{threshold_pct:.1f}% {threshold_elem}):")
+                response_lines.append(f"  - Phase '{phase_to_check}' present in {phase_count_below}/{total_below} compositions ({fraction_below*100:.1f}%)")
+                
+                # Show example phases below threshold
+                if below_threshold:
+                    example = below_threshold[len(below_threshold)//2]  # Middle composition
+                    phases_str = ", ".join([f"{p}({f*100:.1f}%)" for p, f in sorted(example['all_phases'].items()) if f > 0.01])
+                    response_lines.append(f"  - Example at {example['at_pct_A']:.1f}% {A} / {example['at_pct_B']:.1f}% {B}: {phases_str}")
+            
+            response_lines.append("")
+            
+            if total_above > 0:
+                fraction_above = phase_count_above / total_above
+                response_lines.append(f"**Above threshold** (≥{threshold_pct:.1f}% {threshold_elem}):")
+                response_lines.append(f"  - Phase '{phase_to_check}' present in {phase_count_above}/{total_above} compositions ({fraction_above*100:.1f}%)")
+                
+                # Show example phases above threshold
+                if above_threshold:
+                    example = above_threshold[len(above_threshold)//2]  # Middle composition
+                    phases_str = ", ".join([f"{p}({f*100:.1f}%)" for p, f in sorted(example['all_phases'].items()) if f > 0.01])
+                    response_lines.append(f"  - Example at {example['at_pct_A']:.1f}% {A} / {example['at_pct_B']:.1f}% {B}: {phases_str}")
+            
+            response_lines.append("")
+            response_lines.append("### Verification:")
+            
+            # Determine if the statement is supported
+            if phase_count_above > 0 and phase_count_below == 0:
+                response_lines.append(f"✅ **VERIFIED**: Phase '{phase_to_check}' **does form** above {threshold_pct:.1f}% {threshold_elem} and is **absent** below this threshold.")
+            elif phase_count_above > phase_count_below:
+                response_lines.append(f"⚠️ **PARTIALLY VERIFIED**: Phase '{phase_to_check}' forms **more frequently** above {threshold_pct:.1f}% {threshold_elem}, but may also appear below in some conditions.")
+            elif phase_count_above > 0 and phase_count_below > 0:
+                response_lines.append(f"❌ **NOT VERIFIED**: Phase '{phase_to_check}' appears both above and below {threshold_pct:.1f}% {threshold_elem} with similar frequency.")
+            elif phase_count_above == 0 and phase_count_below > 0:
+                response_lines.append(f"❌ **CONTRADICTED**: Phase '{phase_to_check}' actually forms **below** {threshold_pct:.1f}% {threshold_elem}, opposite to the claim.")
+            else:
+                response_lines.append(f"⚠️ **INCONCLUSIVE**: Phase '{phase_to_check}' was not found at {temperature:.1f}K across the composition range. It may form at different temperatures.")
+            
+            # Show detailed composition scan
+            response_lines.append("")
+            response_lines.append("### Detailed Phase Presence:")
+            response_lines.append("")
+            response_lines.append(f"| {A} at.% | {B} at.% | {phase_to_check} Present | {phase_to_check} Fraction | Other Major Phases |")
+            response_lines.append("|---------|---------|-------------|----------------|-------------------|")
+            
+            for r in results[::max(1, len(results)//10)]:  # Show ~10 representative points
+                present = "✓" if r['phase_present'] else "✗"
+                fraction = f"{r['phase_fraction']*100:.1f}%" if r['phase_fraction'] > 0 else "-"
+                other_phases = ", ".join([p for p, f in sorted(r['all_phases'].items(), key=lambda x: -x[1]) if p != phase_to_check and f > 0.05][:3])
+                response_lines.append(f"| {r['at_pct_A']:.1f} | {r['at_pct_B']:.1f} | {present} | {fraction} | {other_phases} |")
+            
+            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
+            
+        except Exception as e:
+            _log.exception(f"Error verifying phase formation across composition")
+            return {"success": False, "error": f"Failed to verify phase formation: {str(e)}", "citations": ["pycalphad"]}
