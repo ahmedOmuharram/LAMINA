@@ -7,6 +7,7 @@ defects, doping, and structural properties.
 
 import json
 import logging
+import numpy as np
 from typing import Any, Dict, List, Annotated, Optional
 
 from kani import ai_function, AIParam
@@ -18,6 +19,11 @@ from .utils import (
     analyze_doping_site_preference,
     analyze_structure_temperature_dependence,
     predict_site_preference
+)
+from ..magnets.utils import (
+    fetch_phase_and_mp_data,
+    assess_doping_effect_on_saturation_magnetization,
+    analyze_doping_effect_on_ms
 )
 
 _log = logging.getLogger(__name__)
@@ -259,95 +265,262 @@ class SemiconductorAIFunctionsMixin:
         
         return result
     
-    @ai_function(
-        desc="Search for doped materials by formula and analyze their properties. Useful for finding Al-doped Fe2O3 or other doped systems.",
-        auto_truncate=128000
-    )
-    async def search_doped_materials(
+    async def _search_same_phase_doped_variants_core(
         self,
-        host_elements: Annotated[List[str], AIParam(desc="List of host elements (e.g., ['Fe', 'O'] for Fe2O3).")],
-        dopant_element: Annotated[str, AIParam(desc="Dopant element (e.g., 'Al').")],
-        max_results: Annotated[int, AIParam(desc="Maximum number of results to return (default: 10).")] = 10
+        host_formula: str,
+        dopant_element: str,
+        max_dopant_fraction: float,
+        max_results: int
     ) -> Dict[str, Any]:
         """
-        Search for materials containing both host elements and dopant.
+        CORE HELPER: Search for plausible substitutional doped variants (NO LOGGING).
         
-        Returns materials that contain the host elements plus the dopant element,
-        sorted by stability (energy above hull).
+        This is the internal implementation that does NOT touch self.recent_tool_outputs.
+        Use this when calling from other tools to avoid polluting the output log.
         """
         try:
-            elements = host_elements + [dopant_element]
-            
+            # 1. Get the host reference (stable-ish entry)
+            host_mp = fetch_phase_and_mp_data(self.mpr, host_formula)
+            if not host_mp.get("success"):
+                return {
+                    "success": False,
+                    "error": f"Could not fetch host phase data for {host_formula}: {host_mp.get('error')}"
+                }
+
+            host_phase = host_mp.get("phase", {})
+            host_sg = host_phase.get("space_group")
+            host_cs = host_phase.get("crystal_system")
+            host_comp = host_mp.get("composition", {})
+
+            # Figure out allowed element set = {host elements} ∪ {dopant}
+            host_elements = set(host_comp.keys())
+            allowed_elements = set(host_elements) | {dopant_element}
+
+            # 2. Broad search: host elements + dopant
+            elements = list(host_elements | {dopant_element})
             docs = self.mpr.materials.summary.search(
                 elements=elements,
-                num_elements=[len(elements), len(elements)],
                 fields=[
                     "material_id", "formula_pretty", "composition",
                     "energy_above_hull", "is_stable", "symmetry",
-                    "is_magnetic", "ordering", "total_magnetization"
+                    "is_magnetic", "ordering", "total_magnetization",
+                    "volume", "nsites"
                 ]
             )
-            
+
             if not docs:
                 return {
                     "success": False,
                     "error": f"No materials found with elements {elements}"
                 }
-            
-            # Sort by energy above hull
-            docs = sorted(docs, key=lambda x: getattr(x, 'energy_above_hull', float('inf')))[:max_results]
-            
-            materials = []
-            for doc in docs:
-                mat_data = {
-                    "material_id": doc.material_id if hasattr(doc, 'material_id') else None,
-                    "formula": doc.formula_pretty if hasattr(doc, 'formula_pretty') else str(doc.composition),
-                    "composition": dict(doc.composition.as_dict()) if hasattr(doc, 'composition') else None,
-                    "energy_above_hull": float(doc.energy_above_hull) if hasattr(doc, 'energy_above_hull') and doc.energy_above_hull is not None else None,
-                    "is_stable": doc.is_stable if hasattr(doc, 'is_stable') else None
+
+            candidates = []
+            for d in docs:
+                # --- chemistry gate ---
+                comp = d.composition.as_dict() if hasattr(d, "composition") else {}
+                doc_elements = set(comp.keys())
+                # reject if this introduces any NEW cations not in allowed_elements
+                if not doc_elements.issubset(allowed_elements):
+                    continue
+
+                # dopant must actually be present
+                if dopant_element not in comp or comp[dopant_element] <= 0:
+                    continue
+
+                # --- dopant fraction gate (cation sublattice only) ---
+                cation_elements = [el for el in comp if el not in ["O", "F", "N", "S", "Cl"]]
+                total_cations = sum(comp[el] for el in cation_elements) or 1.0
+                dop_frac = comp.get(dopant_element, 0.0) / total_cations
+                if dop_frac > max_dopant_fraction:
+                    # too much dopant = basically a new compound, not "doped host"
+                    continue
+
+                # --- oxygen ratio sanity gate ---
+                # We try to keep O:(total cations) similar to host
+                host_cat_total = sum(
+                    host_comp[el] for el in host_comp if el not in ["O", "F", "N", "S", "Cl"]
+                ) or 1.0
+                host_O = host_comp.get("O", 0.0)
+                host_ratio = host_O / host_cat_total
+
+                this_cat_total = total_cations
+                this_O = comp.get("O", 0.0)
+                this_ratio = this_O / this_cat_total if this_cat_total > 0 else 0.0
+
+                # allow ±15% relative drift in O:cation ratio
+                if host_ratio > 0:
+                    rel_dev = abs(this_ratio - host_ratio) / host_ratio
+                    if rel_dev > 0.15:
+                        # e.g. reject Fe2CoO4 spinel vs Fe2O3 corundum
+                        continue
+
+                # --- structural gate (phase similarity) ---
+                sg = None
+                cs = None
+                if hasattr(d, "symmetry") and d.symmetry:
+                    sg = getattr(d.symmetry, "symbol", None)
+                    cs = getattr(d.symmetry, "crystal_system", None)
+
+                # Stricter phase matching:
+                # - If both have space groups, demand exact match
+                # - Only fall back to crystal system if space group is missing
+                same_phase_like = False
+                phase_match_type = None
+                
+                if host_sg and sg:
+                    # Both have explicit space groups - demand exact match
+                    if sg == host_sg:
+                        same_phase_like = True
+                        phase_match_type = "space_group"
+                elif host_cs and cs:
+                    # Only fall back to crystal system match if at least one lacks space group
+                    if str(cs) == str(host_cs):
+                        same_phase_like = True
+                        phase_match_type = "crystal_system_only"
+
+                if not same_phase_like:
+                    # don't claim "doped hematite" if it's actually a totally different lattice
+                    continue
+
+                # If it survives all filters, collect it
+                entry = {
+                    "material_id": getattr(d, "material_id", None),
+                    "formula": getattr(d, "formula_pretty", str(d.composition)),
+                    "composition": comp,
+                    "effective_dopant_fraction_on_cation_lattice": float(dop_frac),
+                    "energy_above_hull": float(getattr(d, "energy_above_hull", np.nan)),
+                    "is_stable": bool(getattr(d, "is_stable", False)),
                 }
-                
-                # Add symmetry
-                if hasattr(doc, 'symmetry') and doc.symmetry:
-                    sym = doc.symmetry
-                    if hasattr(sym, 'crystal_system'):
-                        mat_data["crystal_system"] = str(sym.crystal_system)
-                    if hasattr(sym, 'symbol'):
-                        mat_data["space_group"] = str(sym.symbol)
-                
-                # Add magnetic properties
-                if hasattr(doc, 'is_magnetic'):
-                    mat_data["is_magnetic"] = doc.is_magnetic
-                if hasattr(doc, 'ordering') and doc.ordering:
-                    mat_data["magnetic_ordering"] = str(doc.ordering)
-                if hasattr(doc, 'total_magnetization') and doc.total_magnetization is not None:
-                    mat_data["total_magnetization"] = float(doc.total_magnetization)
-                
-                materials.append(mat_data)
-            
+
+                # Add explicit phase similarity note
+                if phase_match_type == "space_group":
+                    entry["phase_similarity_note"] = f"Matched by space group ({sg})"
+                elif phase_match_type == "crystal_system_only":
+                    entry["phase_similarity_note"] = (
+                        f"Only matched by crystal system ({cs}); may represent a distorted or new phase"
+                    )
+                else:
+                    entry["phase_similarity_note"] = "Unknown phase relationship"
+
+                # stash magnetic info that might be useful later
+                if hasattr(d, "is_magnetic"):
+                    entry["is_magnetic"] = d.is_magnetic
+                if hasattr(d, "ordering") and d.ordering:
+                    entry["magnetic_ordering"] = str(d.ordering)
+                if hasattr(d, "total_magnetization") and d.total_magnetization is not None:
+                    entry["total_magnetization_muB_per_cell"] = float(d.total_magnetization)
+                if hasattr(d, "volume"):
+                    entry["volume_A3"] = float(d.volume)
+                if hasattr(d, "nsites"):
+                    entry["nsites"] = int(d.nsites)
+
+                # symmetry
+                if sg: entry["space_group"] = str(sg)
+                if cs: entry["crystal_system"] = str(cs)
+
+                candidates.append(entry)
+
+            # sort by stability
+            candidates.sort(key=lambda x: x.get("energy_above_hull", float("inf")))
+
+            # Keep only candidates that actually matched the exact space group
+            strict_candidates = [
+                c for c in candidates
+                if "phase_similarity_note" in c
+                and c["phase_similarity_note"].startswith("Matched by space group")
+            ]
+
+            # If strict filter kills everything, we'll fall back to the looser set,
+            # but we'll label them as "WARNING: possible new phase".
+            phase_warning = None
+            if strict_candidates:
+                final_candidates = strict_candidates
+            else:
+                final_candidates = candidates
+                phase_warning = (
+                    "No doped entries with identical space group. "
+                    "Using crystal-system-only matches, which may actually be a new/distorted phase. "
+                    "Do NOT claim 'same phase doping' from this."
+                )
+
             result = {
                 "success": True,
-                "host_elements": host_elements,
+                "host_formula": host_formula,
+                "host_space_group": host_sg,
+                "host_crystal_system": host_cs,
                 "dopant_element": dopant_element,
-                "num_materials_found": len(materials),
-                "materials": materials,
+                "num_candidates": len(final_candidates),
+                "candidates": final_candidates[:max_results],
+                "phase_warning": phase_warning,
+                "note": (
+                    "Strict filtering applied: demands exact space group match when available, "
+                    "similar O:cation ratio (±15%), no extra cations, and small dopant fraction. "
+                    "Each candidate includes 'phase_similarity_note' field indicating match quality. "
+                    "DO NOT compare raw total_magnetization_muB_per_cell across candidates - "
+                    "use magnet tools (assess_doping_effect_on_saturation_magnetization) for normalized Ms comparisons."
+                ),
                 "citations": ["Materials Project"]
             }
-            
-            if hasattr(self, 'recent_tool_outputs'):
-                self.recent_tool_outputs.append({
-                    "tool_name": "search_doped_materials",
-                    "result": result
-                })
-            
+
+            # NO LOGGING in core helper - let the wrapper control that
             return result
-            
+
         except Exception as e:
-            _log.error(f"Error searching doped materials: {e}", exc_info=True)
+            _log.error(f"Error in _search_same_phase_doped_variants_core: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)
             }
+    
+    @ai_function(
+        desc=(
+            "Search for plausible SUBSTITUTIONAL doped variants of a host phase, not completely different compounds. "
+            "For example: Fe2O3 with a few % Co on Fe sites (same crystal family), NOT spinels like Fe2CoO4. "
+            "Filters candidates by: same crystal system / space group if possible, similar O:cation ratio, "
+            "no extra cations beyond the dopant, and small dopant fraction. "
+            "\n\nWARNING: Do NOT use this result alone to claim magnetic improvement. "
+            "You MUST pass candidates into assess_doping_effect_on_saturation_magnetization to get normalized Ms (% change) "
+            "or use compare_dopants_for_saturation_magnetization from the magnet tools."
+        ),
+        auto_truncate=128000
+    )
+    async def search_same_phase_doped_variants(
+        self,
+        host_formula: Annotated[str, AIParam(desc="Exact host formula (e.g., 'Fe2O3' for hematite).")],
+        dopant_element: Annotated[str, AIParam(desc="Dopant element symbol (e.g., 'Co').")],
+        max_dopant_fraction: Annotated[float, AIParam(desc="Max dopant fraction on the cation sublattice (e.g., 0.15 = 15%).")] = 0.15,
+        max_results: Annotated[int, AIParam(desc="Maximum results to return.")] = 10
+    ) -> Dict[str, Any]:
+        """
+        PUBLIC WRAPPER: Search for plausible substitutional doped variants.
+        
+        This is NOT a broad search - it strictly filters to avoid:
+        - Ferrite spinels when you want corundum
+        - Perovskites when you want rocksalt
+        - New compounds with extra cations
+        - Heavily doped phases (>15% dopant by default)
+        
+        Returns only candidates that preserve:
+        - Crystal system / space group similarity
+        - O:cation ratio similarity
+        - Small dopant fraction on cation sublattice
+        """
+        # Call the core helper (which does NOT log)
+        result = await self._search_same_phase_doped_variants_core(
+            host_formula,
+            dopant_element,
+            max_dopant_fraction,
+            max_results
+        )
+        
+        # Log ONLY here, in the public wrapper
+        if hasattr(self, 'recent_tool_outputs'):
+            self.recent_tool_outputs.append({
+                "tool_name": "search_same_phase_doped_variants",
+                "result": result
+            })
+        
+        return result
     
     @ai_function(
         desc=(
@@ -421,6 +594,123 @@ class SemiconductorAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in predict_defect_site_preference: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @ai_function(
+        desc=(
+            "For a given host oxide/semiconductor and a dopant, "
+            "find same-phase doped variants, then compute how the saturation magnetization "
+            "changes in kA/m. Only trusts results where the doped cell has the SAME space group "
+            "as the host. Refuses to claim improvement if the phase changes. "
+            "\n\nThis is the ONLY correct way to answer questions about Ms retention or degradation."
+        ),
+        auto_truncate=128000
+    )
+    async def evaluate_dopant_effect_on_Ms(
+        self,
+        host_formula: Annotated[str, AIParam(desc="Host formula, e.g. 'Fe2O3' for hematite")],
+        dopant_element: Annotated[str, AIParam(desc="Dopant symbol, e.g. 'Co'")],
+        max_dopant_fraction: Annotated[float, AIParam(desc="Max cation fraction, default 0.15")] = 0.15,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate dopant effect on saturation magnetization with proper phase checking.
+        
+        This function:
+        1. Gets the host phase data (correct ground state)
+        2. Searches for doped variants that preserve the same space group
+        3. Compares Ms in consistent units (kA/m)
+        4. Flags any phase changes with strong warnings
+        
+        Use this instead of raw μB comparisons to get scientifically valid results.
+        """
+        try:
+            host_phase_data = fetch_phase_and_mp_data(self.mpr, host_formula)
+            phase_warning_global = None
+            if not host_phase_data.get("success"):
+                return {"success": False, "error": host_phase_data.get("error")}
+
+            # find doped same-phase candidates using CORE helper (no logging)
+            doped_search = await self._search_same_phase_doped_variants_core(
+                host_formula,
+                dopant_element,
+                max_dopant_fraction,
+                max_results=10
+            )
+
+            if not doped_search.get("success"):
+                return {
+                    "success": False,
+                    "error": doped_search.get("error", "dopant search failed")
+                }
+
+            if "phase_warning" in doped_search and doped_search["phase_warning"]:
+                phase_warning_global = doped_search["phase_warning"]
+
+            summaries = []
+            for cand in doped_search["candidates"]:
+                mid = cand.get("material_id")
+                if not mid:
+                    continue
+
+                ms_eval = assess_doping_effect_on_saturation_magnetization(
+                    self.mpr,
+                    host_formula,
+                    mid,
+                    host_phase_data=host_phase_data
+                )
+
+                # stash metadata so we can interpret later
+                ms_eval["candidate_formula"] = cand.get("formula")
+                ms_eval["dopant_fraction_estimate"] = cand.get("effective_dopant_fraction_on_cation_lattice")
+                ms_eval["phase_similarity_note"] = cand.get("phase_similarity_note")
+                summaries.append(ms_eval)
+
+            # >>> NEW FALLBACK BLOCK <<<
+            # If no same-space-group candidates survived, fall back to broader analysis
+            fallback_info = None
+            if not summaries:
+                _log.info(
+                    f"No same-phase candidates for {host_formula}+{dopant_element}; "
+                    f"using fallback analyze_doping_effect_on_ms"
+                )
+                fallback_analysis = analyze_doping_effect_on_ms(
+                    host_formula=host_formula,
+                    dopant=dopant_element,
+                    doping_fraction=max_dopant_fraction,
+                    mpr=self.mpr
+                )
+                fallback_info = fallback_analysis  # already has Ms_kA_per_m, phase_changed, etc.
+
+            result = {
+                "success": True,
+                "host_formula": host_formula,
+                "dopant_element": dopant_element,
+                "host_space_group": host_phase_data.get("phase", {}).get("space_group"),
+                "results": summaries,
+                "global_phase_warning": phase_warning_global,
+                "fallback_estimate": fallback_info,
+                "notes": [
+                    "Only trust entries in 'results' where same_space_group == True and caution is None.",
+                    "If 'results' is empty but 'fallback_estimate' exists: the dopant seems to force a different phase or required a heuristic Ms estimate.",
+                    "If same_space_group is False in 'fallback_estimate', it's a new phase, not 'doped host'.",
+                    "Use percent_change only if it's not None (baseline Ms ≠ 0)."
+                ],
+                "citations": ["Materials Project"]
+            }
+            
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "evaluate_dopant_effect_on_Ms",
+                    "result": result
+                })
+            
+            return result
+            
+        except Exception as e:
+            _log.error(f"Error in evaluate_dopant_effect_on_Ms: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)

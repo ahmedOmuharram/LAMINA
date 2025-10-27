@@ -254,6 +254,7 @@ class AlloyHandler(BaseHandler):
             {
                 "phases": [{"name": "AL5FE2", "fraction": 0.70}, ...],
                 "matrix_phase": "AL5FE2" or "BCC_A2",
+                "matrix_phase_composition": {"AL": 0.96, "MG": 0.04},  # at.% in matrix
                 "secondary_phases": [...],
             }
         """
@@ -262,38 +263,54 @@ class AlloyHandler(BaseHandler):
             from ..calphad.phase_diagrams.equilibrium_utils import extract_phase_fractions_from_equilibrium
             from ..calphad.phase_diagrams.database_utils import get_db_elements
             
-            A, B = system_elems
-            
             # Get actual elements from database and verify
             db_elems = get_db_elements(db)
-            A_upper = A.upper()
-            B_upper = B.upper()
             
-            if A_upper not in db_elems or B_upper not in db_elems:
+            # Convert all system elements to uppercase for database lookup
+            elements_upper = [elem.upper() for elem in system_elems]
+            
+            # Verify all elements exist in database
+            missing_elements = [el for el in elements_upper if el not in db_elems]
+            if missing_elements:
                 return {
                     "success": False,
-                    "error": f"Elements {A} and {B} not found in database. Available: {sorted(db_elems)}",
+                    "error": f"Elements {missing_elements} not found in database. Available: {sorted(db_elems)}",
                     "phases": [],
                     "matrix_phase": None,
+                    "matrix_phase_composition": {},
                     "secondary_phases": []
                 }
             
-            # Use uppercase element names as they appear in database
-            elements = [A_upper, B_upper, 'VA']
+            # Use uppercase element names as they appear in database, add VA
+            elements = elements_upper + ['VA']
             
             # Get phases for this system - import from CALPHAD handler
             from ..calphad.phase_diagrams.phase_diagrams import CalPhadHandler
             temp_handler = CalPhadHandler()
-            phases = temp_handler._filter_phases_for_system(db, (A_upper, B_upper))
+            phases = temp_handler._filter_phases_for_system(db, tuple(elements_upper))
             
             # Convert composition to mole fractions
-            # Use original capitalization for dict lookup
+            # Normalize to sum to 1.0
             total = sum(composition.values())
-            x_A = composition.get(A, 0.0) / total
-            x_B = composition.get(B, 0.0) / total
+            mole_fractions = {elem: composition.get(elem, 0.0) / total for elem in system_elems}
             
-            # Calculate equilibrium using uppercase element for pycalphad
-            conditions = {v.X(B_upper): x_B, v.T: temperature_K, v.P: 101325, v.N: 1}
+            # Build conditions: N-1 composition constraints for N elements
+            # Use the last N-1 elements as independent variables
+            conditions = {v.T: temperature_K, v.P: 101325, v.N: 1}
+            
+            for elem in elements_upper[1:]:  # Skip first element (dependent variable)
+                # Find corresponding key in composition dict (case-insensitive match)
+                comp_key = None
+                for key in composition.keys():
+                    if key.upper() == elem:
+                        comp_key = key
+                        break
+                
+                if comp_key:
+                    x_val = mole_fractions[comp_key]
+                    conditions[v.X(elem)] = x_val
+            
+            # Calculate equilibrium
             eq = equilibrium(db, elements, phases, conditions)
             
             # Extract phase fractions
@@ -312,11 +329,36 @@ class AlloyHandler(BaseHandler):
                     "error": "No stable phases found at this condition",
                     "phases": [],
                     "matrix_phase": None,
+                    "matrix_phase_composition": {},
                     "secondary_phases": []
                 }
             
             # Matrix is the phase with maximum fraction
             matrix_phase = max(phase_fractions.items(), key=lambda x: x[1])[0]
+            
+            # Extract matrix phase composition (per-phase chemistry)
+            matrix_phase_composition = {}
+            try:
+                eqp = eq.squeeze()
+                phase_mask = eqp['Phase'] == matrix_phase
+                
+                # Get composition of each element in the matrix phase
+                for elem in elements_upper:
+                    x_data = eqp['X'].sel(component=elem).where(phase_mask, drop=False)
+                    x_val = float(x_data.mean().values)
+                    if x_val > 1e-6:  # Only record non-negligible amounts
+                        matrix_phase_composition[elem] = x_val
+                
+                # Normalize to sum to 1.0 (exclude VA)
+                total_comp = sum(matrix_phase_composition.values())
+                if total_comp > 0:
+                    matrix_phase_composition = {
+                        elem: frac / total_comp 
+                        for elem, frac in matrix_phase_composition.items()
+                    }
+            except Exception as e:
+                _log.warning(f"Could not extract matrix phase composition: {e}")
+                matrix_phase_composition = {}
             
             # Secondary phases are all others
             secondary_phases = [
@@ -329,6 +371,7 @@ class AlloyHandler(BaseHandler):
                 "success": True,
                 "phases": phase_list,
                 "matrix_phase": matrix_phase,
+                "matrix_phase_composition": matrix_phase_composition,
                 "secondary_phases": secondary_phases,
                 "phase_fractions": phase_fractions
             }
@@ -340,6 +383,7 @@ class AlloyHandler(BaseHandler):
                 "error": str(e),
                 "phases": [],
                 "matrix_phase": None,
+                "matrix_phase_composition": {},
                 "secondary_phases": []
             }
     
@@ -560,6 +604,127 @@ class AlloyHandler(BaseHandler):
             _log.debug(f"Could not parse phase name {phase_name}: {e}")
             return None
     
+    def _estimate_phase_modulus(
+        self,
+        matrix_phase_name: str,
+        matrix_phase_composition: Dict[str, float],
+    ) -> Dict[str, Any]:
+        """
+        Estimate the effective Young's modulus (stiffness) of the matrix phase
+        by simple rule-of-mixtures over its elemental makeup.
+        
+        Args:
+            matrix_phase_name: CALPHAD phase label (e.g., "FCC_A1", "BCC_A2")
+            matrix_phase_composition: Dict with atomic fractions of elements in the matrix
+                                     (e.g., {"AL": 0.96, "MG": 0.04})
+        
+        Returns:
+            {
+              "E_matrix_GPa": float or None,
+              "E_baseline_GPa": float or None,
+              "baseline_element": str or None,
+              "relative_change": float or None,  # (E_matrix - E_baseline)/E_baseline
+              "percent_change": float or None,   # relative_change * 100
+              "assessment": "increase" | "decrease" | "no_significant_change" | "unknown",
+              "matrix_composition": Dict[str, float],
+              "notes": str
+            }
+        """
+        # Handbook-ish Young's moduli at room temp (isotropic polycrystal, GPa)
+        # Sources: ASM Handbook, CRC Materials Science & Engineering Handbook
+        ELEMENT_MODULUS_GPA = {
+            "AL": 70.0,   # Aluminum
+            "MG": 45.0,   # Magnesium
+            "CU": 117.0,  # Copper
+            "ZN": 83.0,  # Zinc
+            "FE": 210.0,  # Iron
+            "NI": 170.0,  # Nickel
+        }
+        
+        if not matrix_phase_composition:
+            return {
+                "E_matrix_GPa": None,
+                "E_baseline_GPa": None,
+                "baseline_element": None,
+                "relative_change": None,
+                "percent_change": None,
+                "assessment": "unknown",
+                "matrix_composition": {},
+                "notes": "No matrix composition available."
+            }
+        
+        # Figure out dominant element (highest atomic fraction in matrix phase)
+        dominant_elem = max(matrix_phase_composition.keys(),
+                           key=lambda el: matrix_phase_composition[el])
+        
+        # Need its baseline modulus
+        if dominant_elem not in ELEMENT_MODULUS_GPA:
+            return {
+                "E_matrix_GPa": None,
+                "E_baseline_GPa": None,
+                "baseline_element": dominant_elem,
+                "relative_change": None,
+                "percent_change": None,
+                "assessment": "unknown",
+                "matrix_composition": matrix_phase_composition,
+                "notes": f"No baseline modulus data available for dominant element {dominant_elem}"
+            }
+        
+        E_baseline = ELEMENT_MODULUS_GPA[dominant_elem]
+        
+        # Compute rule-of-mixtures modulus: E ≈ Σ(x_i * E_i)
+        E_matrix = 0.0
+        missing_data = []
+        for el, atfrac in matrix_phase_composition.items():
+            if el in ELEMENT_MODULUS_GPA:
+                E_matrix += atfrac * ELEMENT_MODULUS_GPA[el]
+            else:
+                missing_data.append(el)
+        
+        # Calculate relative change
+        if E_baseline > 0:
+            rel_change = (E_matrix - E_baseline) / E_baseline
+            pct_change = rel_change * 100.0
+        else:
+            rel_change = None
+            pct_change = None
+        
+        # Classify significance
+        # Threshold: ±10% is "significant" change
+        # This is because real commercial alloys (2xxx, 5xxx, 6xxx, 7xxx Al)
+        # all have moduli within ~5% of pure Al despite varying alloying content
+        if rel_change is None:
+            assessment = "unknown"
+        else:
+            if rel_change >= 0.10:
+                assessment = "increase"
+            elif rel_change <= -0.10:
+                assessment = "decrease"
+            else:
+                assessment = "no_significant_change"
+        
+        notes_parts = [
+            f"Dominant element: {dominant_elem} (baseline E = {E_baseline:.1f} GPa).",
+            f"Rule-of-mixtures estimate: E_matrix = {E_matrix:.1f} GPa."
+        ]
+        
+        if missing_data:
+            notes_parts.append(f"Missing modulus data for: {', '.join(missing_data)}.")
+        
+        if rel_change is not None:
+            notes_parts.append(f"Relative change: {pct_change:+.2f}%.")
+        
+        return {
+            "E_matrix_GPa": round(E_matrix, 2),
+            "E_baseline_GPa": E_baseline,
+            "baseline_element": dominant_elem,
+            "relative_change": round(rel_change, 4) if rel_change is not None else None,
+            "percent_change": round(pct_change, 2) if pct_change is not None else None,
+            "assessment": assessment,
+            "matrix_composition": matrix_phase_composition,
+            "notes": " ".join(notes_parts)
+        }
+    
     def _assess_mech_effect(
         self,
         matrix_desc: Dict[str, Any],
@@ -718,61 +883,111 @@ class AlloyHandler(BaseHandler):
     
     @ai_function(
         desc=(
-            "Assess claims about alloy microstructure, strengthening, and embrittlement. "
+            "Assess claims about alloy microstructure, strengthening, embrittlement, and stiffness. "
             "Given a binary alloy system, composition, and temperature, this tool: "
             "(1) calculates which phases are at equilibrium using CALPHAD, "
             "(2) determines which is the matrix vs secondary phases, "
             "(3) estimates mechanical properties (brittleness) using Materials Project elastic data, "
             "(4) assesses whether secondary phases likely strengthen or embrittle the alloy, "
-            "(5) verifies claims about phase formation and mechanical effects. "
-            "Works for Fe-Al, Ni-Al, Ti-Al, and other binary metallic systems."
+            "(5) estimates the elastic modulus (stiffness) of the matrix phase using rule-of-mixtures, "
+            "(6) verifies claims about phase formation, mechanical effects, and stiffness changes. "
+            "Works for Al-Mg, Fe-Al, Ni-Al, Ti-Al, and other binary metallic systems."
         ),
         auto_truncate=128000,
     )
-    async def assess_phase_strength_claim(
+    async def assess_phase_strength_and_stiffness_claims(
         self,
-        system: Annotated[str, AIParam(desc="Binary system, e.g. 'Fe-Al', 'Ni-Al', 'Ti-Al'")],
-        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Fe30Al70', 'Ni75Al25'). Numbers are at.%")],
+        system: Annotated[str, AIParam(desc="Chemical system, e.g. 'Fe-Al', 'Ni-Al', 'Ti-Al' (binary) or 'Al-Mg-Zn', 'Fe-Cr-Ni' (ternary)")],
+        composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Fe30Al70', 'Al88Mg8Zn4'). Numbers are at.%")],
         temperature_K: Annotated[float, AIParam(desc="Temperature in Kelvin")],
-        claimed_secondary_phase: Annotated[Optional[str], AIParam(desc="Name of alleged strengthening phase (e.g., 'AL2FE', 'Ni3Al', 'AL5FE2'). Optional.")] = None,
+        claimed_secondary_phase: Annotated[Optional[str], AIParam(desc="Name of alleged strengthening phase (e.g., 'AL2FE', 'Ni3Al', 'TAU', 'LAVES'). Optional.")] = None,
         claimed_matrix_phase: Annotated[Optional[str], AIParam(desc="Name of alleged matrix phase (e.g., 'BCC_A2', 'FCC_A1'). Optional.")] = None,
     ) -> Dict[str, Any]:
         """
         Comprehensive assessment of alloy microstructure and mechanical effects.
         
-        Returns verification of claims about phase formation, strengthening, and embrittlement
-        based on thermodynamic calculations and mechanical property estimates.
+        Supports both binary and ternary systems.
+        
+        Returns verification of claims about phase formation, strengthening, embrittlement,
+        and stiffness (elastic modulus) changes based on thermodynamic calculations (CALPHAD),
+        mechanical property estimates (Materials Project), and rule-of-mixtures stiffness modeling.
+        
+        The stiffness assessment uses a ±10% threshold to classify changes as "significant"
+        (matching engineering practice where commercial Al alloys have ~same stiffness as pure Al).
         """
         try:
             # Parse system
             parts = system.replace(" ", "").split("-")
-            if len(parts) != 2:
+            if len(parts) < 2 or len(parts) > 3:
                 return {
                     "success": False,
-                    "error": f"Invalid system format: '{system}'. Expected 'Element1-Element2' (e.g., 'Fe-Al')"
+                    "error": f"Invalid system format: '{system}'. Expected 'Element1-Element2' or 'Element1-Element2-Element3' (e.g., 'Fe-Al' or 'Al-Mg-Zn')"
                 }
             
-            A, B = [p.capitalize() for p in parts]
-            system_elems = (A, B)
+            system_elems = tuple(p.capitalize() for p in parts)
+            expected_elements = set(system_elems)
             
-            # Parse composition (e.g., "Fe30Al70" or "Fe30-Al70")
+            # Parse composition (supports multiple formats)
+            # Format 1: "Fe30Al70" or "Al88Mg8Zn4" (element immediately followed by number)
+            # Format 2: "Al-8Mg-4Zn" (element-number pairs, first element is balance)
             import re
             comp_dict = {}
-            matches = re.findall(r'([A-Z][a-z]?)(\d+\.?\d*)', composition)
-            if not matches:
-                return {
-                    "success": False,
-                    "error": f"Could not parse composition: '{composition}'. Expected format like 'Fe30Al70'"
-                }
             
-            for elem, pct in matches:
-                comp_dict[elem] = float(pct)
+            # Try format 1: concatenated (e.g., "Al88Mg8Zn4")
+            matches = re.findall(r'([A-Z][a-z]?)(\d+\.?\d*)', composition)
+            
+            if matches and len(matches) == len(expected_elements):
+                # Format 1 succeeded
+                for elem, pct in matches:
+                    comp_dict[elem] = float(pct)
+            else:
+                # Try format 2: hyphen-separated (e.g., "Al-8Mg-4Zn")
+                # Split by hyphens, extract element and optional number
+                parts = composition.replace(' ', '').split('-')
+                
+                for part in parts:
+                    # Extract element and number from each part
+                    match = re.match(r'([A-Z][a-z]?)(\d+\.?\d*)?', part)
+                    if match:
+                        elem = match.group(1)
+                        pct_str = match.group(2)
+                        
+                        if pct_str:
+                            comp_dict[elem] = float(pct_str)
+                        else:
+                            # No number means balance element (will be calculated)
+                            comp_dict[elem] = None
+                
+                # Calculate balance element
+                balance_elem = None
+                specified_total = 0.0
+                
+                for elem, pct in comp_dict.items():
+                    if pct is None:
+                        balance_elem = elem
+                    else:
+                        specified_total += pct
+                
+                if balance_elem and specified_total < 100.0:
+                    comp_dict[balance_elem] = 100.0 - specified_total
+                elif balance_elem:
+                    return {
+                        "success": False,
+                        "error": f"Specified compositions sum to {specified_total}%, exceeds 100%"
+                    }
             
             # Validate composition
-            if set(comp_dict.keys()) != {A, B}:
+            if not comp_dict or set(comp_dict.keys()) != expected_elements:
                 return {
                     "success": False,
-                    "error": f"Composition elements {list(comp_dict.keys())} don't match system {A}-{B}"
+                    "error": f"Could not parse composition: '{composition}'. Expected format like 'Fe30Al70' or 'Al-8Mg-4Zn'. Got elements: {list(comp_dict.keys()) if comp_dict else 'none'}, expected: {list(expected_elements)}"
+                }
+            
+            # Ensure all values are numeric
+            if any(v is None for v in comp_dict.values()):
+                return {
+                    "success": False,
+                    "error": f"Failed to parse all composition values from '{composition}'"
                 }
             
             _log.info(f"Assessing {system} at composition {comp_dict} and T={temperature_K}K")
@@ -782,7 +997,7 @@ class AlloyHandler(BaseHandler):
             from ..calphad.phase_diagrams.phase_diagrams import CalPhadHandler
             
             temp_handler = CalPhadHandler()
-            db_path = temp_handler._get_database_path(system, elements=[A, B])
+            db_path = temp_handler._get_database_path(system, elements=list(system_elems))
             
             if not db_path:
                 return {
@@ -825,11 +1040,19 @@ class AlloyHandler(BaseHandler):
             _log.info("Step 3: Assessing mechanical effects...")
             mech_assessment = self._assess_mech_effect(matrix_desc, sec_descs, microstructure)
             
+            # Step 3b: Assess stiffness (elastic modulus) of matrix phase
+            _log.info("Step 3b: Assessing matrix stiffness...")
+            stiffness_assessment = self._estimate_phase_modulus(
+                microstructure["matrix_phase"],
+                microstructure.get("matrix_phase_composition", {})
+            )
+            
             # Step 4: Verify claims
             _log.info("Step 4: Verifying claims...")
             claim_check = self._verify_claims(
                 microstructure,
                 mech_assessment,
+                stiffness_assessment,
                 claimed_secondary_phase,
                 claimed_matrix_phase
             )
@@ -841,6 +1064,7 @@ class AlloyHandler(BaseHandler):
                 "temperature_K": temperature_K,
                 "equilibrium_microstructure": microstructure,
                 "mechanical_assessment": mech_assessment,
+                "stiffness_assessment": stiffness_assessment,
                 "claim_check": claim_check,
                 "citations": ["pycalphad", "Materials Project"]
             }
@@ -853,6 +1077,7 @@ class AlloyHandler(BaseHandler):
         self,
         microstructure: Dict[str, Any],
         mech_assessment: Dict[str, Any],
+        stiffness_assessment: Dict[str, Any],
         claimed_secondary: Optional[str],
         claimed_matrix: Optional[str]
     ) -> Dict[str, Any]:
@@ -899,6 +1124,12 @@ class AlloyHandler(BaseHandler):
             # Overall assessment
             results["strengthening_plausible"] = mech_assessment["strengthening_likelihood"]
             results["embrittlement_risk"] = mech_assessment["embrittlement_risk"]
+            
+            # Stiffness assessment
+            results["stiffness_change"] = stiffness_assessment.get("assessment", "unknown")
+            results["stiffness_percent_change"] = stiffness_assessment.get("percent_change")
+            results["E_matrix_GPa"] = stiffness_assessment.get("E_matrix_GPa")
+            results["E_baseline_GPa"] = stiffness_assessment.get("E_baseline_GPa")
             
             # Generate final interpretation
             interpretation_lines = []
@@ -953,6 +1184,30 @@ class AlloyHandler(BaseHandler):
                 interpretation_lines.append("⚠️ EMBRITTLEMENT: Moderate risk - significant hard phase fraction")
             else:
                 interpretation_lines.append("❌ EMBRITTLEMENT: High risk - brittle phases detected")
+            
+            # Stiffness assessment
+            stiffness_change = results["stiffness_change"]
+            pct_change = results.get("stiffness_percent_change")
+            E_matrix = results.get("E_matrix_GPa")
+            E_baseline = results.get("E_baseline_GPa")
+            
+            if stiffness_change == "increase":
+                interpretation_lines.append(
+                    f"✅ STIFFNESS: Significant increase detected "
+                    f"(E: {E_baseline:.1f} → {E_matrix:.1f} GPa, {pct_change:+.1f}%)"
+                )
+            elif stiffness_change == "decrease":
+                interpretation_lines.append(
+                    f"⚠️ STIFFNESS: Significant decrease detected "
+                    f"(E: {E_baseline:.1f} → {E_matrix:.1f} GPa, {pct_change:+.1f}%)"
+                )
+            elif stiffness_change == "no_significant_change":
+                interpretation_lines.append(
+                    f"ℹ️ STIFFNESS: No significant change "
+                    f"(E: {E_baseline:.1f} → {E_matrix:.1f} GPa, {pct_change:+.1f}%, within ±10% threshold)"
+                )
+            else:
+                interpretation_lines.append("❓ STIFFNESS: Could not assess (insufficient data)")
             
             results["final_interpretation"] = "\n".join(interpretation_lines)
             

@@ -264,7 +264,15 @@ def compare_magnetic_properties(
     doped_props: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Compare magnetic properties between undoped and doped materials.
+    SAFE VERSION: Compare magnetic properties between undoped and doped materials.
+    
+    Try to compare normalized Ms (A/m or kA/m) if available.
+    Fall back to per-formula-unit (μB/f.u.) comparison.
+    REFUSE to compare raw total_magnetization μB/cell across unrelated phases.
+    
+    WARNING: This does NOT prove better saturation magnetization unless the two materials 
+    are the same structure and similar stoichiometry. For Fe₂O₃ doping analysis use 
+    assess_doping_effect_on_saturation_magnetization from the magnet tools instead.
     
     Args:
         undoped_props: Magnetic properties of undoped material
@@ -293,27 +301,17 @@ def compare_magnetic_properties(
                 "formula": doped_props.get("formula"),
                 "is_magnetic": doped_props.get("is_magnetic"),
                 "ordering": doped_props.get("magnetic_ordering")
-            }
+            },
+            "warnings": []
         }
         
-        # Compare magnetization
-        if "total_magnetization" in undoped_props and "total_magnetization" in doped_props:
-            m1 = undoped_props["total_magnetization"]["value"]
-            m2 = doped_props["total_magnetization"]["value"]
-            
-            result["magnetization_comparison"] = {
-                "undoped": float(m1),
-                "doped": float(m2),
-                "absolute_change": float(m2 - m1),
-                "percent_change": float((m2 - m1) / m1 * 100) if m1 != 0 else None,
-                "unit": "μB"
-            }
-        
-        # Compare magnetization per formula unit
-        if "magnetization_per_formula_unit" in undoped_props and "magnetization_per_formula_unit" in doped_props:
+        # Best: compare magnetization_per_formula_unit (μB/f.u.) if both present
+        if (
+            "magnetization_per_formula_unit" in undoped_props and
+            "magnetization_per_formula_unit" in doped_props
+        ):
             m1 = undoped_props["magnetization_per_formula_unit"]["value"]
             m2 = doped_props["magnetization_per_formula_unit"]["value"]
-            
             result["magnetization_per_fu_comparison"] = {
                 "undoped": float(m1),
                 "doped": float(m2),
@@ -321,21 +319,35 @@ def compare_magnetic_properties(
                 "percent_change": float((m2 - m1) / m1 * 100) if m1 != 0 else None,
                 "unit": "μB/f.u."
             }
-        
-        # Interpretation
-        improved = False
-        if "magnetization_comparison" in result:
-            improved = bool(result["magnetization_comparison"]["absolute_change"] > 0)
-        elif "magnetization_per_fu_comparison" in result:
-            improved = bool(result["magnetization_per_fu_comparison"]["absolute_change"] > 0)
-        
-        result["magnetic_enhancement"] = bool(improved)
-        
-        if improved:
-            result["interpretation"] = "Doping enhanced magnetic properties"
         else:
-            result["interpretation"] = "Doping reduced magnetic properties"
-        
+            result["warnings"].append(
+                "No consistent per-formula-unit magnetization available for both materials."
+            )
+
+        # DO NOT compare raw total_magnetization μB/cell unless nsites & volume match.
+        # We'll explicitly tell the model not to trust that.
+        if (
+            "total_magnetization" in undoped_props and
+            "total_magnetization" in doped_props
+        ):
+            result["warnings"].append(
+                "Raw total_magnetization (μB/cell) is not reliably comparable across different structures / cell sizes. "
+                "Not reported. Use assess_doping_effect_on_saturation_magnetization for normalized Ms comparisons."
+            )
+
+        # high-level interpretation: only if we got a sane per-f.u. comparison
+        comp = result.get("magnetization_per_fu_comparison")
+        if comp and comp.get("absolute_change") is not None:
+            improved = comp["absolute_change"] > 0
+            result["magnetic_enhancement"] = bool(improved)
+            result["interpretation"] = "Doping enhanced per-f.u. magnetic moment" if improved else "Doping reduced per-f.u. magnetic moment"
+        else:
+            result["magnetic_enhancement"] = None
+            result["interpretation"] = (
+                "Insufficient normalized data to compare magnetic strength. "
+                "Use magnet tools (assess_doping_effect_on_saturation_magnetization) for proper Ms analysis."
+            )
+
         return result
         
     except Exception as e:

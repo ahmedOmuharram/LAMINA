@@ -133,6 +133,14 @@ def pick_tdb_path(tdb_dir: Path, elements: Optional[list] = None) -> Optional[Pa
     # If elements provided, choose database based on system
     if elements:
         elements_upper = [el.upper() for el in elements]
+        elements_set = set(elements_upper)
+        
+        # COST507.tdb for Al-Mg-Zn ternary system (has clean tau phase data)
+        if elements_set == {'AL', 'MG', 'ZN'} or elements_set <= {'AL', 'MG', 'ZN', 'VA'}:
+            for p in candidates:
+                if "COST507" in p.name or "cost507" in p.name.lower():
+                    _log.info(f"Selected {p.name} for Al-Mg-Zn system")
+                    return p
         
         # COST507.tdb for systems with C, N, B, or Li
         if any(el in elements_upper for el in ['C', 'N', 'B', 'LI']):

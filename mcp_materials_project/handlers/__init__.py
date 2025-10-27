@@ -8,6 +8,7 @@ This package contains organized handlers for different aspects of materials scie
 - calphad/: Phase diagram calculations
 - semiconductors/: Semiconductor defect and doping analysis
 - magnets/: Permanent magnet strength assessment and doping effects
+- solutes/: Lattice parameter effects of substitutional solutes in fcc matrices
 """
 
 from .base import BaseHandler, InvalidRangeError, RANGE_KEYS
@@ -28,6 +29,7 @@ from .alloys import AlloyHandler
 from .superconductors import SuperconductorHandler
 from .semiconductors import SemiconductorHandler, create_semiconductor_handler
 from .magnets import MagnetHandler, create_magnet_handler
+from .solutes import SolutesHandler
 
 __all__ = [
     # Base classes
@@ -63,4 +65,7 @@ __all__ = [
     # Magnet handlers
     "MagnetHandler",
     "create_magnet_handler",
+    
+    # Solutes handlers
+    "SolutesHandler",
 ]

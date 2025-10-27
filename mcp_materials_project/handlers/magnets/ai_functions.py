@@ -233,20 +233,175 @@ class MagnetAIFunctionsMixin:
             }
     
     @ai_function(
-        desc="Search for doped versions of a host material by specifying host elements and dopant. Returns materials from Materials Project that contain all specified elements, sorted by stability.",
+        desc="Assess the effect of doping on saturation magnetization (Ms). Compares host and doped materials' Ms values to determine if doping increases, decreases, or maintains Ms. Returns quantitative change analysis.",
+        auto_truncate=128000
+    )
+    async def assess_doping_effect_on_saturation_magnetization(
+        self,
+        host_formula: Annotated[str, AIParam(desc="Host material formula (e.g., 'Fe2O3', 'Co3O4').")],
+        dopant_element: Annotated[str, AIParam(desc="Dopant element symbol (e.g., 'Co', 'Fe', 'Nd').")],
+        doping_fraction: Annotated[float, AIParam(desc="Approximate doping fraction (e.g., 0.1 for 10%).")] = 0.1
+    ) -> Dict[str, Any]:
+        """
+        Assess how doping affects saturation magnetization (Ms).
+        
+        This function:
+        1. Gets Ms for the host material
+        2. Searches for or estimates Ms for the doped material
+        3. Calculates the percentage change in Ms
+        4. Analyzes whether the dopant enhances or degrades Ms
+        
+        Returns:
+        - host_Ms: Host saturation magnetization
+        - doped_Ms: Doped material saturation magnetization
+        - Ms_change_percent: Percentage change in Ms
+        - verdict: Whether doping increases/decreases Ms
+        - analysis: Detailed reasoning based on magnetic moments and ordering
+        """
+        try:
+            from .utils import (
+                fetch_phase_and_mp_data,
+                estimate_saturation_magnetization_T,
+                analyze_doping_effect_on_ms
+            )
+            
+            result = analyze_doping_effect_on_ms(
+                host_formula=host_formula,
+                dopant=dopant_element,
+                doping_fraction=float(doping_fraction),
+                mpr=self.mpr
+            )
+            
+            result["citations"] = ["Materials Project", "pymatgen"]
+            
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "assess_doping_effect_on_saturation_magnetization",
+                    "result": result
+                })
+            
+            return result
+            
+        except Exception as e:
+            _log.error(f"Error in assess_doping_effect_on_saturation_magnetization: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @ai_function(
+        desc="Compare multiple dopants to find which causes the least degradation (or most enhancement) in saturation magnetization. Tests multiple dopant elements and ranks them by Ms retention/improvement.",
+        auto_truncate=128000
+    )
+    async def compare_dopants_for_saturation_magnetization(
+        self,
+        host_formula: Annotated[str, AIParam(desc="Host material formula (e.g., 'Fe2O3').")],
+        dopant_elements: Annotated[list, AIParam(desc="List of dopant elements to compare (e.g., ['Ni', 'Co', 'Nd']).")],
+        doping_fraction: Annotated[float, AIParam(desc="Doping fraction to test (default: 0.1).")] = 0.1
+    ) -> Dict[str, Any]:
+        """
+        Compare multiple dopants to find which one produces the least degradation in Ms.
+        
+        For each dopant:
+        1. Calculates or estimates Ms for the doped material
+        2. Computes Ms change percentage
+        3. Ranks dopants from best (least degradation/most enhancement) to worst
+        
+        Returns:
+        - host_Ms: Baseline Ms value
+        - dopant_comparison: List of dopants with their Ms effects, sorted by performance
+        - best_dopant: Dopant with least degradation or most enhancement
+        - worst_dopant: Dopant with most degradation
+        """
+        try:
+            from .utils import compare_multiple_dopants_ms
+            
+            result = compare_multiple_dopants_ms(
+                host_formula=host_formula,
+                dopants=dopant_elements,
+                doping_fraction=float(doping_fraction),
+                mpr=self.mpr
+            )
+            
+            result["citations"] = ["Materials Project", "pymatgen"]
+            
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "compare_dopants_for_saturation_magnetization",
+                    "result": result
+                })
+            
+            return result
+            
+        except Exception as e:
+            _log.error(f"Error in compare_dopants_for_saturation_magnetization: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @ai_function(
+        desc="Get detailed saturation magnetization data for a material, including Ms in various units (T, A/m, emu/g), magnetic ordering, and magnetic site information.",
+        auto_truncate=128000
+    )
+    async def get_saturation_magnetization_detailed(
+        self,
+        formula: Annotated[str, AIParam(desc="Chemical formula (e.g., 'Fe2O3', 'Co3O4').")]
+    ) -> Dict[str, Any]:
+        """
+        Get comprehensive saturation magnetization data for a material.
+        
+        Returns:
+        - Ms in multiple units: Tesla, A/m, kA/m, emu/g
+        - Bs (= μ0 * Ms) in Tesla
+        - Total magnetization per unit cell (μB)
+        - Magnetic ordering type
+        - Magnetic species and site information
+        - Crystal structure
+        """
+        try:
+            from .utils import get_detailed_saturation_magnetization
+            
+            result = get_detailed_saturation_magnetization(
+                mpr=self.mpr,
+                formula=formula
+            )
+            
+            result["citations"] = ["Materials Project", "pymatgen"]
+            
+            if hasattr(self, 'recent_tool_outputs'):
+                self.recent_tool_outputs.append({
+                    "tool_name": "get_saturation_magnetization_detailed",
+                    "result": result
+                })
+            
+            return result
+            
+        except Exception as e:
+            _log.error(f"Error in get_saturation_magnetization_detailed: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @ai_function(
+        desc="Search for doped versions of a host material by specifying host elements and dopant. Returns materials from Materials Project that contain all specified elements, sorted by stability and structural similarity.",
         auto_truncate=128000
     )
     async def search_doped_magnetic_materials(
         self,
         host_elements: Annotated[list, AIParam(desc="List of host elements (e.g., ['Fe', 'O'] for Fe2O3).")],
         dopant_element: Annotated[str, AIParam(desc="Dopant element (e.g., 'Al').")],
-        max_results: Annotated[int, AIParam(desc="Maximum number of results (default: 10).")] = 10
+        max_results: Annotated[int, AIParam(desc="Maximum number of results (default: 10).")] = 10,
+        host_crystal_system: Annotated[Optional[str], AIParam(desc="Optional host crystal system to prefer similar structures.")] = None
     ) -> Dict[str, Any]:
         """
         Search for materials containing host elements plus dopant.
         
-        Useful for finding doped versions of a material when exact formula is unknown.
-        Returns materials sorted by stability with magnetic properties.
+        Chemistry-aware search that filters out materials with extra cations.
+        Only returns materials where element set ⊆ {host elements} ∪ {dopant}.
+        
+        Works generically for any host: Fe2O3+Co, BaTiO3+Zr, AlN+Ti, etc.
         """
         try:
             elements = host_elements + [dopant_element]
@@ -267,18 +422,46 @@ class MagnetAIFunctionsMixin:
                     "error": f"No materials found with elements {elements}"
                 }
             
-            # Filter to ensure dopant is present
+            # Chemistry constraint: only allow {host elements} ∪ {dopant}
+            # This prevents SrPrFeCoO6 from being treated as "Co-doped Fe2O3"
+            host_set = set(host_elements)
+            allowed_elements = host_set | {dopant_element}
+            
             filtered_docs = []
             for doc in docs:
                 comp = doc.composition.as_dict()
-                if dopant_element in comp and comp[dopant_element] > 0:
-                    filtered_docs.append(doc)
+                doc_elements = set(comp.keys())
+                
+                # 1. No extra cations beyond dopant
+                if not doc_elements.issubset(allowed_elements):
+                    continue
+                
+                # 2. Dopant must be present
+                if dopant_element not in comp or comp[dopant_element] <= 0:
+                    continue
+                
+                filtered_docs.append(doc)
             
-            # Sort by stability
-            filtered_docs = sorted(
-                filtered_docs,
-                key=lambda x: getattr(x, 'energy_above_hull', float('inf'))
-            )[:max_results]
+            # Sort by stability with optional structural similarity bonus
+            def stability_rank(doc):
+                """
+                Ranking function: lower is better.
+                Prefer low energy_above_hull AND same crystal system as host.
+                """
+                e_hull = getattr(doc, 'energy_above_hull', float('inf'))
+                if e_hull is None:
+                    e_hull = float('inf')
+                
+                # Small bonus for matching crystal system (keeps same lattice type)
+                same_cs_bonus = 0.0
+                if host_crystal_system and hasattr(doc, 'symmetry') and doc.symmetry:
+                    doc_cs = getattr(doc.symmetry, 'crystal_system', None)
+                    if doc_cs and str(doc_cs) == host_crystal_system:
+                        same_cs_bonus = -0.5  # Small advantage
+                
+                return e_hull + same_cs_bonus
+            
+            filtered_docs = sorted(filtered_docs, key=stability_rank)[:max_results]
             
             materials = []
             for doc in filtered_docs:

@@ -18,6 +18,97 @@ _log = logging.getLogger(__name__)
 # Physical constants
 MU_0 = 4e-7 * np.pi  # Vacuum permeability (H/m)
 BOHR_MAGNETON = 9.274e-24  # A⋅m²
+AVOGADRO = 6.02214076e23  # 1/mol
+MU_B_TO_EMU = 9.274e-21  # emu per μB
+
+# Conversion factor for Materials Project's magnetization_per_volume
+# MP reports in μB / bohr³
+# 1 μB = 9.274e-24 A·m²
+# 1 bohr = 0.529177 Å = 0.529177e-10 m
+# 1 bohr³ ≈ 1.4818e-31 m³
+# => 1 (μB / bohr³) ≈ 6.2584e7 A/m ≈ 6.2584e4 kA/m
+MUB_PER_BOHR3_TO_KA_PER_M = 6.258412893e4  # kA/m per (μB/bohr³)
+
+
+def select_representative_entry(candidates, requested_formula: str):
+    """
+    Pick the 'reference structure' for the host.
+    
+    Rules:
+    - Prefer lowest energy_above_hull among entries with the *common ground-state space group*
+    - If multiple polymorphs exist, reject obvious outliers
+    - For known materials (e.g., hematite Fe2O3), prefer their documented ground-state structure
+    
+    Special cases are fine. Example: hematite Fe2O3 is corundum-like (R-3c).
+    
+    Args:
+        candidates: List of MP SummaryDoc objects
+        requested_formula: The formula we're searching for (for validation)
+        
+    Returns:
+        Best candidate doc, or None if no valid candidates
+    """
+    try:
+        target_formula = requested_formula.replace(" ", "")
+        
+        # 1. Gather candidates with sane stoichiometry
+        same_formula = []
+        for d in candidates:
+            fpretty = getattr(d, "formula_pretty", None)
+            if fpretty and fpretty.replace(" ", "") == target_formula:
+                same_formula.append(d)
+        
+        if not same_formula:
+            # Fall back to "close enough" - try reduced composition matching
+            try:
+                req_comp = Composition(requested_formula).reduced_composition
+                for doc in candidates:
+                    doc_comp = Composition(doc.formula_pretty).reduced_composition
+                    if doc_comp == req_comp:
+                        same_formula.append(doc)
+            except Exception:
+                same_formula = candidates[:]  # ultimate fallback
+        
+        if not same_formula:
+            return candidates[0] if candidates else None
+        
+        # 2. Heuristic space-group preference map for known hosts
+        # This ensures we get the "real" ground state, not some DFT artifact
+        preferred_sg = {
+            # hematite (α-Fe2O3) corundum structure
+            "Fe2O3": {"R-3c", "R-3̅c", "R-3c:", "R-3c:H"},  # variants of rhombohedral corundum
+            # wurtzite ZnO
+            "ZnO": {"P63mc", "P6_3mc"},
+            # rocksalt NiO
+            "NiO": {"Fm-3m", "Fm-3m:1"},
+            # Add more hand-picked anchors as needed
+        }.get(target_formula, None)
+        
+        # 3. If we have a preferred sg for this formula, filter to that first
+        filtered = []
+        if preferred_sg:
+            for d in same_formula:
+                if hasattr(d, "symmetry") and d.symmetry and getattr(d.symmetry, "symbol", None):
+                    sg_symbol = str(d.symmetry.symbol)
+                    # Check if any preferred variant matches
+                    if sg_symbol in preferred_sg or any(sg in sg_symbol for sg in preferred_sg):
+                        filtered.append(d)
+            if filtered:
+                same_formula = filtered
+                _log.info(f"Filtered {target_formula} to preferred space group(s): {preferred_sg}")
+        
+        # 4. Return the one with lowest energy_above_hull
+        def hull(e):
+            val = getattr(e, "energy_above_hull", None)
+            return float(val) if val is not None else float("inf")
+        
+        best = min(same_formula, key=hull)
+        return best
+        
+    except Exception as e:
+        _log.warning(f"Error in select_representative_entry: {e}")
+        # Fallback to first candidate
+        return candidates[0] if candidates else None
 
 
 def fetch_phase_and_mp_data(
@@ -26,6 +117,9 @@ def fetch_phase_and_mp_data(
 ) -> Dict[str, Any]:
     """
     Fetch phase, structure, stability, and magnetic data from Materials Project.
+    
+    Uses smart selection to pick the physically reasonable ground state, not just
+    the first hit or the most magnetic state.
     
     Args:
         mpr: MPRester client instance
@@ -59,9 +153,14 @@ def fetch_phase_and_mp_data(
                 "error": f"No materials found for formula {formula}"
             }
         
-        # Sort by stability (lowest energy above hull first)
-        docs = sorted(docs, key=lambda x: getattr(x, 'energy_above_hull', None) or float('inf'))
-        doc = docs[0]  # Most stable polymorph
+        # Use smart selector to pick best representative entry
+        doc = select_representative_entry(docs, formula)
+        
+        if not doc:
+            return {
+                "success": False,
+                "error": f"No valid stoichiometric match for {formula}"
+            }
         
         result = {
             "success": True,
@@ -160,6 +259,22 @@ def estimate_saturation_magnetization_T(
     Bs_T = MU_0 * Ms_A_per_m
     
     return float(Bs_T)
+
+
+def muB_per_bohr3_to_kA_per_m(val_muB_per_bohr3: float) -> float:
+    """
+    Convert MP's magnetization_per_volume (μB / bohr^3) to kA/m (kiloampere per meter).
+    
+    This is the CORRECT way to compare magnetization across different materials,
+    as it normalizes to a consistent volume unit.
+    
+    Args:
+        val_muB_per_bohr3: Magnetization per volume in μB/bohr³ (from Materials Project)
+        
+    Returns:
+        Magnetization in kA/m
+    """
+    return float(val_muB_per_bohr3 * MUB_PER_BOHR3_TO_KA_PER_M)
 
 
 def estimate_material_properties(
@@ -405,11 +520,12 @@ def find_same_phase_doped_entry(
     """
     Try to find a doped entry that:
     (a) contains the dopant
-    (b) matches host space group (same phase)
+    (b) matches host space group OR crystal system (same phase)
     (c) has small dopant fraction (<= max_x)
+    (d) has no extra cations beyond {host elements} ∪ {dopant}
     
     This ensures we're comparing substitutional doping within the same crystal structure,
-    not different compounds (e.g., α-Fe₂₋ₓAlₓO₃ vs spinel FeAl₂O₄).
+    not different compounds (e.g., α-Fe₂₋ₓCoₓO₃ vs SrPrFeCoO₆).
     
     Args:
         mpr: MPRester client instance
@@ -422,10 +538,15 @@ def find_same_phase_doped_entry(
     """
     try:
         host_sg = host_mp.get("phase", {}).get("space_group")
+        host_cs = host_mp.get("phase", {}).get("crystal_system")
         host_elems = list(host_mp.get("composition", {}).keys())
         
-        if not host_sg or not host_elems:
+        if not host_elems:
             return None
+        
+        # Chemistry constraint
+        host_elem_set = set(host_elems)
+        allowed_elements = host_elem_set | {dopant}
         
         elems = host_elems + [dopant]
         
@@ -443,20 +564,84 @@ def find_same_phase_doped_entry(
         
         candidates = []
         for d in docs:
-            # Check if same space group
-            sg = None
-            if hasattr(d, 'symmetry') and d.symmetry:
-                sg = str(d.symmetry.symbol) if hasattr(d.symmetry, 'symbol') else None
+            # Chemistry filter: no extra cations
+            comp = d.composition.as_dict() if hasattr(d, 'composition') else {}
+            doc_elements = set(comp.keys())
             
-            if sg != host_sg:
+            if not doc_elements.issubset(allowed_elements):
                 continue
             
-            # Check dopant fraction
-            comp = d.composition.as_dict() if hasattr(d, 'composition') else {}
-            tot = sum(comp.values()) or 1
-            x_dop = comp.get(dopant, 0) / tot
+            # Calculate dopant fraction on CATION sublattice only (ignore O, F, etc.)
+            cation_elements = [el for el in comp if el not in ["O", "F", "N", "S", "Cl"]]
+            total_cations = sum(comp[el] for el in cation_elements) or 1
+            x_dop = comp.get(dopant, 0) / total_cations
             
-            if 0 < x_dop <= max_x:
+            if not (0 < x_dop <= max_x):
+                continue
+            
+            # Check stoichiometry similarity: O:cation ratio should be close to host
+            # This rejects ferrites (O:cat ≈ 1.33) when host is hematite (O:cat = 1.5)
+            host_comp_dict = host_mp.get("composition", {})
+            if host_comp_dict:
+                host_cations = [el for el in host_comp_dict if el not in ["O", "F", "N", "S", "Cl"]]
+                host_total_cations = sum(host_comp_dict[el] for el in host_cations)
+                host_O = host_comp_dict.get("O", 0)
+                host_ratio = host_O / host_total_cations if host_total_cations > 0 else 0
+                
+                doc_cations_total = sum(comp[el] for el in cation_elements)
+                doc_O = comp.get("O", 0)
+                doc_ratio = doc_O / doc_cations_total if doc_cations_total > 0 else 0
+                
+                # Allow 15% deviation in O:cation ratio
+                if host_ratio > 0 and abs(doc_ratio - host_ratio) / host_ratio > 0.15:
+                    continue
+            
+            # Check host identity: remove dopant and check if formula resembles host
+            # E.g., Fe2CoO4 - Co = Fe2O4 → Fe1O2, but host Fe2O3 is Fe2O3
+            hypothetical_comp = comp.copy()
+            if dopant in hypothetical_comp:
+                hypothetical_comp[dopant] = 0
+            
+            # Normalize and compare to host
+            try:
+                from pymatgen.core import Composition as PmgComp
+                hyp_normalized = PmgComp(hypothetical_comp).reduced_composition
+                host_normalized = PmgComp(host_comp_dict).reduced_composition
+                
+                # Check if removing dopant gives back something close to host
+                # Allow slight variation but not totally different formula
+                hyp_elements = set(hyp_normalized.elements)
+                host_elements_set = set(host_normalized.elements)
+                
+                if hyp_elements != host_elements_set:
+                    continue
+                
+                # Check stoichiometry roughly matches
+                mismatch = False
+                for el in host_elements_set:
+                    host_frac = host_normalized.get_atomic_fraction(el)
+                    hyp_frac = hyp_normalized.get_atomic_fraction(el)
+                    if abs(hyp_frac - host_frac) > 0.2:  # 20% tolerance
+                        mismatch = True
+                        break
+                
+                if mismatch:
+                    continue
+            except Exception:
+                # If comparison fails, be conservative and skip
+                continue
+            
+            # Structure filter: prefer same space group, fallback to same crystal system
+            sg = None
+            cs = None
+            if hasattr(d, 'symmetry') and d.symmetry:
+                sg = str(d.symmetry.symbol) if hasattr(d.symmetry, 'symbol') else None
+                cs = str(d.symmetry.crystal_system) if hasattr(d.symmetry, 'crystal_system') else None
+            
+            # Accept if same space group OR same crystal system (if space group not available)
+            if host_sg and sg == host_sg:
+                candidates.append(d)
+            elif host_cs and cs == host_cs:
                 candidates.append(d)
         
         if not candidates:
@@ -736,6 +921,833 @@ def assess_stronger_magnet(
         
     except Exception as e:
         _log.error(f"Error in assess_stronger_magnet: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def get_detailed_saturation_magnetization(
+    mpr,
+    formula: str
+) -> Dict[str, Any]:
+    """
+    Get comprehensive saturation magnetization data for a material.
+
+    Args:
+        mpr: MPRester client instance
+        formula: Chemical formula (ideally reduced formula)
+
+    Returns:
+        Dictionary with Ms in multiple units, magnetic ordering, and site info
+    """
+    try:
+        mp_data = fetch_phase_and_mp_data(mpr, formula)
+
+        if not mp_data.get("success"):
+            return mp_data
+
+        result = {
+            "success": True,
+            "formula": mp_data.get("formula"),
+            "material_id": mp_data.get("material_id")
+        }
+
+        # Pull raw quantities
+        magnetization_muB = mp_data.get("total_magnetization_muB")      # μB / cell
+        volume_A3 = mp_data.get("volume_A3")                             # Å^3 / cell
+        nsites = mp_data.get("nsites")                                   # atoms / cell
+
+        # Compute saturation magnetization in SI via Bs_T
+        if magnetization_muB is not None and volume_A3 is not None:
+            Bs_T = estimate_saturation_magnetization_T(
+                magnetization_muB,
+                volume_A3
+            )  # should return B_s in Tesla = μ0 * M_s
+
+            Ms_A_per_m = Bs_T / MU_0 if Bs_T is not None else None
+
+            sat_mag_dict = {
+                "Bs_T": float(Bs_T) if Bs_T is not None else None,
+                "Ms_A_per_m": float(Ms_A_per_m) if Ms_A_per_m is not None else None,
+                "Ms_kA_per_m": float(Ms_A_per_m / 1000.0) if Ms_A_per_m is not None else None,
+            }
+
+            # Now compute density and Ms in emu/g using correct cell mass
+            try:
+                # Use the reported formula from mp_data if available
+                formula_for_mass = mp_data.get("formula", formula)
+                comp = Composition(formula_for_mass)
+
+                molar_mass = comp.weight  # g / mol for ONE reduced formula unit
+                atoms_per_fu = comp.num_atoms  # atoms in reduced formula unit (e.g. 5 for Fe2O3)
+
+                if nsites is not None and atoms_per_fu > 0:
+                    # Number of formula units in this calculation cell
+                    Z = float(nsites) / float(atoms_per_fu)
+
+                    # mass of full cell in grams
+                    mass_per_fu_g = molar_mass / AVOGADRO
+                    mass_cell_g = mass_per_fu_g * Z  # g / cell
+
+                    # volume of cell in cm^3
+                    volume_cm3 = volume_A3 * 1e-24  # (1 Å^3 = 1e-24 cm^3)
+
+                    # density = mass / volume
+                    density = mass_cell_g / volume_cm3 if volume_cm3 > 0 else None
+
+                    # Ms in emu/g:
+                    # total magnetic moment per cell (μB) -> emu via μB * 9.274e-21
+                    # divide by mass of that same cell in g
+                    if magnetization_muB is not None and mass_cell_g > 0:
+                        Ms_emu_per_g = (
+                            abs(magnetization_muB) * MU_B_TO_EMU / mass_cell_g
+                        )
+                    else:
+                        Ms_emu_per_g = None
+
+                    sat_mag_dict["Ms_emu_per_g"] = float(Ms_emu_per_g) if Ms_emu_per_g is not None else None
+                    result["density_g_per_cm3"] = float(density) if density is not None else None
+                else:
+                    # Couldn't compute Z -> can't get density or Ms_emu_per_g
+                    sat_mag_dict["Ms_emu_per_g"] = None
+                    result["density_g_per_cm3"] = None
+
+            except Exception as e:
+                _log.warning(f"Could not calculate density/Ms_emu_per_g: {e}")
+                sat_mag_dict["Ms_emu_per_g"] = None
+                result["density_g_per_cm3"] = None
+
+            result["saturation_magnetization"] = sat_mag_dict
+
+        else:
+            # Missing required magnetic data
+            result["saturation_magnetization"] = None
+            result["density_g_per_cm3"] = None
+
+        # Magnetic ordering info
+        result["magnetic_ordering"] = mp_data.get("magnetic_ordering")
+
+        # Magnetic sites
+        result["magnetic_sites"] = {
+            "num_sites": mp_data.get("num_magnetic_sites"),
+            "species": mp_data.get("magnetic_species")
+        }
+
+        # Structural info
+        result["structure"] = mp_data.get("phase")
+
+        # Raw magnetization for reference
+        result["total_magnetization_muB"] = magnetization_muB
+        result["magnetization_per_fu_muB"] = mp_data.get("magnetization_per_fu_muB")
+
+        return result
+
+    except Exception as e:
+        _log.error(f"Error getting detailed saturation magnetization: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def analyze_doping_effect_on_ms(
+    host_formula: str,
+    dopant: str,
+    doping_fraction: float,
+    mpr
+) -> Dict[str, Any]:
+    """
+    Analyze the effect of doping on saturation magnetization.
+
+    This function:
+    1. Gets host Ms from MP data
+    2. Attempts to find a structurally/symmetry-similar doped version
+       *with no extra cations beyond the dopant*
+    3. Falls back to a theoretical estimate if no clean doped analog is found
+    4. Computes % change
+    """
+    try:
+        result = {
+            "success": True,
+            "host_formula": host_formula,
+            "dopant": dopant,
+            "doping_fraction": float(doping_fraction)
+        }
+
+        # 1. Get host data
+        _log.info(f"Analyzing Ms for host: {host_formula}")
+        host_mp = fetch_phase_and_mp_data(mpr, host_formula)
+
+        if not host_mp.get("success"):
+            return {
+                "success": False,
+                "error": f"Could not find host material {host_formula}: {host_mp.get('error')}"
+            }
+
+        result["host_data"] = host_mp
+
+        # Compute host Ms_kA_per_m and Bs_T
+        host_mag_muB = host_mp.get("total_magnetization_muB")
+        host_volume = host_mp.get("volume_A3")
+
+        if host_mag_muB is not None and host_volume is not None:
+            host_Bs = estimate_saturation_magnetization_T(host_mag_muB, host_volume)
+            host_Ms = host_Bs / MU_0 if host_Bs is not None else None
+            result["host_Ms_kA_per_m"] = float(host_Ms / 1000.0) if host_Ms is not None else None
+            result["host_Bs_T"] = float(host_Bs) if host_Bs is not None else None
+        else:
+            result["host_Ms_kA_per_m"] = None
+            result["host_Bs_T"] = None
+            result["warning"] = "Host magnetization data not available"
+
+        # 2. Try to find a doped entry
+        host_comp = Composition(host_formula)
+        host_elements = {str(el) for el in host_comp.elements}
+        allowed_elements = set(host_elements)
+        allowed_elements.add(dopant)
+
+        _log.info(f"Searching for doped material similar to {host_formula} with dopant {dopant}")
+
+        doped_mp = find_same_phase_doped_entry(
+            mpr,
+            host_mp,
+            dopant,
+            max_x=min(0.2, doping_fraction + 0.1)
+        )
+
+        # Sanity check doped candidate
+        if doped_mp:
+            doped_formula = doped_mp.get("formula")
+            try:
+                doped_elements = {str(el) for el in Composition(doped_formula).elements}
+            except Exception:
+                doped_elements = set()
+
+            # Reject doped structures that introduce *new* cations beyond dopant
+            # e.g. SrPrFeCoO6 will be rejected if host is Fe2O3 and dopant is Co
+            extra_elements = doped_elements - allowed_elements
+            if extra_elements:
+                _log.info(
+                    f"Discarding doped candidate {doped_formula} due to extra elements {extra_elements}"
+                )
+                doped_mp = None
+
+        if doped_mp:
+            _log.info(f"Accepted doped material: {doped_mp.get('formula')}")
+            result["doped_data"] = doped_mp
+            result["doped_formula"] = doped_mp.get("formula")
+            result["used_heuristic"] = False
+            
+            # Calculate actual dopant fraction on cation sublattice
+            doped_comp_dict = doped_mp.get("composition", {})
+            if doped_comp_dict:
+                cation_elements = [el for el in doped_comp_dict if el not in ["O", "F", "N", "S", "Cl"]]
+                total_cations = sum(doped_comp_dict[el] for el in cation_elements)
+                actual_x_dop = doped_comp_dict.get(dopant, 0) / total_cations if total_cations > 0 else 0
+                result["effective_dopant_fraction_on_cation_lattice"] = float(actual_x_dop)
+            
+            # Check if this is really the same phase or a transformation
+            host_formula_normalized = Composition(host_formula).reduced_formula
+            doped_formula_test = doped_mp.get("formula")
+            
+            # Simple phase change detection: check space group and ordering
+            host_sg = host_mp.get("phase", {}).get("space_group")
+            doped_sg = doped_mp.get("phase", {}).get("space_group")
+            host_ordering = host_mp.get("magnetic_ordering", {}).get("ordering_type")
+            doped_ordering = doped_mp.get("magnetic_ordering", {}).get("ordering_type")
+            
+            phase_changed = False
+            if host_sg and doped_sg and host_sg != doped_sg:
+                phase_changed = True
+                result["phase_change_note"] = f"Space group changed: {host_sg} → {doped_sg}"
+            elif host_ordering and doped_ordering and host_ordering != doped_ordering:
+                # Significant ordering change (e.g., AFM → FM) might indicate phase change
+                if {host_ordering, doped_ordering} & {"FM", "AFM"}:
+                    phase_changed = True
+                    result["phase_change_note"] = f"Magnetic ordering changed: {host_ordering} → {doped_ordering}"
+            
+            result["phase_changed"] = phase_changed
+
+            doped_mag_muB = doped_mp.get("total_magnetization_muB")
+            doped_volume = doped_mp.get("volume_A3")
+
+            if doped_mag_muB is not None and doped_volume is not None:
+                doped_Bs = estimate_saturation_magnetization_T(doped_mag_muB, doped_volume)
+                doped_Ms = doped_Bs / MU_0 if doped_Bs is not None else None
+                result["doped_Ms_kA_per_m"] = float(doped_Ms / 1000.0) if doped_Ms is not None else None
+                result["doped_Bs_T"] = float(doped_Bs) if doped_Bs is not None else None
+            else:
+                result["doped_Ms_kA_per_m"] = None
+                result["doped_Bs_T"] = None
+
+        else:
+            # 3. No valid doped analog -> fall back to theory
+            _log.info("No acceptable doped material found in MP; using theoretical estimation")
+            result["doped_data"] = None
+            result["estimation_method"] = "theoretical"
+            result["used_heuristic"] = True
+            result["phase_changed"] = False  # Heuristic assumes same phase
+            result["effective_dopant_fraction_on_cation_lattice"] = float(doping_fraction)
+
+            doped_est = estimate_doped_ms_from_magnetic_moments(
+                host_formula=host_formula,
+                host_mp=host_mp,
+                dopant=dopant,
+                doping_fraction=doping_fraction,
+                host_Ms_kA_per_m=result.get("host_Ms_kA_per_m")
+            )
+
+            result["doped_Ms_kA_per_m"] = doped_est.get("Ms_kA_per_m")
+            result["doped_Bs_T"] = doped_est.get("Bs_T")
+            result["estimation_notes"] = doped_est.get("notes", [])
+
+        # 4. % change calculation (using magnitudes to avoid sign flip issues)
+        host_Ms_val = result.get("host_Ms_kA_per_m")
+        doped_Ms_val = result.get("doped_Ms_kA_per_m")
+
+        if (host_Ms_val is not None) and (doped_Ms_val is not None):
+            # Compare magnitudes to handle ferrimagnets and sign flips robustly
+            host_abs = abs(host_Ms_val)
+            doped_abs = abs(doped_Ms_val)
+            
+            if host_abs > 0:
+                change_pct = ((doped_abs - host_abs) / host_abs) * 100.0
+                result["Ms_change_percent"] = float(change_pct)
+
+                if change_pct > 5:
+                    result["verdict"] = "increases"
+                elif change_pct < -5:
+                    result["verdict"] = "decreases"
+                else:
+                    result["verdict"] = "maintains (negligible change)"
+            else:
+                # AFM / nearly compensated case
+                result["Ms_change_percent"] = None
+                result["verdict"] = "unclear (host Ms near zero)"
+        else:
+            result["Ms_change_percent"] = None
+            result["verdict"] = "insufficient data"
+
+        # 5. Physical interpretation
+        result["analysis"] = analyze_magnetic_moment_contribution(
+            host_formula=host_formula,
+            host_mp=host_mp,
+            dopant=dopant,
+            doping_fraction=doping_fraction,
+            Ms_change_percent=result.get("Ms_change_percent")
+        )
+
+        return result
+
+    except Exception as e:
+        _log.error(f"Error analyzing doping effect on Ms: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def estimate_doped_ms_from_magnetic_moments(
+    host_formula: str,
+    host_mp: Dict[str, Any],
+    dopant: str,
+    doping_fraction: float,
+    host_Ms_kA_per_m: Optional[float]
+) -> Dict[str, Any]:
+    """
+    Estimate doped Ms using a simple magnetic moment model.
+
+    Logic:
+    - Identify the magnetic ion in the host (e.g. Fe³⁺ in Fe2O3)
+    - Assume dopant substitutes on that site
+    - Compare dopant's spin moment vs host ion's spin moment
+    - Scale effect ~ linearly with doping_fraction
+    - Reduce the effect if the host is AFM (because sublattices mostly cancel)
+
+    Returns:
+        {
+          "Ms_kA_per_m": float or None,
+          "Bs_T": float or None,
+          "notes": [...]
+        }
+    """
+    try:
+        result = {"notes": []}
+
+        host_ordering = host_mp.get("magnetic_ordering", {}).get("ordering_type", "Unknown")
+        magnetic_species = host_mp.get("magnetic_species", []) or []
+
+        # Typical spin-only moments in μB for common oxidation states.
+        # NOTE: these are heuristic; high-spin assumed where ambiguous.
+        magnetic_moments = {
+            "Ti": {"3+": 1.0, "4+": 0.0},
+            "V":  {"3+": 2.0, "4+": 1.0, "5+": 0.0},
+            "Cr": {"3+": 3.0, "4+": 2.0},
+            "Mn": {"2+": 5.0, "3+": 4.0, "4+": 3.0},
+            "Fe": {"2+": 4.0, "3+": 5.0},
+            "Co": {"2+": 3.0, "3+": 4.0},
+            "Ni": {"2+": 2.0, "3+": 1.0},
+            "Cu": {"2+": 1.0},
+            "Nd": {"3+": 3.6},
+            "Sm": {"3+": 1.5},
+            "Gd": {"3+": 7.9},
+            "Dy": {"3+": 10.6},
+        }
+
+        host_comp = Composition(host_formula)
+
+        # Get oxidation state guess and convert keys to strings like "Fe": +3
+        try:
+            oxi_states_list = host_comp.oxi_state_guesses()
+            if oxi_states_list:
+                raw_oxi = oxi_states_list[0]  # dict(Element -> oxi int)
+                host_oxi = {str(el): raw_oxi[el] for el in raw_oxi}
+            else:
+                host_oxi = {}
+        except Exception:
+            host_oxi = {}
+
+        replaced_ion = None
+        replaced_moment = 0.0
+        dopant_moment = 0.0
+
+        # Pick the first magnetic species that we can assign a spin moment to
+        for species in magnetic_species:
+            if species in host_oxi:
+                oxi_int = int(round(host_oxi[species]))
+                oxi_key = f"{oxi_int}+"
+                if species in magnetic_moments and oxi_key in magnetic_moments[species]:
+                    replaced_ion = species
+                    replaced_moment = magnetic_moments[species][oxi_key]
+                    break
+
+        # Estimate dopant moment in the same oxidation state as the replaced ion
+        if replaced_ion and replaced_ion in host_oxi:
+            oxi_int = int(round(host_oxi[replaced_ion]))
+            oxi_key = f"{oxi_int}+"
+            if dopant in magnetic_moments and oxi_key in magnetic_moments[dopant]:
+                dopant_moment = magnetic_moments[dopant][oxi_key]
+
+        if host_Ms_kA_per_m is not None and replaced_ion:
+            base = replaced_moment if abs(replaced_moment) > 1e-6 else 1.0
+            moment_diff = dopant_moment - replaced_moment
+
+            # naive linear scaling with doping fraction
+            Ms_change_factor = 1.0 + (moment_diff / base) * doping_fraction
+
+            # Damp for AFM systems OR weak moment systems (nearly compensated)
+            # This catches real AFM, FiM with tiny net moment, weakly canted systems
+            host_abs = abs(host_Ms_kA_per_m)
+            is_weak_moment = host_abs < 10.0  # 10 kA/m is tiny compared to real ferromagnets
+            
+            if host_ordering == "AFM" or is_weak_moment:
+                Ms_change_factor = 1.0 + (moment_diff / base) * doping_fraction * 0.5
+                if host_ordering == "AFM":
+                    result["notes"].append("AFM host: damping factor 0.5 applied to Ms change")
+                if is_weak_moment:
+                    result["notes"].append(f"Nearly compensated host (Ms={host_abs:.1f} kA/m): damping factor 0.5 applied")
+
+            doped_Ms = host_Ms_kA_per_m * Ms_change_factor  # kA/m
+
+            result["Ms_kA_per_m"] = float(doped_Ms)
+            # Convert kA/m -> A/m -> Tesla:  (kA/m * 1000) * mu0
+            result["Bs_T"] = float(doped_Ms * 1000.0 * MU_0)
+
+            result["notes"].append(f"Replaced ion: {replaced_ion}")
+            result["notes"].append(f"Estimated {replaced_ion} moment: {replaced_moment} μB")
+            result["notes"].append(f"Estimated {dopant} moment: {dopant_moment} μB")
+            result["notes"].append(f"Moment difference: {moment_diff:.2f} μB")
+            result["notes"].append(f"Theoretical Ms change factor: {Ms_change_factor:.3f}")
+        else:
+            # Fallback heuristic if we couldn't map oxidation states well
+            if host_Ms_kA_per_m is not None:
+                if dopant in ["Co", "Fe", "Nd", "Gd", "Dy"]:
+                    guessed = host_Ms_kA_per_m * 1.05
+                    note = f"Assumed slight increase (dopant {dopant} is strongly magnetic)"
+                else:
+                    guessed = host_Ms_kA_per_m * 0.95
+                    note = f"Assumed slight decrease (dopant {dopant} is weaker / non-magnetic)"
+
+                result["Ms_kA_per_m"] = float(guessed)
+                result["Bs_T"] = float(guessed * 1000.0 * MU_0)
+                result["notes"].append(note)
+            else:
+                result["Ms_kA_per_m"] = None
+                result["Bs_T"] = None
+
+        result["notes"].append("Simple spin-moment substitution model; ignores local distortion, canting, clustering, etc.")
+
+        return result
+
+    except Exception as e:
+        _log.error(f"Error estimating doped Ms: {e}", exc_info=True)
+        return {
+            "Ms_kA_per_m": None,
+            "Bs_T": None,
+            "notes": [f"Error: {str(e)}"]
+        }
+
+
+def analyze_magnetic_moment_contribution(
+    host_formula: str,
+    host_mp: Dict[str, Any],
+    dopant: str,
+    doping_fraction: float,
+    Ms_change_percent: Optional[float]
+) -> Dict[str, Any]:
+    """
+    Provide physical analysis of why doping affects Ms.
+    
+    Returns:
+        Dictionary with reasoning about magnetic moment contributions
+    """
+    try:
+        analysis = {
+            "physical_mechanism": [],
+            "expected_behavior": "",
+            "confidence": "medium"
+        }
+        
+        host_ordering = host_mp.get("magnetic_ordering", {}).get("ordering_type", "Unknown")
+        
+        # Common strongly magnetic elements
+        strong_magnetic = ["Fe", "Co", "Ni", "Gd", "Nd", "Dy", "Sm"]
+        weak_magnetic = ["Mn", "Cr", "Cu"]
+        non_magnetic = ["Al", "Zn", "Mg", "Ca", "Ti", "Zr"]
+        
+        if dopant in strong_magnetic:
+            analysis["dopant_type"] = "strongly magnetic"
+            if Ms_change_percent and Ms_change_percent > 0:
+                analysis["physical_mechanism"].append(
+                    f"{dopant} has significant magnetic moment and contributes to net magnetization"
+                )
+            else:
+                analysis["physical_mechanism"].append(
+                    f"{dopant} is magnetic but may occupy unfavorable sites or disrupt magnetic ordering"
+                )
+        elif dopant in weak_magnetic:
+            analysis["dopant_type"] = "weakly magnetic"
+            analysis["physical_mechanism"].append(
+                f"{dopant} has some magnetic moment but weaker than typical ferromagnetic ions"
+            )
+        elif dopant in non_magnetic:
+            analysis["dopant_type"] = "non-magnetic"
+            analysis["physical_mechanism"].append(
+                f"{dopant} is non-magnetic and dilutes the magnetic sublattice"
+            )
+        else:
+            analysis["dopant_type"] = "unknown magnetic character"
+        
+        # Ordering-specific analysis
+        if host_ordering == "FM":
+            analysis["physical_mechanism"].append(
+                "Host is ferromagnetic: all moments align. Doping can enhance or reduce Ms depending on dopant moment."
+            )
+        elif host_ordering == "FiM":
+            analysis["physical_mechanism"].append(
+                "Host is ferrimagnetic: sublattices with antiparallel moments. Dopant substitution affects sublattice imbalance."
+            )
+        elif host_ordering == "AFM":
+            analysis["physical_mechanism"].append(
+                "Host is antiferromagnetic: sublattices cancel almost completely. Small net Ms from imperfect cancellation or spin canting."
+            )
+            analysis["physical_mechanism"].append(
+                "Doping can enhance Ms if it breaks symmetry or introduces spin canting."
+            )
+        
+        # Expected behavior summary
+        if Ms_change_percent is not None:
+            if Ms_change_percent > 10:
+                analysis["expected_behavior"] = "Significant increase in Ms"
+            elif Ms_change_percent > 0:
+                analysis["expected_behavior"] = "Modest increase in Ms"
+            elif Ms_change_percent > -10:
+                analysis["expected_behavior"] = "Small decrease in Ms"
+            else:
+                analysis["expected_behavior"] = "Significant decrease in Ms"
+        else:
+            analysis["expected_behavior"] = "Insufficient data to determine"
+        
+        return analysis
+        
+    except Exception as e:
+        _log.error(f"Error in magnetic moment analysis: {e}", exc_info=True)
+        return {
+            "physical_mechanism": [],
+            "expected_behavior": "Error in analysis",
+            "confidence": "none"
+        }
+
+
+def compare_multiple_dopants_ms(
+    host_formula: str,
+    dopants: list,
+    doping_fraction: float,
+    mpr
+) -> Dict[str, Any]:
+    """
+    Compare multiple dopants to find which causes least degradation in Ms.
+    
+    Args:
+        host_formula: Host material formula
+        dopants: List of dopant elements
+        doping_fraction: Doping fraction to test
+        mpr: MPRester client instance
+        
+    Returns:
+        Comparison results with ranking of dopants
+    """
+    try:
+        result = {
+            "success": True,
+            "host_formula": host_formula,
+            "doping_fraction": float(doping_fraction),
+            "dopants_tested": dopants
+        }
+        
+        # Get host Ms first
+        host_mp = fetch_phase_and_mp_data(mpr, host_formula)
+        if not host_mp.get("success"):
+            return {
+                "success": False,
+                "error": f"Could not find host material: {host_mp.get('error')}"
+            }
+        
+        host_mag_muB = host_mp.get("total_magnetization_muB")
+        host_volume = host_mp.get("volume_A3")
+        
+        if host_mag_muB is not None and host_volume is not None:
+            host_Bs = estimate_saturation_magnetization_T(host_mag_muB, host_volume)
+            host_Ms = host_Bs / MU_0 if host_Bs is not None else None
+            result["host_Ms_kA_per_m"] = float(host_Ms / 1000.0) if host_Ms is not None else None
+        else:
+            result["host_Ms_kA_per_m"] = None
+        
+        # Analyze each dopant
+        dopant_results = []
+        
+        for dopant in dopants:
+            _log.info(f"Analyzing dopant: {dopant}")
+            
+            dopant_analysis = analyze_doping_effect_on_ms(
+                host_formula=host_formula,
+                dopant=dopant,
+                doping_fraction=doping_fraction,
+                mpr=mpr
+            )
+            
+            if dopant_analysis.get("success"):
+                dopant_result = {
+                    "dopant": dopant,
+                    "doped_Ms_kA_per_m": dopant_analysis.get("doped_Ms_kA_per_m"),
+                    "Ms_change_percent": dopant_analysis.get("Ms_change_percent"),
+                    "verdict": dopant_analysis.get("verdict"),
+                    "analysis": dopant_analysis.get("analysis", {}),
+                    "phase_changed": dopant_analysis.get("phase_changed", False),
+                    "used_heuristic": dopant_analysis.get("used_heuristic", False),
+                    "effective_dopant_fraction": dopant_analysis.get("effective_dopant_fraction_on_cation_lattice", doping_fraction)
+                }
+                
+                # Add warning notes
+                notes = []
+                if dopant_result["phase_changed"]:
+                    phase_note = dopant_analysis.get("phase_change_note", "Phase transformation detected")
+                    notes.append(f"WARNING: {phase_note} - not substitutional doping")
+                if dopant_result["used_heuristic"]:
+                    notes.append("Used theoretical estimation (no MP data for doped phase)")
+                
+                if notes:
+                    dopant_result["notes"] = notes
+                
+                dopant_results.append(dopant_result)
+            else:
+                dopant_results.append({
+                    "dopant": dopant,
+                    "error": dopant_analysis.get("error")
+                })
+        
+        # Sort by Ms change (least degradation = highest change %)
+        # Filter out results with errors
+        valid_results = [r for r in dopant_results if r.get("Ms_change_percent") is not None]
+        
+        if valid_results:
+            # Sort by Ms change (descending)
+            valid_results.sort(key=lambda x: x["Ms_change_percent"], reverse=True)
+            result["dopant_comparison"] = valid_results
+            
+            # Separate same-phase from phase-changed dopants
+            same_phase = [d for d in valid_results if not d.get("phase_changed", False)]
+            all_dopants = valid_results
+            
+            # 1. Rank dopants that keep the same phase
+            if same_phase:
+                best_same_phase = max(same_phase, key=lambda x: x["Ms_change_percent"])
+                worst_same_phase = min(same_phase, key=lambda x: x["Ms_change_percent"])
+                
+                result["best_dopant_same_phase"] = {
+                    "element": best_same_phase["dopant"],
+                    "Ms_change_percent": best_same_phase["Ms_change_percent"],
+                    "reason": "Highest Ms with no phase change"
+                }
+                result["worst_dopant_same_phase"] = {
+                    "element": worst_same_phase["dopant"],
+                    "Ms_change_percent": worst_same_phase["Ms_change_percent"],
+                    "reason": "Largest Ms drop with no phase change"
+                }
+            else:
+                result["best_dopant_same_phase"] = None
+                result["worst_dopant_same_phase"] = None
+            
+            # 2. Overall best (any phase) - but label clearly
+            best_any = max(all_dopants, key=lambda x: x["Ms_change_percent"])
+            result["best_dopant_any_phase"] = {
+                "element": best_any["dopant"],
+                "Ms_change_percent": best_any["Ms_change_percent"],
+                "reason": (
+                    "Most enhancement, BUT PHASE CHANGED"
+                    if best_any.get("phase_changed", False)
+                    else "Most enhancement (same phase)"
+                )
+            }
+            
+            # Keep old 'best_dopant' for backwards compatibility, but use same_phase if available
+            if same_phase:
+                result["best_dopant"] = result["best_dopant_same_phase"]
+                result["worst_dopant"] = result["worst_dopant_same_phase"]
+            else:
+                result["best_dopant"] = result["best_dopant_any_phase"]
+                worst_any = min(all_dopants, key=lambda x: x["Ms_change_percent"])
+                result["worst_dopant"] = {
+                    "element": worst_any["dopant"],
+                    "Ms_change_percent": worst_any["Ms_change_percent"],
+                    "reason": "Lowest Ms (but phase may have changed)"
+                }
+            
+            # 3. Human-readable summary
+            if same_phase:
+                best_elem = result["best_dopant_same_phase"]["element"]
+                best_pct = result["best_dopant_same_phase"]["Ms_change_percent"]
+                result["summary"] = (
+                    f"Among same-phase dopants at ~{doping_fraction*100:.0f}% "
+                    f"on {host_formula}, {best_elem} causes the smallest "
+                    f"Ms change ({best_pct:+.2f}%)."
+                )
+            else:
+                result["summary"] = (
+                    "All dopants that gave large Ms changes also altered the phase; "
+                    "no same-phase substitutional dopant yielded a strong Ms increase."
+                )
+        else:
+            result["dopant_comparison"] = dopant_results
+            result["error"] = "Could not obtain valid Ms data for any dopant"
+        
+        return result
+        
+    except Exception as e:
+        _log.error(f"Error comparing dopants for Ms: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def assess_doping_effect_on_saturation_magnetization(
+    mpr,
+    host_formula: str,
+    doped_entry_material_id: str,
+    host_phase_data: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Compare Ms(host) vs Ms(doped_candidate) *in consistent units*.
+
+    REQUIREMENTS:
+    - Same space group as host OR we downrate the claim
+    - Use MP's normalized magnetization per volume for cross-phase comparisons
+
+    Args:
+        mpr: MPRester client instance
+        host_formula: Host material formula (e.g., "Fe2O3")
+        doped_entry_material_id: Material ID of doped candidate (e.g., "mp-1234")
+        host_phase_data: Optional pre-fetched host data from fetch_phase_and_mp_data
+
+    Returns:
+        Dictionary with:
+        - success: bool
+        - Ms_host_kA_per_m: Host magnetization in kA/m
+        - Ms_doped_kA_per_m: Doped magnetization in kA/m
+        - delta_kA_per_m: Absolute change
+        - percent_change: Percentage change (or None if baseline ~0)
+        - same_space_group: bool
+        - caution: Warning message if phases don't match
+    """
+    try:
+        # 1. get host data if not provided
+        if host_phase_data is None:
+            host_phase_data = fetch_phase_and_mp_data(mpr, host_formula)
+        if not host_phase_data.get("success"):
+            return {"success": False, "error": "host lookup failed"}
+
+        # 2. get doped entry data
+        doped_docs = mpr.materials.summary.search(
+            material_ids=[doped_entry_material_id],
+            fields=[
+                "material_id", "formula_pretty", "symmetry",
+                "total_magnetization_normalized_vol",
+                "total_magnetization_normalized_formula_units",
+                "is_magnetic", "ordering"
+            ]
+        )
+        if not doped_docs:
+            return {"success": False, "error": "doped entry lookup failed"}
+        doped_doc = doped_docs[0]
+
+        # 3. pull normalized volumes
+        host_mp_Mv = host_phase_data.get("magnetization_per_vol_muB_per_bohr3")
+        doped_Mv = getattr(doped_doc, "total_magnetization_normalized_vol", None)
+
+        if host_mp_Mv is None or doped_Mv is None:
+            return {
+                "success": False,
+                "error": "missing normalized magnetization_per_volume for one or both phases"
+            }
+
+        Ms_host = muB_per_bohr3_to_kA_per_m(host_mp_Mv)
+        Ms_doped = muB_per_bohr3_to_kA_per_m(float(doped_Mv))
+
+        # 4. same-phase check
+        host_sg = None
+        if "phase" in host_phase_data and host_phase_data["phase"]:
+            host_sg = host_phase_data["phase"].get("space_group")
+        doped_sg = None
+        if hasattr(doped_doc, "symmetry") and doped_doc.symmetry:
+            doped_sg = getattr(doped_doc.symmetry, "symbol", None)
+
+        same_sg = (host_sg is not None and doped_sg is not None and host_sg == doped_sg)
+
+        # 5. compute percent change (careful when Ms_host ~ 0)
+        if abs(Ms_host) > 1e-9:
+            pct = (Ms_doped - Ms_host) / abs(Ms_host) * 100.0
+        else:
+            pct = None  # can't do % if baseline is ~0
+
+        return {
+            "success": True,
+            "host_formula": host_formula,
+            "doped_material_id": doped_entry_material_id,
+            "Ms_host_kA_per_m": Ms_host,
+            "Ms_doped_kA_per_m": Ms_doped,
+            "delta_kA_per_m": Ms_doped - Ms_host,
+            "percent_change": pct,
+            "same_space_group": same_sg,
+            "caution": None if same_sg else (
+                "Doped structure has different space group from host, so this is probably a different phase. "
+                "You CANNOT call this 'improved magnetization of the host phase'."
+            )
+        }
+
+    except Exception as e:
+        _log.error(f"Error in assess_doping_effect_on_saturation_magnetization: {e}", exc_info=True)
         return {
             "success": False,
             "error": str(e)
