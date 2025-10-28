@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Annotated
 from pathlib import Path
 
 from kani import ai_function, AIParam
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
 from .utils import (
     compute_substitutional_lattice_effect,
     rank_solutes_by_expansion,
@@ -56,26 +57,12 @@ def _get_calphad_fcc_composition(
         x_solute = solute_atpct / 100.0
         x_matrix = 1.0 - x_solute
         
-        # Find TDB file
-        tdb_dir = Path(__file__).parent.parent.parent.parent / "tdbs"
-        system = f"{mat}-{sol}"
+        # Find TDB file using shared utility
+        from ..shared.calphad_utils import find_tdb_database
         
-        # Try common TDB naming patterns
-        possible_tdbs = [
-            tdb_dir / f"{system}.tdb",
-            tdb_dir / f"{sol}-{mat}.tdb",
-            tdb_dir / f"mc_{mat.lower()}_v2037_pycal.tdb",  # Materials Commons format
-            tdb_dir / "COST507.tdb",  # Common alloy database
-        ]
-        
-        db_path = None
-        for path in possible_tdbs:
-            if path.exists():
-                db_path = path
-                break
-        
+        db_path = find_tdb_database([mat, sol])
         if not db_path:
-            _log.warning(f"No TDB database found for {system} system")
+            _log.warning(f"No TDB database found for {mat}-{sol} system")
             return None
         
         db = Database(str(db_path))
@@ -122,7 +109,7 @@ def _get_calphad_fcc_composition(
                         return fcc_composition
         
         # If we didn't find FCC_A1, return None
-        _log.warning(f"FCC_A1 phase not found in equilibrium for {system} at {temperature_K}K")
+        _log.warning(f"FCC_A1 phase not found in equilibrium for {mat}-{sol} at {temperature_K}K")
         return None
         
     except Exception as e:
@@ -170,14 +157,17 @@ class SolutesAIFunctionsMixin:
             )
             
             if fcc_comp is None:
-                return {
-                    "success": False,
-                    "error": f"Could not compute CALPHAD equilibrium for {matrix_element}-{solute_element} system",
-                    "note": "This may mean no thermodynamic database is available or FCC phase doesn't form"
-                }
+                return error_result(
+                    handler="solutes",
+                    function="analyze_solute_lattice_effect",
+                    error=f"Could not compute CALPHAD equilibrium for {matrix_element}-{solute_element} system",
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=["pycalphad", "CALPHAD equilibrium validation"],
+                    notes=["This may mean no thermodynamic database is available or FCC phase doesn't form"]
+                )
             
             # Now call the core physics function
-            result = compute_substitutional_lattice_effect(
+            util_result = compute_substitutional_lattice_effect(
                 matrix_element=matrix_element,
                 solute_element=solute_element,
                 solute_atpct=float(solute_atpct),
@@ -187,11 +177,32 @@ class SolutesAIFunctionsMixin:
                 min_required_solute_in_matrix_atpct=0.1
             )
             
-            result["citations"] = [
-                "Vegard's law for dilute substitutional alloys",
-                "Hume-Rothery rules for solid solutions",
-                "CALPHAD equilibrium validation"
-            ]
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="solutes",
+                    function="analyze_solute_lattice_effect",
+                    error=util_result.get("error", "Computation failed"),
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=[
+                        "Vegard's law for dilute substitutional alloys",
+                        "Hume-Rothery rules for solid solutions",
+                        "CALPHAD equilibrium validation"
+                    ]
+                )
+            else:
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="solutes",
+                    function="analyze_solute_lattice_effect",
+                    data=data,
+                    citations=[
+                        "Vegard's law for dilute substitutional alloys",
+                        "Hume-Rothery rules for solid solutions",
+                        "CALPHAD equilibrium validation"
+                    ],
+                    confidence=Confidence.MEDIUM,
+                    notes=["CALPHAD-validated solubility", "Vegard's law applied in dilute limit"]
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -203,10 +214,16 @@ class SolutesAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in analyze_solute_lattice_effect: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="solutes",
+                function="analyze_solute_lattice_effect",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=[
+                    "Vegard's law for dilute substitutional alloys",
+                    "Hume-Rothery rules for solid solutions"
+                ]
+            )
     
     @ai_function(
         desc=(
@@ -256,7 +273,7 @@ class SolutesAIFunctionsMixin:
                     calphad_compositions[solute.upper()] = {}
             
             # Now call the ranking function
-            result = rank_solutes_by_expansion(
+            util_result = rank_solutes_by_expansion(
                 matrix_element=matrix_element,
                 solute_elements=solute_elements,
                 solute_atpct=float(solute_atpct),
@@ -265,12 +282,33 @@ class SolutesAIFunctionsMixin:
                 calphad_matrix_phase_compositions=calphad_compositions
             )
             
-            result["citations"] = [
-                "Vegard's law for dilute substitutional alloys",
-                "Hume-Rothery rules for solid solutions",
-                "Comparative size misfit analysis",
-                "CALPHAD equilibrium validation"
-            ]
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="solutes",
+                    function="compare_solute_lattice_effects",
+                    error=util_result.get("error", "Comparison failed"),
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=[
+                        "Vegard's law for dilute substitutional alloys",
+                        "Hume-Rothery rules for solid solutions",
+                        "CALPHAD equilibrium validation"
+                    ]
+                )
+            else:
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="solutes",
+                    function="compare_solute_lattice_effects",
+                    data=data,
+                    citations=[
+                        "Vegard's law for dilute substitutional alloys",
+                        "Hume-Rothery rules for solid solutions",
+                        "Comparative size misfit analysis",
+                        "CALPHAD equilibrium validation"
+                    ],
+                    confidence=Confidence.HIGH,
+                    notes=["Solutes ranked by lattice expansion effect", "CALPHAD-validated for each solute"]
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -282,10 +320,16 @@ class SolutesAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in compare_solute_lattice_effects: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="solutes",
+                function="compare_solute_lattice_effects",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=[
+                    "Vegard's law for dilute substitutional alloys",
+                    "Hume-Rothery rules for solid solutions"
+                ]
+            )
     
     @ai_function(
         desc=(
@@ -329,7 +373,7 @@ class SolutesAIFunctionsMixin:
         size misfit, classification, and applicability assessment.
         """
         try:
-            result = compute_substitutional_lattice_effect(
+            util_result = compute_substitutional_lattice_effect(
                 matrix_element=matrix_element,
                 solute_element=solute_element,
                 solute_atpct=float(solute_atpct),
@@ -339,12 +383,32 @@ class SolutesAIFunctionsMixin:
                 min_required_solute_in_matrix_atpct=float(min_required_solute_atpct)
             )
             
-            result["citations"] = [
-                "Vegard's law for dilute substitutional alloys",
-                "Hume-Rothery rules for solid solutions",
-                "Standard crystallographic data for fcc lattice parameters",
-                "Metallic radii for 12-fold coordination"
-            ]
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="solutes",
+                    function="calculate_solute_lattice_effect",
+                    error=util_result.get("error", "Calculation failed"),
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=[
+                        "Vegard's law for dilute substitutional alloys",
+                        "Hume-Rothery rules for solid solutions"
+                    ]
+                )
+            else:
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="solutes",
+                    function="calculate_solute_lattice_effect",
+                    data=data,
+                    citations=[
+                        "Vegard's law for dilute substitutional alloys",
+                        "Hume-Rothery rules for solid solutions",
+                        "Standard crystallographic data for fcc lattice parameters",
+                        "Metallic radii for 12-fold coordination"
+                    ],
+                    confidence=Confidence.HIGH,
+                    notes=["Uses user-provided CALPHAD composition", "Vegard's law in dilute limit"]
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -356,10 +420,16 @@ class SolutesAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in calculate_solute_lattice_effect: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="solutes",
+                function="calculate_solute_lattice_effect",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=[
+                    "Vegard's law for dilute substitutional alloys",
+                    "Hume-Rothery rules for solid solutions"
+                ]
+            )
     
     @ai_function(
         desc=(
@@ -381,19 +451,26 @@ class SolutesAIFunctionsMixin:
         - Temperature reference (~300 K for most data)
         """
         try:
-            result = {
-                "success": True,
+            data = {
                 "fcc_lattice_parameters_angstrom": FCC_LATTICE_PARAMS_A,
                 "metallic_radii_pm": METALLIC_RADII_PM,
                 "reference_temperature_K": 300,
-                "notes": (
-                    "Lattice parameters are at ~300 K. "
-                    "Metallic radii are for 12-fold coordination (close-packed metallic). "
-                    "Data sources: standard crystallographic tables and metallic radii compilations."
-                ),
                 "supported_matrices": list(FCC_LATTICE_PARAMS_A.keys()),
                 "supported_elements": list(METALLIC_RADII_PM.keys())
             }
+            
+            result = success_result(
+                handler="solutes",
+                function="get_solute_reference_data",
+                data=data,
+                citations=["Standard crystallographic tables", "Metallic radii compilations"],
+                confidence=Confidence.HIGH,
+                notes=[
+                    "Lattice parameters are at ~300 K",
+                    "Metallic radii are for 12-fold coordination (close-packed metallic)",
+                    "Data sources: standard crystallographic tables and metallic radii compilations"
+                ]
+            )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -405,8 +482,10 @@ class SolutesAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in get_solute_reference_data: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="solutes",
+                function="get_solute_reference_data",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR
+            )
 

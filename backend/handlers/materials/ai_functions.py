@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Annotated, Optional
 
 from kani import ai_function, AIParam
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
 from .utils import (
     get_elastic_properties,
     find_alloy_compositions,
@@ -43,8 +44,26 @@ class MaterialsAIFunctionsMixin:
         params["page"] = page
         params["per_page"] = per_page
         
-        result = self.handle_material_search(params)
-        result["citations"] = ["Materials Project"]
+        util_result = self.handle_material_search(params)
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="get_material",
+                error=util_result.get("error", "Material search failed"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                citations=["Materials Project"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="get_material",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH
+            )
+        
         # Store the result for tooltip display
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -211,8 +230,26 @@ class MaterialsAIFunctionsMixin:
         params["page"] = page
         params["per_page"] = per_page
         
-        result = self.handle_material_by_char(params)
-        result["citations"] = ["Materials Project"]
+        util_result = self.handle_material_by_char(params)
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="get_material_by_char",
+                error=util_result.get("error", "Material search by characteristics failed"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                citations=["Materials Project"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="get_material_by_char",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH
+            )
+        
         # Store the result for tooltip display
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -240,8 +277,26 @@ class MaterialsAIFunctionsMixin:
         if fields is not None:
             params["fields"] = fields
         
-        result = self.handle_material_details(params)
-        result["citations"] = ["Materials Project"]
+        util_result = self.handle_material_details(params)
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="get_material_details_by_ids",
+                error=util_result.get("error", "Failed to fetch material details"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                citations=["Materials Project"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="get_material_details_by_ids",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH
+            )
+        
         # Store the result for tooltip display
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -256,8 +311,26 @@ class MaterialsAIFunctionsMixin:
         material_id: Annotated[str, AIParam(desc="Material ID (e.g., 'mp-81' for Ag, 'mp-30' for Cu).")]
     ) -> Dict[str, Any]:
         """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, etc."""
-        result = get_elastic_properties(self.mpr, material_id)
-        result["citations"] = ["Materials Project", "pymatgen"]
+        util_result = get_elastic_properties(self.mpr, material_id)
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="get_elastic_properties",
+                error=util_result.get("error", "Failed to get elastic properties"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="get_elastic_properties",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.HIGH
+            )
+        
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
                 "tool_name": "get_elastic_properties",
@@ -276,7 +349,7 @@ class MaterialsAIFunctionsMixin:
         require_binaries: Annotated[bool, AIParam(desc="Whether to require exactly 2 elements (default True).")] = True
     ) -> Dict[str, Any]:
         """Find materials with specific alloy compositions."""
-        result = find_alloy_compositions(
+        util_result = find_alloy_compositions(
             self.mpr,
             elements,
             target_composition,
@@ -285,7 +358,25 @@ class MaterialsAIFunctionsMixin:
             ehull_max,
             require_binaries
         )
-        result["citations"] = ["Materials Project", "pymatgen"]
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="find_alloy_compositions",
+                error=util_result.get("error", "Failed to find alloy compositions"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="find_alloy_compositions",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.HIGH
+            )
+        
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
                 "tool_name": "find_alloy_compositions",
@@ -305,8 +396,26 @@ class MaterialsAIFunctionsMixin:
         props1 = get_elastic_properties(self.mpr, material_id1)
         props2 = get_elastic_properties(self.mpr, material_id2)
         
-        result = compare_material_properties(props1, props2, property_name)
-        result["citations"] = ["Materials Project", "pymatgen"]
+        util_result = compare_material_properties(props1, props2, property_name)
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="compare_material_properties",
+                error=util_result.get("error", "Failed to compare properties"),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="compare_material_properties",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.HIGH
+            )
+        
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
                 "tool_name": "compare_material_properties",
@@ -323,14 +432,33 @@ class MaterialsAIFunctionsMixin:
         property_name: Annotated[str, AIParam(desc="Property to analyze: 'bulk_modulus', 'shear_modulus', etc. (default 'bulk_modulus').")] = "bulk_modulus"
     ) -> Dict[str, Any]:
         """Analyze how doping a host material affects a specific property, comparing pure vs doped materials."""
-        result = analyze_doping_effect(
+        util_result = analyze_doping_effect(
             self.mpr,
             host_element,
             dopant_element,
             dopant_concentration,
             property_name
         )
-        result["citations"] = ["Materials Project", "pymatgen"]
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="analyze_doping_effect",
+                error=util_result.get("error", "Failed to analyze doping effect"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="analyze_doping_effect",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.MEDIUM,
+                notes=["Comparison between pure and doped materials"]
+            )
+        
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
                 "tool_name": "analyze_doping_effect",

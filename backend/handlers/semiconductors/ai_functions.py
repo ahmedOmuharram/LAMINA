@@ -11,6 +11,7 @@ import numpy as np
 from typing import Any, Dict, List, Annotated, Optional
 
 from kani import ai_function, AIParam
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
 from .utils import (
     analyze_octahedral_distortion,
     get_magnetic_properties_detailed,
@@ -59,24 +60,39 @@ class SemiconductorAIFunctionsMixin:
             )
             
             if not docs:
-                return {
-                    "success": False,
-                    "error": f"Material {material_id} not found"
-                }
+                return error_result(
+                    handler="semiconductors",
+                    function="analyze_octahedral_distortion_in_material",
+                    error=f"Material {material_id} not found",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["Materials Project"]
+                )
             
             doc = docs[0]
             structure = doc.structure if hasattr(doc, 'structure') else None
             
             if structure is None:
-                return {
-                    "success": False,
-                    "error": "Structure not available for this material"
-                }
+                return error_result(
+                    handler="semiconductors",
+                    function="analyze_octahedral_distortion_in_material",
+                    error="Structure not available for this material",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["Materials Project"]
+                )
             
-            result = analyze_octahedral_distortion(structure, central_element, neighbor_element)
-            result["material_id"] = material_id
-            result["formula"] = doc.formula_pretty if hasattr(doc, 'formula_pretty') else material_id
-            result["citations"] = ["Materials Project", "pymatgen"]
+            util_result = analyze_octahedral_distortion(structure, central_element, neighbor_element)
+            util_result["material_id"] = material_id
+            util_result["formula"] = doc.formula_pretty if hasattr(doc, 'formula_pretty') else material_id
+            
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="semiconductors",
+                function="analyze_octahedral_distortion_in_material",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.HIGH,
+                notes=["Distortion analysis based on coordination geometry from crystal structure"]
+            )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -88,10 +104,13 @@ class SemiconductorAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in analyze_octahedral_distortion_in_material: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="semiconductors",
+                function="analyze_octahedral_distortion_in_material",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
     
     @ai_function(
         desc="Get detailed magnetic properties of a material including magnetization, magnetic ordering, and magnetic site information.",
@@ -111,8 +130,25 @@ class SemiconductorAIFunctionsMixin:
         - Number of magnetic sites
         - Magnetic species present
         """
-        result = get_magnetic_properties_detailed(self.mpr, material_id)
-        result["citations"] = ["Materials Project"]
+        util_result = get_magnetic_properties_detailed(self.mpr, material_id)
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="semiconductors",
+                function="get_magnetic_properties",
+                error=util_result.get("error", "Unknown error"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                citations=["Materials Project"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="semiconductors",
+                function="get_magnetic_properties",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH
+            )
         
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -141,8 +177,17 @@ class SemiconductorAIFunctionsMixin:
             props1 = get_magnetic_properties_detailed(self.mpr, material_id_1)
             props2 = get_magnetic_properties_detailed(self.mpr, material_id_2)
             
-            result = compare_magnetic_properties(props1, props2)
-            result["citations"] = ["Materials Project"]
+            util_result = compare_magnetic_properties(props1, props2)
+            
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="semiconductors",
+                function="compare_magnetic_materials",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH,
+                notes=["Comparison based on DFT magnetization data"]
+            )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -154,10 +199,13 @@ class SemiconductorAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error comparing magnetic materials: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="semiconductors",
+                function="compare_magnetic_materials",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project"]
+            )
     
     @ai_function(
         desc="Analyze defect formation energy for substitutional or interstitial doping. Useful for comparing stability of different defect configurations.",
@@ -175,13 +223,31 @@ class SemiconductorAIFunctionsMixin:
         Compares energy of doped structure vs undoped host to estimate defect formation energy.
         Useful for determining whether interstitial or substitutional doping is more stable.
         """
-        result = calculate_defect_formation_energy(
+        util_result = calculate_defect_formation_energy(
             self.mpr,
             host_material_id,
             defect_composition,
             defect_type
         )
-        result["citations"] = ["Materials Project", "pymatgen"]
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="semiconductors",
+                function="analyze_defect_stability",
+                error=util_result.get("error", "Unknown error"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="semiconductors",
+                function="analyze_defect_stability",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.MEDIUM,
+                caveats=["Defect formation energy estimated from total energies", "Does not account for charged defects or Fermi level effects"]
+            )
         
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -212,7 +278,7 @@ class SemiconductorAIFunctionsMixin:
         
         Returns which site is preferred and the energy difference.
         """
-        result = analyze_doping_site_preference(
+        util_result = analyze_doping_site_preference(
             self.mpr,
             host_formula,
             dopant_element,
@@ -221,7 +287,26 @@ class SemiconductorAIFunctionsMixin:
             temperature,
             pressure
         )
-        result["citations"] = ["Materials Project", "pymatgen"]
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="semiconductors",
+                function="analyze_doping_site_preference",
+                error=util_result.get("error", "Unknown error"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="semiconductors",
+                function="analyze_doping_site_preference",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.MEDIUM,
+                notes=["Site preference determined by comparing total energies"],
+                caveats=["Assumes dilute doping limit", "Does not account for defect-defect interactions"]
+            )
         
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -249,13 +334,31 @@ class SemiconductorAIFunctionsMixin:
         
         Useful for understanding temperature-dependent phase transitions.
         """
-        result = analyze_structure_temperature_dependence(
+        util_result = analyze_structure_temperature_dependence(
             self.mpr,
             formula,
             element_of_interest,
             neighbor_element
         )
-        result["citations"] = ["Materials Project", "pymatgen"]
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="semiconductors",
+                function="analyze_phase_transition_structures",
+                error=util_result.get("error", "Unknown error"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="semiconductors",
+                function="analyze_phase_transition_structures",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.MEDIUM,
+                notes=["Analyzes structural differences across polymorphs of the same composition"]
+            )
         
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -506,12 +609,32 @@ class SemiconductorAIFunctionsMixin:
         - Small dopant fraction on cation sublattice
         """
         # Call the core helper (which does NOT log)
-        result = await self._search_same_phase_doped_variants_core(
+        core_result = await self._search_same_phase_doped_variants_core(
             host_formula,
             dopant_element,
             max_dopant_fraction,
             max_results
         )
+        
+        if not core_result.get("success"):
+            result = error_result(
+                handler="semiconductors",
+                function="search_same_phase_doped_variants",
+                error=core_result.get("error", "Unknown error"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(core_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project"]
+            )
+        else:
+            data = {k: v for k, v in core_result.items() if k != "success"}
+            result = success_result(
+                handler="semiconductors",
+                function="search_same_phase_doped_variants",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH,
+                notes=["Filters candidates by crystal system and O:cation ratio similarity", "Only returns substitutional doping with small dopant fraction"],
+                warnings=["Do not use this alone to claim magnetic improvement", "Must compare Ms values with proper phase checking"]
+            )
         
         # Log ONLY here, in the public wrapper
         if hasattr(self, 'recent_tool_outputs'):
@@ -566,8 +689,7 @@ class SemiconductorAIFunctionsMixin:
                 dft_formation_energies=dft
             )
             
-            result = {
-                "success": res.success,
+            data = {
                 "host": res.host,
                 "dopant": res.dopant,
                 "method": res.method,
@@ -579,10 +701,18 @@ class SemiconductorAIFunctionsMixin:
                 },
                 "margin_eV": res.margin_eV,
                 "verdict": res.verdict,
-                "notes": res.notes,
                 "diagnostics": res.diagnostics,
-                "citations": ["Zhang–Northrup defect formation framework", "Van de Walle–Neugebauer"]
             }
+            
+            result = success_result(
+                handler="semiconductors",
+                function="predict_defect_site_preference",
+                data=data,
+                citations=["Zhang–Northrup defect formation framework", "Van de Walle–Neugebauer"],
+                confidence=Confidence.MEDIUM if dft else Confidence.LOW,
+                notes=res.notes if res.notes else ["Prediction based on physics-based heuristics" if not dft else "Prediction based on DFT formation energies"],
+                caveats=["Heuristic estimates without DFT should be verified experimentally"] if not dft else []
+            )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -594,10 +724,13 @@ class SemiconductorAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in predict_defect_site_preference: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="semiconductors",
+                function="predict_defect_site_preference",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Zhang–Northrup defect formation framework", "Van de Walle–Neugebauer"]
+            )
     
     @ai_function(
         desc=(
@@ -630,7 +763,13 @@ class SemiconductorAIFunctionsMixin:
             host_phase_data = fetch_phase_and_mp_data(self.mpr, host_formula)
             phase_warning_global = None
             if not host_phase_data.get("success"):
-                return {"success": False, "error": host_phase_data.get("error")}
+                return error_result(
+                    handler="semiconductors",
+                    function="evaluate_dopant_effect_on_Ms",
+                    error=host_phase_data.get("error", "Failed to fetch host phase data"),
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["Materials Project"]
+                )
 
             # find doped same-phase candidates using CORE helper (no logging)
             doped_search = await self._search_same_phase_doped_variants_core(
@@ -641,10 +780,13 @@ class SemiconductorAIFunctionsMixin:
             )
 
             if not doped_search.get("success"):
-                return {
-                    "success": False,
-                    "error": doped_search.get("error", "dopant search failed")
-                }
+                return error_result(
+                    handler="semiconductors",
+                    function="evaluate_dopant_effect_on_Ms",
+                    error=doped_search.get("error", "dopant search failed"),
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["Materials Project"]
+                )
 
             if "phase_warning" in doped_search and doped_search["phase_warning"]:
                 phase_warning_global = doped_search["phase_warning"]
@@ -684,22 +826,35 @@ class SemiconductorAIFunctionsMixin:
                 )
                 fallback_info = fallback_analysis  # already has Ms_kA_per_m, phase_changed, etc.
 
-            result = {
-                "success": True,
+            data = {
                 "host_formula": host_formula,
                 "dopant_element": dopant_element,
                 "host_space_group": host_phase_data.get("phase", {}).get("space_group"),
                 "results": summaries,
-                "global_phase_warning": phase_warning_global,
                 "fallback_estimate": fallback_info,
-                "notes": [
-                    "Only trust entries in 'results' where same_space_group == True and caution is None.",
-                    "If 'results' is empty but 'fallback_estimate' exists: the dopant seems to force a different phase or required a heuristic Ms estimate.",
-                    "If same_space_group is False in 'fallback_estimate', it's a new phase, not 'doped host'.",
-                    "Use percent_change only if it's not None (baseline Ms ≠ 0)."
-                ],
-                "citations": ["Materials Project"]
             }
+            
+            notes_list = [
+                "Only trust entries in 'results' where same_space_group == True and caution is None.",
+                "If 'results' is empty but 'fallback_estimate' exists: the dopant seems to force a different phase or required a heuristic Ms estimate.",
+                "If same_space_group is False in 'fallback_estimate', it's a new phase, not 'doped host'.",
+                "Use percent_change only if it's not None (baseline Ms ≠ 0)."
+            ]
+            
+            warnings_list = []
+            if phase_warning_global:
+                warnings_list.append(phase_warning_global)
+            
+            result = success_result(
+                handler="semiconductors",
+                function="evaluate_dopant_effect_on_Ms",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH if summaries else Confidence.LOW,
+                notes=notes_list,
+                warnings=warnings_list if warnings_list else None,
+                caveats=["Only valid for same-phase doping (same space group)", "Different phases require separate analysis"]
+            )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -711,8 +866,11 @@ class SemiconductorAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in evaluate_dopant_effect_on_Ms: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="semiconductors",
+                function="evaluate_dopant_effect_on_Ms",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project"]
+            )
 

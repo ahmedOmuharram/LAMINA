@@ -8,6 +8,7 @@ import logging
 from typing import Any, Dict, Optional, Annotated
 
 from kani import ai_function, AIParam
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
 
 from . import utils
 
@@ -77,23 +78,40 @@ class SuperconductorAIFunctionsMixin:
                 except Exception as e:
                     _log.warning(f"Could not fetch structure from MP: {e}")
             
-            result = utils.analyze_cuprate_octahedral_stability(
+            util_result = utils.analyze_cuprate_octahedral_stability(
                 material_formula, c_axis_spacing, structure_data,
                 scenario=scenario, trend_probe=trend_probe
             )
             
             if structure_data:
-                result["materials_project_data"] = structure_data
+                util_result["materials_project_data"] = structure_data
             
-            result["citations"] = result.get("citations", [
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            
+            citations = util_result.get("citations", [
                 "Avella/Guarino et al., Phys. Rev. B 105, 014512 (2022): Oxygen reduction decreases c via removal of apical O.",
                 "Yamamoto et al., Physica C (2010): T′-La2CuO4 has c ≈ 12.55 Å (no apical O), smaller than T-LCO.",
                 "Ueda et al., Physica C (2010): T′-La2CuO4+δ c ≈ 12.568 Å (consistent with apical-O removal)."
             ])
             
+            result = success_result(
+                handler="superconductors",
+                function="analyze_cuprate_octahedral_stability",
+                data=data,
+                citations=citations,
+                confidence=Confidence.MEDIUM,
+                notes=["Analysis based on cuprate crystal chemistry and structural trends"],
+                caveats=["Simplified model based on apical Cu-O bond length changes", "Does not include electronic structure effects"]
+            )
+            
             return result
             
         except Exception as e:
             _log.error(f"Error in cuprate analysis for {material_formula}: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            return error_result(
+                handler="superconductors",
+                function="analyze_cuprate_octahedral_stability",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR
+            )
 

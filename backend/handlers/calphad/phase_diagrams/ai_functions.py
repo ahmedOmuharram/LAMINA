@@ -16,6 +16,7 @@ from kani.ai_function import ai_function
 from typing_extensions import Annotated
 from kani import AIParam
 
+from ...base.result_wrappers import success_result, error_result, ErrorType, Confidence
 from .database_utils import get_db_elements, map_phase_name
 from .equilibrium_utils import extract_phase_fractions_from_equilibrium, get_phase_fraction
 
@@ -1833,8 +1834,9 @@ class AIFunctionsMixin:
         try:
             from .fact_checker import (
                 AlloyFactChecker, TwoPhaseChecker, ThreePhaseChecker, 
-                PhaseFractionChecker, atpct_to_molefrac, interpret_microstructure
+                PhaseFractionChecker, interpret_microstructure
             )
+            from ...base.converters import atpct_to_molefrac
             from .solidification_utils import (
                 simulate_as_cast_microstructure_simple,
                 mechanical_desirability_score

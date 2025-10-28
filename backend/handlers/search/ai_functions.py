@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, Annotated
 
 from kani import ai_function, AIParam
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
 
 _log = logging.getLogger(__name__)
 
@@ -46,8 +47,27 @@ class SearchAIFunctionsMixin:
             'min_score': min_score
         }
         
-        result = self.handle_searxng_search(params)
-        result["citations"] = ["Web Search"]
+        util_result = self.handle_searxng_search(params)
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="search",
+                function="search_web",
+                error=util_result.get("error", "Search failed"),
+                error_type=ErrorType.API_ERROR,
+                citations=["Web Search"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="search",
+                function="search_web",
+                data=data,
+                citations=["Web Search"],
+                confidence=Confidence.HIGH if data.get("results") else Confidence.LOW,
+                notes=[f"Search type: {search_type}", f"Query: {query}"]
+            )
+        
         # Store the result for tooltip display
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({
@@ -59,8 +79,27 @@ class SearchAIFunctionsMixin:
     @ai_function(desc="Get information about available search engines and their status in SearXNG.", auto_truncate=128000)
     async def get_search_engines(self) -> Dict[str, Any]:
         """Get information about available search engines and their status."""
-        result = self.handle_searxng_engine_stats({})
-        result["citations"] = ["Web Search"]
+        util_result = self.handle_searxng_engine_stats({})
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="search",
+                function="get_search_engines",
+                error=util_result.get("error", "Failed to get engine stats"),
+                error_type=ErrorType.API_ERROR,
+                citations=["Web Search"]
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="search",
+                function="get_search_engines",
+                data=data,
+                citations=["Web Search"],
+                confidence=Confidence.HIGH,
+                notes=["Engine statistics from SearXNG instance"]
+            )
+        
         # Store the result for tooltip display
         if hasattr(self, 'recent_tool_outputs'):
             self.recent_tool_outputs.append({

@@ -15,6 +15,7 @@ import logging
 from typing import Any, Dict, Optional, Annotated
 
 from kani import ai_function, AIParam
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
 from .utils import (
     fetch_phase_and_mp_data,
     estimate_material_properties,
@@ -65,7 +66,7 @@ class MagnetAIFunctionsMixin:
                 "air_gap_mm": float(air_gap_mm)
             }
             
-            result = assess_stronger_magnet(
+            util_result = assess_stronger_magnet(
                 host_formula=host_formula,
                 dopant=dopant_element,
                 doping_fraction=float(doping_fraction),
@@ -75,7 +76,26 @@ class MagnetAIFunctionsMixin:
                 doped_literature=None
             )
             
-            result["citations"] = ["Materials Project", "pymatgen"]
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="magnets",
+                    function="assess_magnet_strength_with_doping",
+                    error=util_result.get("error", "Unknown error"),
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=["Materials Project", "pymatgen"]
+                )
+            else:
+                # Extract data fields (everything except success field)
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="magnets",
+                    function="assess_magnet_strength_with_doping",
+                    data=data,
+                    citations=["Materials Project", "pymatgen"],
+                    confidence=Confidence.MEDIUM,
+                    notes=["Pull force estimated from remanence Br and geometry", "Verdict based on relative pull force comparison"],
+                    caveats=["DFT cannot predict coercivity accurately", "Real magnet performance depends on microstructure and processing"]
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -87,10 +107,13 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in assess_magnet_strength_with_doping: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="assess_magnet_strength_with_doping",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
     
     @ai_function(
         desc="Get phase and magnetic ordering information for a material. Returns crystal structure, space group, stability, and magnetic ordering type (FM/AFM/FiM/etc.).",
@@ -111,8 +134,25 @@ class MagnetAIFunctionsMixin:
         - Number of magnetic sites
         """
         try:
-            result = fetch_phase_and_mp_data(self.mpr, formula)
-            result["citations"] = ["Materials Project"]
+            util_result = fetch_phase_and_mp_data(self.mpr, formula)
+            
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="magnets",
+                    function="get_phase_and_magnetic_ordering",
+                    error=util_result.get("error", "Unknown error"),
+                    error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                    citations=["Materials Project"]
+                )
+            else:
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="magnets",
+                    function="get_phase_and_magnetic_ordering",
+                    data=data,
+                    citations=["Materials Project"],
+                    confidence=Confidence.HIGH
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -124,10 +164,13 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in get_phase_and_magnetic_ordering: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="get_phase_and_magnetic_ordering",
+                error=str(e),
+                error_type=ErrorType.API_ERROR,
+                citations=["Materials Project"]
+            )
     
     @ai_function(
         desc="Estimate permanent magnet properties (Br, Hc, (BH)max) from DFT data. Uses Materials Project magnetization to estimate saturation (Bs), remanence (Br), and max energy product. Provides heuristic coercivity estimates.",
@@ -157,20 +200,39 @@ class MagnetAIFunctionsMixin:
             mp_data = fetch_phase_and_mp_data(self.mpr, formula)
             
             if not mp_data.get("success"):
-                return mp_data
+                return error_result(
+                    handler="magnets",
+                    function="estimate_permanent_magnet_properties",
+                    error=mp_data.get("error", "Failed to fetch material data"),
+                    error_type=ErrorType.NOT_FOUND if "not found" in str(mp_data.get("error", "")).lower() else ErrorType.API_ERROR,
+                    citations=["Materials Project"]
+                )
             
             # Estimate properties
-            result = estimate_material_properties(
+            util_result = estimate_material_properties(
                 mp_data=mp_data,
                 literature_hint=None,
                 kappa=float(kappa)
             )
             
             # Add material identification
-            result["material_id"] = mp_data.get("material_id")
-            result["formula"] = mp_data.get("formula")
-            result["magnetic_ordering"] = mp_data.get("magnetic_ordering")
-            result["citations"] = ["Materials Project", "pymatgen"]
+            util_result["material_id"] = mp_data.get("material_id")
+            util_result["formula"] = mp_data.get("formula")
+            util_result["magnetic_ordering"] = mp_data.get("magnetic_ordering")
+            
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="magnets",
+                function="estimate_permanent_magnet_properties",
+                data=data,
+                citations=["Materials Project", "pymatgen"],
+                confidence=Confidence.LOW,
+                caveats=[
+                    "DFT cannot predict coercivity accurately (microstructure-dependent)",
+                    "Remanence estimates are rough; real values depend on processing",
+                    "Use literature values when available for quantitative work"
+                ]
+            )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -182,10 +244,13 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in estimate_permanent_magnet_properties: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="estimate_permanent_magnet_properties",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
     
     @ai_function(
         desc="Calculate pull force for a cylindrical permanent magnet contacting steel. Uses remanence (Br) and geometry to estimate force in Newtons. Useful for comparing magnet strength in practical applications.",
@@ -209,12 +274,23 @@ class MagnetAIFunctionsMixin:
         Returns force in Newtons and equivalent weight in kg.
         """
         try:
-            result = calculate_pull_force_cylinder(
+            util_result = calculate_pull_force_cylinder(
                 Br_T=float(remanence_tesla),
                 diameter_mm=float(diameter_mm),
                 length_mm=float(length_mm),
                 air_gap_mm=float(air_gap_mm),
                 eta=float(eta)
+            )
+            
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="magnets",
+                function="calculate_magnet_pull_force",
+                data=data,
+                citations=[],
+                confidence=Confidence.MEDIUM,
+                notes=["Uses simplified magnetic circuit model: F ≈ Bg² * A / (2μ0)", "Assumes contact with steel (μr >> 1)"],
+                caveats=["Real pull force depends on steel permeability, surface finish, and exact geometry", "Model assumes cylindrical geometry and axial magnetization"]
             )
             
             if hasattr(self, 'recent_tool_outputs'):
@@ -227,10 +303,12 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in calculate_magnet_pull_force: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="calculate_magnet_pull_force",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR
+            )
     
     @ai_function(
         desc="Assess the effect of doping on saturation magnetization (Ms). Compares host and doped materials' Ms values to determine if doping increases, decreases, or maintains Ms. Returns quantitative change analysis.",
@@ -265,14 +343,31 @@ class MagnetAIFunctionsMixin:
                 analyze_doping_effect_on_ms
             )
             
-            result = analyze_doping_effect_on_ms(
+            util_result = analyze_doping_effect_on_ms(
                 host_formula=host_formula,
                 dopant=dopant_element,
                 doping_fraction=float(doping_fraction),
                 mpr=self.mpr
             )
             
-            result["citations"] = ["Materials Project", "pymatgen"]
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="magnets",
+                    function="assess_doping_effect_on_saturation_magnetization",
+                    error=util_result.get("error", "Unknown error"),
+                    error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                    citations=["Materials Project", "pymatgen"]
+                )
+            else:
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="magnets",
+                    function="assess_doping_effect_on_saturation_magnetization",
+                    data=data,
+                    citations=["Materials Project", "pymatgen"],
+                    confidence=Confidence.MEDIUM,
+                    notes=["Ms change calculated from DFT magnetization data", "Verdict based on percentage change in Ms"]
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -284,10 +379,13 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in assess_doping_effect_on_saturation_magnetization: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="assess_doping_effect_on_saturation_magnetization",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
     
     @ai_function(
         desc="Compare multiple dopants to find which causes the least degradation (or most enhancement) in saturation magnetization. Tests multiple dopant elements and ranks them by Ms retention/improvement.",
@@ -316,14 +414,31 @@ class MagnetAIFunctionsMixin:
         try:
             from .utils import compare_multiple_dopants_ms
             
-            result = compare_multiple_dopants_ms(
+            util_result = compare_multiple_dopants_ms(
                 host_formula=host_formula,
                 dopants=dopant_elements,
                 doping_fraction=float(doping_fraction),
                 mpr=self.mpr
             )
             
-            result["citations"] = ["Materials Project", "pymatgen"]
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="magnets",
+                    function="compare_dopants_for_saturation_magnetization",
+                    error=util_result.get("error", "Unknown error"),
+                    error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                    citations=["Materials Project", "pymatgen"]
+                )
+            else:
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="magnets",
+                    function="compare_dopants_for_saturation_magnetization",
+                    data=data,
+                    citations=["Materials Project", "pymatgen"],
+                    confidence=Confidence.MEDIUM,
+                    notes=["Dopants ranked by Ms retention/improvement", "Best dopant causes least degradation or most enhancement"]
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -335,10 +450,13 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in compare_dopants_for_saturation_magnetization: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="compare_dopants_for_saturation_magnetization",
+                error=str(e),
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
     
     @ai_function(
         desc="Get detailed saturation magnetization data for a material, including Ms in various units (T, A/m, emu/g), magnetic ordering, and magnetic site information.",
@@ -362,12 +480,29 @@ class MagnetAIFunctionsMixin:
         try:
             from .utils import get_detailed_saturation_magnetization
             
-            result = get_detailed_saturation_magnetization(
+            util_result = get_detailed_saturation_magnetization(
                 mpr=self.mpr,
                 formula=formula
             )
             
-            result["citations"] = ["Materials Project", "pymatgen"]
+            if not util_result.get("success"):
+                result = error_result(
+                    handler="magnets",
+                    function="get_saturation_magnetization_detailed",
+                    error=util_result.get("error", "Unknown error"),
+                    error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                    citations=["Materials Project", "pymatgen"]
+                )
+            else:
+                data = {k: v for k, v in util_result.items() if k != "success"}
+                result = success_result(
+                    handler="magnets",
+                    function="get_saturation_magnetization_detailed",
+                    data=data,
+                    citations=["Materials Project", "pymatgen"],
+                    confidence=Confidence.HIGH,
+                    notes=["Ms provided in multiple units for convenience", "Bs = μ0 * Ms (saturation flux density)"]
+                )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -379,10 +514,13 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error in get_saturation_magnetization_detailed: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="get_saturation_magnetization_detailed",
+                error=str(e),
+                error_type=ErrorType.API_ERROR,
+                citations=["Materials Project", "pymatgen"]
+            )
     
     @ai_function(
         desc="Search for doped versions of a host material by specifying host elements and dopant. Returns materials from Materials Project that contain all specified elements, sorted by stability and structural similarity.",
@@ -417,10 +555,14 @@ class MagnetAIFunctionsMixin:
             )
             
             if not docs:
-                return {
-                    "success": False,
-                    "error": f"No materials found with elements {elements}"
-                }
+                return error_result(
+                    handler="magnets",
+                    function="search_doped_magnetic_materials",
+                    error=f"No materials found with elements {elements}",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["Materials Project"],
+                    suggestions=[f"Try different dopant elements", "Check that host elements are correct"]
+                )
             
             # Chemistry constraint: only allow {host elements} ∪ {dopant}
             # This prevents SrPrFeCoO6 from being treated as "Co-doped Fe2O3"
@@ -496,14 +638,23 @@ class MagnetAIFunctionsMixin:
                 
                 materials.append(mat_data)
             
-            result = {
-                "success": True,
-                "host_elements": host_elements,
-                "dopant_element": dopant_element,
-                "num_materials_found": len(materials),
-                "materials": materials,
-                "citations": ["Materials Project"]
-            }
+            result = success_result(
+                handler="magnets",
+                function="search_doped_magnetic_materials",
+                data={
+                    "host_elements": host_elements,
+                    "dopant_element": dopant_element,
+                    "num_materials_found": len(materials),
+                    "materials": materials,
+                },
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH,
+                notes=[
+                    "Materials filtered to contain only host elements + dopant",
+                    "Sorted by thermodynamic stability (energy above hull)",
+                    "Structural similarity bonus applied if host crystal system provided"
+                ]
+            )
             
             if hasattr(self, 'recent_tool_outputs'):
                 self.recent_tool_outputs.append({
@@ -515,8 +666,11 @@ class MagnetAIFunctionsMixin:
             
         except Exception as e:
             _log.error(f"Error searching doped magnetic materials: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return error_result(
+                handler="magnets",
+                function="search_doped_magnetic_materials",
+                error=str(e),
+                error_type=ErrorType.API_ERROR,
+                citations=["Materials Project"]
+            )
 
