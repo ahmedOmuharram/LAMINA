@@ -2,6 +2,10 @@
 Equilibrium calculation utilities for CALPHAD phase diagrams.
 
 Functions for calculating equilibrium states at specific points or grids.
+
+NOTE: For equilibrium calculations and phase fraction extraction, use the functions from
+shared.calphad_utils (compute_equilibrium, extract_phase_fractions, get_phase_fraction).
+This module contains only grid-based equilibrium calculations and other specialized functions.
 """
 import numpy as np
 import logging
@@ -10,170 +14,6 @@ from pycalphad import Database, equilibrium
 import pycalphad.variables as v
 
 _log = logging.getLogger(__name__)
-
-
-def get_phase_fraction(phases_dict: Dict[str, float], target: str) -> float:
-    """
-    Sum phase fractions by base name, handling PyCalphad instance suffixes.
-    
-    PyCalphad often labels phase instances as SIC#1, AL4C3#2, etc.
-    This function sums all instances with the same base name.
-    
-    Args:
-        phases_dict: Dictionary of phase_name: fraction from equilibrium
-        target: Base phase name to look for (e.g., 'SIC', 'AL4C3')
-        
-    Returns:
-        Total fraction summed across all instances
-        
-    Example:
-        phases = {'SIC#1': 0.3, 'SIC#2': 0.2, 'FCC_A1': 0.5}
-        get_phase_fraction(phases, 'SIC')  # Returns 0.5
-    """
-    base = target.upper()
-    tot = 0.0
-    for k, v in phases_dict.items():
-        if k is None: 
-            continue
-        # Split by '#' to get base name, compare case-insensitively
-        if str(k).split('#')[0].upper() == base:
-            tot += float(v)
-    return tot
-
-
-def extract_phase_fractions_from_equilibrium(eq: Any, tolerance: float = 1e-4) -> Dict[str, float]:
-    """
-    Properly extract phase fractions from equilibrium result, handling multiple vertices.
-    
-    In two-phase regions, equilibrium returns multiple vertices; we need to sum NP 
-    over the vertex dimension per phase (not rely on 1-to-1 raveled index).
-    
-    Args:
-        eq: Equilibrium result from pycalphad
-        tolerance: Minimum fraction to include (default 1e-4 for better boundary handling)
-        
-    Returns:
-        Dictionary mapping phase names to fractions
-    """
-    try:
-        if not hasattr(eq, 'Phase') or not hasattr(eq, 'NP'):
-            return {}
-        
-        # Squeeze singleton coords first
-        eqp = eq.squeeze()
-        
-        # Group by phase and sum over vertex dimension
-        vertex_dims = [d for d in eqp['NP'].dims if d in ('vertex',)]
-        
-        if vertex_dims:
-            # Use xarray groupby to sum fractions per phase across vertices
-            frac_by_phase = (
-                eqp['NP']
-                .groupby(eqp['Phase'])
-                .sum(dim=vertex_dims)
-            )
-        else:
-            # No vertex dimension, simple extraction
-            frac_by_phase = eqp['NP'].groupby(eqp['Phase']).sum()
-        
-        # Convert to dictionary and filter by tolerance
-        phase_fractions = {}
-        for phase in frac_by_phase.coords['Phase'].values:
-            if not phase or phase == '':
-                continue
-            
-            frac = float(frac_by_phase.sel(Phase=phase).values)
-            
-            # Use slightly looser tolerance for reporting (handles boundary noise better)
-            if not np.isnan(frac) and frac > tolerance:
-                phase_fractions[str(phase)] = frac
-        
-        return phase_fractions
-        
-    except Exception as e:
-        _log.warning(f"Error extracting phase fractions: {e}")
-        # Fallback to simple approach
-        try:
-            phase_fractions = {}
-            phase_array = eq.Phase.values
-            np_array = eq.NP.values
-            
-            for phase in np.unique(phase_array):
-                if phase == '' or not isinstance(phase, str):
-                    continue
-                    
-                mask = (phase_array == phase)
-                fraction = np.sum(np_array[mask])
-                
-                if not np.isnan(fraction) and fraction > tolerance:
-                    phase_fractions[str(phase)] = float(fraction)
-            
-            return phase_fractions
-        except:
-            return {}
-
-
-def calculate_equilibrium_at_point(
-    db: Database,
-    elements: List[str],
-    phases: List[str],
-    composition: Dict[str, float],
-    temperature: float,
-    pressure: float = 101325
-) -> Optional[Any]:
-    """
-    Calculate equilibrium at a specific point.
-    
-    Args:
-        db: PyCalphad Database instance
-        elements: List of element symbols
-        phases: List of phase names to consider
-        composition: Dictionary of element: mole_fraction
-        temperature: Temperature in K
-        pressure: Pressure in Pa (default: 101325)
-        
-    Returns:
-        Equilibrium result or None if calculation fails
-    """
-    try:
-        # Ensure VA is in elements list (required for many phases)
-        # Make a copy to avoid modifying the original list
-        elements_with_va = list(elements)
-        if 'VA' not in elements_with_va:
-            elements_with_va.append('VA')
-        
-        # Build conditions
-        conditions = {
-            v.T: temperature,
-            v.P: pressure,
-            v.N: 1.0
-        }
-        
-        # Add composition conditions (N-1 independent constraints for N components)
-        # Skip the first element as it's the dependent variable
-        comp_elements = list(composition.keys())
-        if len(comp_elements) > 1:
-            # For multicomponent systems, specify all but the first element
-            for el in comp_elements[1:]:
-                conditions[v.X(el)] = composition[el]
-        else:
-            # For single element (pure substance), no composition constraint needed
-            pass
-        
-        # Calculate equilibrium
-        _log.info(f"Running equilibrium with {len(phases)} phases, T={temperature}K, composition={composition}")
-        eq = equilibrium(db, elements_with_va, phases, conditions)
-        
-        return eq
-        
-    except Exception as e:
-        _log.error(f"Equilibrium calculation failed: {e}")
-        _log.error(f"  Elements (with VA): {elements_with_va}")
-        _log.error(f"  Phases ({len(phases)}): {phases[:10]}...")  # Show first 10
-        _log.error(f"  Conditions: {conditions}")
-        _log.error(f"  Composition: {composition}")
-        return None
-
 
 def calculate_coarse_equilibrium_grid(
     db: Database,
@@ -286,31 +126,13 @@ def calculate_phase_fractions_at_temperature(
     Returns:
         Dictionary of phase_name: fraction
     """
-    eq = calculate_equilibrium_at_point(db, elements, phases, composition, temperature)
+    from ...shared.calphad_utils import compute_equilibrium, extract_phase_fractions
+    
+    eq = compute_equilibrium(db, elements, phases, composition, temperature)
     
     if eq is None:
         return {}
     
-    try:
-        phase_fractions = {}
-        
-        if hasattr(eq, 'Phase') and hasattr(eq, 'NP'):
-            phase_array = eq.Phase.values
-            np_array = eq.NP.values
-            
-            for phase in np.unique(phase_array):
-                if phase == '' or not isinstance(phase, str):
-                    continue
-                    
-                mask = (phase_array == phase)
-                fraction = np.sum(np_array[mask])
-                
-                if fraction > 1e-6:
-                    phase_fractions[phase] = float(fraction)
-        
-        return phase_fractions
-        
-    except Exception as e:
-        _log.error(f"Error calculating phase fractions: {e}")
-        return {}
+    # Use shared phase fraction extraction (handles vertex summing properly)
+    return extract_phase_fractions(eq, tolerance=1e-6)
 

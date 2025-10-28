@@ -2,20 +2,24 @@
 Shared CALPHAD utilities for thermodynamic calculations.
 
 This module consolidates common CALPHAD operations used across multiple handlers:
-- Database loading with fallback patterns
-- Equilibrium calculations at specific conditions
-- Phase fraction extraction
+- Database loading with fallback patterns and element-based selection
+- Equilibrium calculations at specific conditions (point and grid)
+- Phase fraction extraction (with vertex handling for two-phase regions)
 - Phase composition extraction
 - Phase name parsing and classification
+- Element normalization and composition parsing
 
 Used by:
 - handlers/alloys/alloy_handler.py
 - handlers/solutes/ai_functions.py
 - handlers/calphad/phase_diagrams/* (various modules)
+
+NOTE: This module maintains BOTH specialized and generalized versions of functions
+where different handlers require different behaviors.
 """
 import logging
 import re
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple, Any, Set
 from pathlib import Path
 import numpy as np
 
@@ -35,18 +39,20 @@ _log = logging.getLogger(__name__)
 # =============================================================================
 
 def find_tdb_database(
-    system_elements: List[str],
-    tdb_dir: Optional[Path] = None
+    system_elements: List[str]
 ) -> Optional[Path]:
     """
-    Find appropriate TDB database for given elements.
+    Find appropriate TDB database for given elements with element-based selection.
     
-    This implements a common pattern used across handlers for locating
-    thermodynamic databases with various naming conventions.
+    This implements an enhanced pattern that:
+    1. Tries exact system matches first
+    2. Uses element-specific databases (e.g., COST507 for Al-Mg-Zn, C, N, B, Li)
+    3. Falls back to Materials Commons and general databases
+    
+    This provides comprehensive database selection with element-based matching.
     
     Args:
         system_elements: List of element symbols (e.g., ['AL', 'FE'])
-        tdb_dir: Directory to search for TDB files. If None, uses default location.
         
     Returns:
         Path to TDB file, or None if not found
@@ -56,65 +62,83 @@ def find_tdb_database(
         >>> if db_path:
         ...     db = Database(str(db_path))
     """
-    if tdb_dir is None:
-        # Default TDB directory (adjust based on project structure)
-        tdb_dir = Path(__file__).parent.parent.parent.parent / "tdbs"
+    # TDB directory location
+    tdb_dir = Path(__file__).parent.parent.parent / "tdbs"
     
     if not tdb_dir.exists():
         _log.warning(f"TDB directory does not exist: {tdb_dir}")
         return None
     
-    # Normalize element symbols to uppercase
-    elements_upper = [el.upper() for el in system_elements]
+    # Get all available .tdb files
+    candidates = sorted([p for p in tdb_dir.glob("*.tdb") if p.is_file()])
+    if not candidates:
+        _log.warning(f"No .tdb files found in {tdb_dir}")
+        return None
+    
+    elements_upper = [el.strip().upper() for el in system_elements]
+    elements_set = set(elements_upper)
     system_str = "-".join(elements_upper)
     
-    # Try multiple naming patterns (most specific to most general)
-    possible_patterns = []
+    # =========================================================================
+    # PHASE 1: Element-specific database selection
+    # =========================================================================
+    
+    # COST507.tdb for Al-Mg-Zn ternary system (has clean tau phase data)
+    if elements_set == {'AL', 'MG', 'ZN'} or elements_set <= {'AL', 'MG', 'ZN', 'VA'}:
+        for p in candidates:
+            if "COST507" in p.name or "cost507" in p.name.lower():
+                _log.info(f"Selected {p.name} for Al-Mg-Zn system")
+                return p
+    
+    # COST507.tdb for systems with C, N, B, or Li
+    if any(el in elements_upper for el in ['C', 'N', 'B', 'LI']):
+        for p in candidates:
+            if "COST507" in p.name or "cost507" in p.name.lower():
+                _log.info(f"Selected {p.name} for elements {elements_upper}")
+                return p
+    
+    # =========================================================================
+    # PHASE 2: Exact system match patterns
+    # =========================================================================
     
     # 1. Exact system match (e.g., "AL-FE.tdb")
-    possible_patterns.append(f"{system_str}.tdb")
+    exact_match = tdb_dir / f"{system_str}.tdb"
+    if exact_match.exists():
+        _log.info(f"Found exact match TDB: {exact_match.name}")
+        return exact_match
     
     # 2. Reverse order (e.g., "FE-AL.tdb" if we're looking for AL-FE)
     if len(elements_upper) == 2:
         reverse_system = f"{elements_upper[1]}-{elements_upper[0]}"
-        possible_patterns.append(f"{reverse_system}.tdb")
+        reverse_match = tdb_dir / f"{reverse_system}.tdb"
+        if reverse_match.exists():
+            _log.info(f"Found reverse match TDB: {reverse_match.name}")
+            return reverse_match
     
     # 3. Materials Commons format (e.g., "mc_al_v2037_pycal.tdb")
     for elem in elements_upper:
-        possible_patterns.append(f"mc_{elem.lower()}_*_pycal.tdb")
+        matches = list(tdb_dir.glob(f"mc_{elem.lower()}_*_pycal.tdb"))
+        if matches:
+            _log.info(f"Found Materials Commons TDB for {elem}: {matches[0].name}")
+            return matches[0]
     
-    # 4. COST507 database (common for many alloy systems)
-    possible_patterns.append("COST507.tdb")
-    possible_patterns.append("cost507.tdb")
+    # =========================================================================
+    # PHASE 3: Default/fallback selection
+    # =========================================================================
     
-    # Try to find matching files
-    for pattern in possible_patterns:
-        if '*' in pattern:
-            # Use glob for patterns with wildcards
-            matches = list(tdb_dir.glob(pattern))
-            if matches:
-                _log.info(f"Found TDB for {system_str}: {matches[0].name}")
-                return matches[0]
-        else:
-            # Direct path check
-            candidate = tdb_dir / pattern
-            if candidate.exists():
-                _log.info(f"Found TDB for {system_str}: {pattern}")
-                return candidate
+    # Prefer pycal versions for Al systems
+    for p in candidates:
+        if "pycal" in p.name.lower() and "al" in p.name.lower():
+            _log.info(f"Selected {p.name} (default Al database)")
+            return p
     
-    # Fallback: return first available .tdb file
-    candidates = list(tdb_dir.glob("*.tdb"))
-    if candidates:
-        _log.warning(f"No specific TDB for {system_str}, using fallback: {candidates[0].name}")
-        return candidates[0]
-    
-    _log.error(f"No TDB database found for {system_str} in {tdb_dir}")
-    return None
+    # Final fallback: return first available .tdb file
+    _log.warning(f"No specific TDB for {system_str}, using fallback: {candidates[0].name}")
+    return candidates[0]
 
 
 def load_tdb_database(
-    system_elements: List[str],
-    tdb_dir: Optional[Path] = None
+    system_elements: List[str]
 ) -> Optional[Database]:
     """
     Load TDB database for given element system.
@@ -123,7 +147,6 @@ def load_tdb_database(
     
     Args:
         system_elements: List of element symbols
-        tdb_dir: Optional directory containing TDB files
         
     Returns:
         PyCalphad Database instance or None if loading fails
@@ -137,7 +160,7 @@ def load_tdb_database(
         _log.error("pycalphad not installed")
         return None
     
-    db_path = find_tdb_database(system_elements, tdb_dir)
+    db_path = find_tdb_database(system_elements)
     if not db_path:
         return None
     
@@ -163,7 +186,7 @@ def compute_equilibrium(
     pressure: float = 101325
 ) -> Optional[Any]:
     """
-    Calculate equilibrium at a specific point.
+    Calculate equilibrium at a specific point (single temperature and composition).
     
     Unified equilibrium calculation used across multiple handlers.
     Handles composition constraints correctly for multi-component systems.
@@ -192,6 +215,7 @@ def compute_equilibrium(
     
     try:
         # Ensure VA is in elements list (required for many phases)
+        # Make a copy to avoid modifying the original list
         elements_with_va = list(elements)
         if 'VA' not in elements_with_va:
             elements_with_va.append('VA')
@@ -210,35 +234,40 @@ def compute_equilibrium(
             # For multicomponent systems, specify all but the first element
             for el in comp_elements[1:]:
                 conditions[v.X(el)] = composition[el]
+        else:
+            # For single element (pure substance), no composition constraint needed
+            pass
         
         # Calculate equilibrium
-        _log.debug(f"Running equilibrium: T={temperature}K, composition={composition}")
+        _log.info(f"Running equilibrium with {len(phases)} phases, T={temperature}K, composition={composition}")
         eq = equilibrium(db, elements_with_va, phases, conditions)
         
         return eq
         
     except Exception as e:
         _log.error(f"Equilibrium calculation failed: {e}")
-        _log.error(f"  Elements: {elements_with_va}")
-        _log.error(f"  Temperature: {temperature}K")
+        _log.error(f"  Elements (with VA): {elements_with_va}")
+        _log.error(f"  Phases ({len(phases)}): {phases[:10]}...")  # Show first 10
+        _log.error(f"  Conditions: {conditions}")
         _log.error(f"  Composition: {composition}")
         return None
 
 
 def extract_phase_fractions(eq: Any, tolerance: float = 1e-4) -> Dict[str, float]:
     """
-    Extract phase fractions from equilibrium result.
+    Extract phase fractions from equilibrium result with proper vertex handling.
     
-    Properly handles multi-vertex equilibrium results (e.g., two-phase regions)
-    by summing phase fractions across vertices.
+    Properly handles:
+    - Multi-vertex equilibrium results (e.g., two-phase regions)
+    - Singleton coordinate squeezing
+    - Fallback for legacy/simple equilibrium results
     
-    NOTE: This is a wrapper around the more sophisticated implementation in
-    handlers/calphad/phase_diagrams/equilibrium_utils.py. If you need more
-    control, use that module directly.
+    In two-phase regions, equilibrium returns multiple vertices; we sum NP 
+    over the vertex dimension per phase (not rely on 1-to-1 raveled index).
     
     Args:
         eq: Equilibrium result from pycalphad
-        tolerance: Minimum fraction to include (default 1e-4)
+        tolerance: Minimum fraction to include (default 1e-4 for better boundary handling)
         
     Returns:
         Dictionary mapping phase names to fractions
@@ -260,6 +289,7 @@ def extract_phase_fractions(eq: Any, tolerance: float = 1e-4) -> Dict[str, float
         
         if vertex_dims:
             # Use xarray groupby to sum fractions per phase across vertices
+            # This is critical for two-phase regions where we have multiple vertices
             frac_by_phase = (
                 eqp['NP']
                 .groupby(eqp['Phase'])
@@ -277,14 +307,15 @@ def extract_phase_fractions(eq: Any, tolerance: float = 1e-4) -> Dict[str, float
             
             frac = float(frac_by_phase.sel(Phase=phase).values)
             
+            # Use slightly looser tolerance for reporting (handles boundary noise better)
             if not np.isnan(frac) and frac > tolerance:
                 phase_fractions[str(phase)] = frac
         
         return phase_fractions
         
     except Exception as e:
-        _log.warning(f"Error extracting phase fractions: {e}")
-        # Fallback to simple approach
+        _log.warning(f"Error extracting phase fractions (trying fallback): {e}")
+        # Fallback to simple approach for legacy/incompatible equilibrium results
         try:
             phase_fractions = {}
             phase_array = eq.Phase.values
@@ -301,8 +332,26 @@ def extract_phase_fractions(eq: Any, tolerance: float = 1e-4) -> Dict[str, float
                     phase_fractions[str(phase)] = float(fraction)
             
             return phase_fractions
-        except:
+        except Exception as fallback_error:
+            _log.error(f"Fallback phase fraction extraction also failed: {fallback_error}")
             return {}
+
+
+def extract_phase_fractions_from_equilibrium(eq: Any, tolerance: float = 1e-4) -> Dict[str, float]:
+    """
+    Legacy alias for extract_phase_fractions (backward compatibility).
+    
+    This function name is used in equilibrium_utils.py and some AI function mixins.
+    Redirects to the canonical extract_phase_fractions() implementation.
+    
+    Args:
+        eq: Equilibrium result from pycalphad
+        tolerance: Minimum fraction to include
+        
+    Returns:
+        Dictionary mapping phase names to fractions
+    """
+    return extract_phase_fractions(eq, tolerance)
 
 
 def get_phase_composition(
@@ -576,7 +625,6 @@ def compute_equilibrium_microstructure(
     system_elements: List[str],
     composition: Dict[str, float],
     temperature: float,
-    tdb_dir: Optional[Path] = None,
     pressure: float = 101325
 ) -> Dict[str, Any]:
     """
@@ -589,7 +637,6 @@ def compute_equilibrium_microstructure(
         system_elements: List of element symbols
         composition: Dictionary of element: mole_fraction
         temperature: Temperature in K
-        tdb_dir: Optional TDB directory
         pressure: Pressure in Pa
         
     Returns:
@@ -612,7 +659,7 @@ def compute_equilibrium_microstructure(
     """
     try:
         # Load database
-        db = load_tdb_database(system_elements, tdb_dir)
+        db = load_tdb_database(system_elements)
         if db is None:
             return {
                 "success": False,

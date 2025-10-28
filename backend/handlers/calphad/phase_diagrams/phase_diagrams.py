@@ -7,12 +7,11 @@ from typing import List, Optional, Tuple
 import logging
 from pathlib import Path
 import numpy as np
-import plotly.graph_objects as go
 import pycalphad.variables as v
 from ...base.base import BaseHandler
 
 # Import from utility modules
-from .database_utils import is_excluded_phase, upper_symbol, compose_alias_map, pick_tdb_path, map_phase_name
+from .database_utils import is_excluded_phase, compose_alias_map
 from ...base.converters import weight_to_mole_fraction
 from .plotting import PlottingMixin
 from .analysis import AnalysisMixin
@@ -29,31 +28,9 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
     """
     
     def __init__(self):
-        self.tdb_dir = Path(__file__).parent.parent.parent.parent.parent / "tdbs"
-        if not self.tdb_dir.exists():
-            _log.warning(f"TDB directory not found: {self.tdb_dir}")
         self._last_image_metadata = None
         self._last_image_data = None
         self._last_key_points = []
-
-    def _phase_constituent_elements(self, db, phase: str) -> set[str]:
-        """Get the constituent elements of a phase from the database."""
-        try:
-            phase_obj = db.phases.get(phase)
-            if phase_obj is None:
-                return set()
-            
-            # Extract constituent elements from phase definition
-            constituents = set()
-            if hasattr(phase_obj, 'constituents'):
-                for constituent in phase_obj.constituents:
-                    if hasattr(constituent, 'elements'):
-                        constituents.update(constituent.elements)
-            
-            return constituents
-        except Exception as e:
-            _log.warning(f"Could not extract elements for phase {phase}: {e}")
-            return set()
 
     def _phase_elements(self, db, phase: str) -> set[str]:
         """Extract elements from phase constituents."""
@@ -208,7 +185,7 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
                 parts = system.split(sep)
                 if len(parts) == 2:
                     A, B = parts[0].strip(), parts[1].strip()
-                    return upper_symbol(A), upper_symbol(B)
+                    return A.strip().upper(), B.strip().upper()
         
         # Handle concatenated format like "ALZN" or "AlZn"
         # Normalize to uppercase first
@@ -218,38 +195,25 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
             for i in range(2, len(sysu) - 1):
                 A, B = sysu[:i], sysu[i:]
                 # Check if both substrings are valid normalized elements
-                if upper_symbol(A) == A and upper_symbol(B) == B:
-                    return A, B
+                return A.strip().upper(), B.strip().upper() 
         
         # Fallback: try to parse as single element
         if len(system) <= 3:
-            return upper_symbol(system), "AL"  # Default to Al-based system
+            return system.strip().upper(), "AL"  # Default to Al-based system
         
         raise ValueError(f"Could not parse system: {system}")
 
-    def _get_database_path(self, _system_ignored: str = "", elements: Optional[List[str]] = None) -> Optional[Path]:
-        """
-        Get the path to the thermodynamic database file.
-        
-        Args:
-            _system_ignored: System string (legacy parameter)
-            elements: List of element symbols to help select appropriate database
-        
-        Returns:
-            Path to appropriate .tdb file
-        """
-        return pick_tdb_path(self.tdb_dir, elements=elements)
 
     def _normalize_elements(self, elements: List[str], db=None) -> List[str]:
         """Normalize element symbols to database format."""
         if db is None:
-            return [upper_symbol(el) for el in elements]
+            return [el.strip().upper() for el in elements]
         
         # Use database-specific aliases
         aliases = compose_alias_map(db)
         normalized = []
         for el in elements:
-            normalized_el = aliases.get(el.lower(), upper_symbol(el))
+            normalized_el = aliases.get(el.lower(), el.strip().upper())
             normalized.append(normalized_el)
         
         return normalized
@@ -271,14 +235,14 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         
         # Handle single element
         if len(system_or_comp) <= 3 and system_or_comp.isalpha():
-            element = upper_symbol(system_or_comp)
+            element = system_or_comp.strip().upper()
             return (element, "AL"), 0.0 if element == "AL" else 1.0, "atomic"
         
         # Parse composition like "Al20Zn80"
         def norm_token(tok):
             tok = tok.strip().upper()
             if tok.isalpha():
-                return upper_symbol(tok)
+                return tok.strip().upper()
             return tok
         
         # Try to extract numbers and elements
@@ -345,7 +309,7 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         total = 0.0
         
         for elem, amount_str in matches:
-            elem_upper = upper_symbol(elem)
+            elem_upper = elem.strip().upper()
             amount = float(amount_str)
             comp_dict[elem_upper] = amount
             total += amount
@@ -402,114 +366,3 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         
         return kept
 
-    def _calculate_equilibrium_at_T(self, db, elements, phases, T, xB, comp_var):
-        """Calculate equilibrium at a specific temperature."""
-        try:
-            from pycalphad import equilibrium
-            
-            # Set up calculation conditions
-            conditions = {
-                comp_var: xB,
-                v.T: T,
-                v.P: 101325,
-                v.N: 1
-            }
-            
-            # Calculate equilibrium (this will give us phase fractions)
-            result = equilibrium(db, elements, phases, conditions)
-            
-            return result
-            
-        except Exception as e:
-            _log.warning(f"Error calculating equilibrium at T={T}: {e}")
-            # Return empty result
-            import xarray as xr
-            return xr.Dataset()
-
-    def _create_interactive_plot(self, temps, phase_data, A, B, xB, comp_type, temp_range):
-        """Create interactive Plotly plot for composition-temperature data with filled regions."""
-        import logging
-        _log = logging.getLogger(__name__)
-        
-        fig = go.Figure()
-        
-        # Convert temps to numpy array for safety
-        temps_array = np.array(temps)
-        _log.info(f"Creating Plotly figure with temps range: {temps_array[0]:.1f}-{temps_array[-1]:.1f} K")
-        
-        # Color palette for phases
-        colors = [
-            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
-        ]
-        
-        # Add traces for each phase with stacked area
-        traces_added = 0
-        for idx, (phase, fractions) in enumerate(phase_data.items()):
-            fractions_array = np.array(fractions)
-            max_frac = np.max(fractions_array) if len(fractions_array) > 0 else 0
-            
-            if max_frac > 0.01:
-                color = colors[traces_added % len(colors)]
-                
-                # Map phase name to readable form (e.g., CSI -> SiC)
-                readable_phase = map_phase_name(phase)
-                
-                fig.add_trace(go.Scatter(
-                    x=temps_array,
-                    y=fractions_array,
-                    mode='lines',
-                    name=readable_phase,
-                    line=dict(width=0.5, color=color),
-                    fillcolor=color,
-                    fill='tonexty' if traces_added > 0 else 'tozeroy',
-                    stackgroup='one',  # This creates a stacked area chart
-                    groupnorm='',  # Don't normalize (we want actual fractions)
-                    hovertemplate=f'<b>{readable_phase}</b><br>T: %{{x:.1f}} K<br>Fraction: %{{y:.3f}}<extra></extra>'
-                ))
-                traces_added += 1
-                _log.info(f"  Added trace for {phase} -> {readable_phase} (max fraction: {max_frac:.3f})")
-        
-        if traces_added == 0:
-            _log.warning("No phases with significant fractions to plot!")
-        
-        # Update layout with explicit axis ranges
-        fig.update_layout(
-            title=dict(
-                text=f"Phase Stability: {A}{round((1-xB)*100)}{B}{round(xB*100)}",
-                x=0.5,
-                xanchor='center',
-                font=dict(size=18)
-            ),
-            xaxis=dict(
-                title="Temperature (K)",
-                range=[temps_array[0], temps_array[-1]],
-                showgrid=True,
-                gridwidth=1,
-                gridcolor='lightgray'
-            ),
-            yaxis=dict(
-                title="Phase Fraction",
-                range=[0, 1],
-                showgrid=True,
-                gridwidth=1,
-                gridcolor='lightgray'
-            ),
-            hovermode='x unified',
-            showlegend=True,
-            legend=dict(
-                yanchor="top",
-                y=0.99,
-                xanchor="right",
-                x=0.99,
-                bgcolor='rgba(255,255,255,0.8)',
-                bordercolor='black',
-                borderwidth=1
-            ),
-            plot_bgcolor='white',
-            paper_bgcolor='white',
-            height=600,
-            width=900
-        )
-        
-        return fig

@@ -1,29 +1,26 @@
 """
 Utility functions for CALPHAD phase diagrams.
 
-This module re-exports utilities from specialized sub-modules for backward compatibility.
+Re-exports utilities from specialized sub-modules and shared calphad_utils.
+For database loading, use shared.calphad_utils.load_tdb_database() directly.
 """
 
-# Re-export from database_utils for backward compatibility
 from .database_utils import (
-    is_excluded_phase as _is_excluded_phase,
-    upper_symbol as _upper_symbol,
-    get_db_elements as _db_elements,
-    compose_alias_map as _compose_alias_map,
-    pick_tdb_path as _pick_tdb_path,
-    load_database,
+    is_excluded_phase,
+    get_db_elements,
+    compose_alias_map,
     map_phase_name,
     EXCLUDE_PHASE_PATTERNS,
     PHASE_NAME_MAP
 )
+from ...shared.calphad_utils import find_tdb_database, load_tdb_database
 
 __all__ = [
-    '_is_excluded_phase',
-    '_upper_symbol',
-    '_db_elements',
-    '_compose_alias_map',
-    '_pick_tdb_path',
-    'load_database',
+    'is_excluded_phase',
+    'get_db_elements',
+    'compose_alias_map',
+    'find_tdb_database',
+    'load_tdb_database',
     'map_phase_name',
     'EXCLUDE_PHASE_PATTERNS',
     'PHASE_NAME_MAP',

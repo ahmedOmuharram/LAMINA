@@ -176,7 +176,8 @@ class BaseHandler:
             return vals if vals is not None else None
         raw_kwargs["elements"] = _as_list("elements")
         raw_kwargs["exclude_elements"] = _as_list("exclude_elements")
-        raw_kwargs["formula"] = _list_or_str("formula")
+        # Map 'formula' parameter to 'formula_pretty' for API compatibility
+        raw_kwargs["formula_pretty"] = _list_or_str("formula_pretty") or _list_or_str("formula")
         raw_kwargs["material_ids"] = self._parse_csv_list(_params.get("material_ids"))
         raw_kwargs["possible_species"] = _as_list("possible_species")
 
@@ -196,14 +197,25 @@ class BaseHandler:
                 raw_kwargs[key] = iv
 
         # ---- Strings ----
-        for key in ["crystal_system", "magnetic_ordering", "spacegroup_symbol"]:
+        for key in ["crystal_system", "spacegroup_symbol"]:
             if _params.get(key):
                 raw_kwargs[key] = str(_params.get(key))
+        
+        # Map 'magnetic_ordering' to 'ordering' for API compatibility
+        if _params.get("magnetic_ordering"):
+            raw_kwargs["ordering"] = str(_params.get("magnetic_ordering"))
+        if _params.get("ordering"):
+            raw_kwargs["ordering"] = str(_params.get("ordering"))
 
         # ---- Fields (list of strings) ----
         fields = self._parse_csv_list(_params.get("fields"))
         if fields is not None:
-            raw_kwargs["fields"] = fields
+            field_mapping = {
+                "formula": "formula_pretty",
+                "magnetic_ordering": "ordering"
+            }
+            mapped_fields = [field_mapping.get(f, f) for f in fields]
+            raw_kwargs["fields"] = mapped_fields
 
         # ---- Aliases / Renames ----
         if "num_elements" in _params and _params.get("num_elements"):

@@ -548,7 +548,7 @@ async def run_all_tests():
     print("="*80)
     
     handler = CalPhadHandler()
-    print(f"\n✓ Handler created, TDB directory: {handler.tdb_dir}")
+    print("\n✓ Handler created")
     
     tests = [
         await test_q1_al20zn80_solid_at_870k(handler),

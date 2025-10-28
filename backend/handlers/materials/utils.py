@@ -5,6 +5,8 @@ import logging
 from typing import Dict, Any, List, Optional
 import numpy as np
 
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
+
 _log = logging.getLogger(__name__)
 
 
@@ -30,10 +32,13 @@ def get_elastic_properties(mpr, material_id: str) -> Dict[str, Any]:
         )
         
         if not docs:
-            return {
-                "success": False,
-                "error": f"Material {material_id} not found"
-            }
+            return error_result(
+                handler="materials",
+                function="get_elastic_properties",
+                error=f"Material {material_id} not found",
+                error_type=ErrorType.NOT_FOUND,
+                citations=["Materials Project"]
+            )
         
         doc = docs[0]
         
@@ -41,8 +46,7 @@ def get_elastic_properties(mpr, material_id: str) -> Dict[str, Any]:
         bulk_modulus = doc.bulk_modulus if hasattr(doc, 'bulk_modulus') else None
         shear_modulus = doc.shear_modulus if hasattr(doc, 'shear_modulus') else None
         
-        result = {
-            "success": True,
+        data = {
             "material_id": material_id,
             "formula": doc.formula_pretty if hasattr(doc, 'formula_pretty') else str(doc.composition),
             "composition": dict(doc.composition.as_dict()) if hasattr(doc, 'composition') else None,
@@ -53,55 +57,64 @@ def get_elastic_properties(mpr, material_id: str) -> Dict[str, Any]:
         if bulk_modulus:
             # Handle both dict and object formats
             if isinstance(bulk_modulus, dict):
-                result["bulk_modulus"] = {
+                data["bulk_modulus"] = {
                     "k_vrh": float(bulk_modulus.get('vrh')) if bulk_modulus.get('vrh') is not None else None,
                     "k_voigt": float(bulk_modulus.get('voigt')) if bulk_modulus.get('voigt') is not None else None,
                     "k_reuss": float(bulk_modulus.get('reuss')) if bulk_modulus.get('reuss') is not None else None,
                     "unit": "GPa"
                 }
             else:
-                result["bulk_modulus"] = {
+                data["bulk_modulus"] = {
                     "k_vrh": float(bulk_modulus.vrh) if hasattr(bulk_modulus, 'vrh') and bulk_modulus.vrh is not None else None,
                     "k_voigt": float(bulk_modulus.voigt) if hasattr(bulk_modulus, 'voigt') and bulk_modulus.voigt is not None else None,
                     "k_reuss": float(bulk_modulus.reuss) if hasattr(bulk_modulus, 'reuss') and bulk_modulus.reuss is not None else None,
                     "unit": "GPa"
                 }
         else:
-            result["bulk_modulus"] = None
+            data["bulk_modulus"] = None
             
         if shear_modulus:
             # Handle both dict and object formats
             if isinstance(shear_modulus, dict):
-                result["shear_modulus"] = {
+                data["shear_modulus"] = {
                     "g_vrh": float(shear_modulus.get('vrh')) if shear_modulus.get('vrh') is not None else None,
                     "g_voigt": float(shear_modulus.get('voigt')) if shear_modulus.get('voigt') is not None else None,
                     "g_reuss": float(shear_modulus.get('reuss')) if shear_modulus.get('reuss') is not None else None,
                     "unit": "GPa"
                 }
             else:
-                result["shear_modulus"] = {
+                data["shear_modulus"] = {
                     "g_vrh": float(shear_modulus.vrh) if hasattr(shear_modulus, 'vrh') and shear_modulus.vrh is not None else None,
                     "g_voigt": float(shear_modulus.voigt) if hasattr(shear_modulus, 'voigt') and shear_modulus.voigt is not None else None,
                     "g_reuss": float(shear_modulus.reuss) if hasattr(shear_modulus, 'reuss') and shear_modulus.reuss is not None else None,
                     "unit": "GPa"
                 }
         else:
-            result["shear_modulus"] = None
+            data["shear_modulus"] = None
             
         if hasattr(doc, 'universal_anisotropy') and doc.universal_anisotropy is not None:
-            result["universal_anisotropy"] = float(doc.universal_anisotropy)
+            data["universal_anisotropy"] = float(doc.universal_anisotropy)
         
         if hasattr(doc, 'homogeneous_poisson') and doc.homogeneous_poisson is not None:
-            result["poisson_ratio"] = float(doc.homogeneous_poisson)
-            
-        return result
+            data["poisson_ratio"] = float(doc.homogeneous_poisson)
+        
+        return success_result(
+            handler="materials",
+            function="get_elastic_properties",
+            data=data,
+            citations=["Materials Project"],
+            confidence=Confidence.HIGH
+        )
         
     except Exception as e:
         _log.error(f"Error getting elastic properties for {material_id}: {e}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return error_result(
+            handler="materials",
+            function="get_elastic_properties",
+            error=str(e),
+            error_type=ErrorType.COMPUTATION_ERROR,
+            citations=["Materials Project"]
+        )
 
 
 def find_alloy_compositions(
@@ -151,10 +164,13 @@ def find_alloy_compositions(
         docs = mpr.materials.summary.search(**search_kwargs)
         
         if not docs:
-            return {
-                "success": False,
-                "error": f"No materials found for {chemsys}"
-            }
+            return error_result(
+                handler="materials",
+                function="find_alloy_compositions",
+                error=f"No materials found for {chemsys}",
+                error_type=ErrorType.NOT_FOUND,
+                citations=["Materials Project"]
+            )
         
         materials = []
         all_candidates = []  # Track all for closest-match fallback
@@ -232,26 +248,34 @@ def find_alloy_compositions(
             max_deviation = max(abs(materials[0]["atomic_fractions"].get(el, 0.0) - target_composition.get(el, 0.0))
                                for el in target_composition)
         
-        return {
-            "success": True,
-            "chemical_system": chemsys,
-            "target_composition": target_composition,
-            "tolerance": tolerance,
-            "require_binaries": require_binaries,
-            "ehull_window_eV": (0, 1e-3) if is_stable else (0, ehull_max),
-            "num_materials_found": len(materials),
-            "closest_match_used": closest_match_used,
-            "max_composition_deviation": max_deviation,
-            "l1_distance_to_target": best_l1_distance,
-            "materials": materials
-        }
+        return success_result(
+            handler="materials",
+            function="find_alloy_compositions",
+            data={
+                "chemical_system": chemsys,
+                "target_composition": target_composition,
+                "tolerance": tolerance,
+                "require_binaries": require_binaries,
+                "ehull_window_eV": (0, 1e-3) if is_stable else (0, ehull_max),
+                "num_materials_found": len(materials),
+                "closest_match_used": closest_match_used,
+                "max_composition_deviation": max_deviation,
+                "l1_distance_to_target": best_l1_distance,
+                "materials": materials
+            },
+            citations=["Materials Project"],
+            confidence=Confidence.HIGH if materials else Confidence.LOW
+        )
         
     except Exception as e:
         _log.error(f"Error finding alloy compositions: {e}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return error_result(
+            handler="materials",
+            function="find_alloy_compositions",
+            error=str(e),
+            error_type=ErrorType.COMPUTATION_ERROR,
+            citations=["Materials Project"]
+        )
 
 
 def compare_material_properties(
@@ -272,32 +296,42 @@ def compare_material_properties(
     """
     try:
         if not property1.get("success") or not property2.get("success"):
-            return {
-                "success": False,
-                "error": "One or both materials missing property data"
-            }
+            return error_result(
+                handler="materials",
+                function="compare_material_properties",
+                error="One or both materials missing property data",
+                error_type=ErrorType.INVALID_INPUT,
+                citations=["Materials Project"]
+            )
+        
+        # Extract data from standardized results
+        data1 = property1.get("data", property1)
+        data2 = property2.get("data", property2)
         
         # Extract the property values
         val1 = None
         val2 = None
         
         if property_name == "bulk_modulus":
-            if property1.get("bulk_modulus") and property2.get("bulk_modulus"):
-                val1 = property1["bulk_modulus"].get("k_vrh")
-                val2 = property2["bulk_modulus"].get("k_vrh")
+            if data1.get("bulk_modulus") and data2.get("bulk_modulus"):
+                val1 = data1["bulk_modulus"].get("k_vrh")
+                val2 = data2["bulk_modulus"].get("k_vrh")
         elif property_name == "shear_modulus":
-            if property1.get("shear_modulus") and property2.get("shear_modulus"):
-                val1 = property1["shear_modulus"].get("g_vrh")
-                val2 = property2["shear_modulus"].get("g_vrh")
-        elif property_name in property1 and property_name in property2:
-            val1 = property1.get(property_name)
-            val2 = property2.get(property_name)
+            if data1.get("shear_modulus") and data2.get("shear_modulus"):
+                val1 = data1["shear_modulus"].get("g_vrh")
+                val2 = data2["shear_modulus"].get("g_vrh")
+        elif property_name in data1 and property_name in data2:
+            val1 = data1.get(property_name)
+            val2 = data2.get(property_name)
         
         if val1 is None or val2 is None:
-            return {
-                "success": False,
-                "error": f"Property '{property_name}' not available for one or both materials"
-            }
+            return error_result(
+                handler="materials",
+                function="compare_material_properties",
+                error=f"Property '{property_name}' not available for one or both materials",
+                error_type=ErrorType.NOT_FOUND,
+                citations=["Materials Project"]
+            )
         
         # Calculate differences
         absolute_diff = val2 - val1
@@ -308,18 +342,17 @@ def compare_material_properties(
         if property_name in ("bulk_modulus", "shear_modulus"):
             unit = "GPa"
         
-        result = {
-            "success": True,
+        data = {
             "property_name": property_name,
             "material1": {
-                "id": property1.get("material_id"),
-                "formula": property1.get("formula"),
+                "id": data1.get("material_id"),
+                "formula": data1.get("formula"),
                 "value": float(val1),
                 "unit": unit
             },
             "material2": {
-                "id": property2.get("material_id"),
-                "formula": property2.get("formula"),
+                "id": data2.get("material_id"),
+                "formula": data2.get("formula"),
                 "value": float(val2),
                 "unit": unit
             },
@@ -335,20 +368,29 @@ def compare_material_properties(
         # Add interpretation
         if percent_change is not None:
             if abs(percent_change) < 1:
-                result["interpretation"] = "Negligible change"
+                data["interpretation"] = "Negligible change"
             elif percent_change > 0:
-                result["interpretation"] = f"Material 2 has {abs(percent_change):.1f}% higher {property_name}"
+                data["interpretation"] = f"Material 2 has {abs(percent_change):.1f}% higher {property_name}"
             else:
-                result["interpretation"] = f"Material 2 has {abs(percent_change):.1f}% lower {property_name}"
+                data["interpretation"] = f"Material 2 has {abs(percent_change):.1f}% lower {property_name}"
         
-        return result
+        return success_result(
+            handler="materials",
+            function="compare_material_properties",
+            data=data,
+            citations=["Materials Project"],
+            confidence=Confidence.HIGH
+        )
         
     except Exception as e:
         _log.error(f"Error comparing properties: {e}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return error_result(
+            handler="materials",
+            function="compare_material_properties",
+            error=str(e),
+            error_type=ErrorType.COMPUTATION_ERROR,
+            citations=["Materials Project"]
+        )
 
 
 def analyze_doping_effect(
@@ -384,20 +426,26 @@ def analyze_doping_effect(
         )
         
         if not host_docs:
-            return {
-                "success": False,
-                "error": f"Could not find pure {host_element} in database"
-            }
+            return error_result(
+                handler="materials",
+                function="analyze_doping_effect",
+                error=f"Could not find pure {host_element} in database",
+                error_type=ErrorType.NOT_FOUND,
+                citations=["Materials Project"]
+            )
         
         # Get the first stable entry
         host_doc = host_docs[0]
         host_id = host_doc.material_id if hasattr(host_doc, 'material_id') else None
         
         if not host_id:
-            return {
-                "success": False,
-                "error": f"Could not get material ID for pure {host_element}"
-            }
+            return error_result(
+                handler="materials",
+                function="analyze_doping_effect",
+                error=f"Could not get material ID for pure {host_element}",
+                error_type=ErrorType.NOT_FOUND,
+                citations=["Materials Project"]
+            )
         
         # Get pure host material properties
         host_props = get_elastic_properties(mpr, host_id)
@@ -457,21 +505,28 @@ def analyze_doping_effect(
             dopant_props = get_pure_dopant_props()
             
             if not dopant_props or not dopant_props.get("success"):
-                return {
-                    "success": False,
-                    "error": (
+                return error_result(
+                    handler="materials",
+                    function="analyze_doping_effect",
+                    error=(
                         f"No {host_element}-{dopant_element} entries found near {dopant_concentration*100:.1f}% "
                         f"{dopant_element} within Ehull ≤ 0.20 eV/atom, and could not find pure {dopant_element} "
                         f"for mixture model fallback."
-                    )
-                }
+                    ),
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["Materials Project"]
+                )
+            
+            # Extract data from standardized results
+            host_data = host_props.get("data", host_props)
+            dopant_data = dopant_props.get("data", dopant_props)
             
             # Check if both have bulk modulus data
-            if (host_props.get("bulk_modulus") and host_props["bulk_modulus"].get("k_vrh") and
-                dopant_props.get("bulk_modulus") and dopant_props["bulk_modulus"].get("k_vrh")):
+            if (host_data.get("bulk_modulus") and host_data["bulk_modulus"].get("k_vrh") and
+                dopant_data.get("bulk_modulus") and dopant_data["bulk_modulus"].get("k_vrh")):
                 
-                K_host = host_props["bulk_modulus"]["k_vrh"]
-                K_dopant = dopant_props["bulk_modulus"]["k_vrh"]
+                K_host = host_data["bulk_modulus"]["k_vrh"]
+                K_dopant = dopant_data["bulk_modulus"]["k_vrh"]
                 x = dopant_concentration
                 
                 # Voigt-Reuss-Hill bounds
@@ -480,56 +535,67 @@ def analyze_doping_effect(
                 K_est = 0.5 * (K_V + K_R)  # VRH average
                 pct = 100 * (K_est - K_host) / K_host
                 
-                return {
-                    "success": True,
-                    "host_element": host_element,
-                    "dopant_element": dopant_element,
-                    "target_dopant_concentration": dopant_concentration,
-                    "property_analyzed": property_name,
-                    "pure_host": {
-                        "material_id": host_props.get("material_id"),
-                        "formula": host_props.get("formula"),
-                        "bulk_modulus_vrh": float(K_host),
-                        "unit": "GPa"
+                return success_result(
+                    handler="materials",
+                    function="analyze_doping_effect",
+                    data={
+                        "host_element": host_element,
+                        "dopant_element": dopant_element,
+                        "target_dopant_concentration": dopant_concentration,
+                        "property_analyzed": property_name,
+                        "pure_host": {
+                            "material_id": host_data.get("material_id"),
+                            "formula": host_data.get("formula"),
+                            "bulk_modulus_vrh": float(K_host),
+                            "unit": "GPa"
+                        },
+                        "pure_dopant": {
+                            "material_id": dopant_data.get("material_id"),
+                            "formula": dopant_data.get("formula"),
+                            "bulk_modulus_vrh": float(K_dopant),
+                            "unit": "GPa"
+                        },
+                        "num_alloys_analyzed": 0,
+                        "used_metastable_entries": False,
+                        "used_mixture_model": True,
+                        "mixture_model_estimate": {
+                            "method": "Voigt-Reuss-Hill bounds from pure elements",
+                            "k_vrh_gpa": float(K_est),
+                            "k_voigt_gpa": float(K_V),
+                            "k_reuss_gpa": float(K_R),
+                            "percent_change": float(pct),
+                            "unit": "GPa"
+                        },
+                        "comparisons": []
                     },
-                    "pure_dopant": {
-                        "material_id": dopant_props.get("material_id"),
-                        "formula": dopant_props.get("formula"),
-                        "bulk_modulus_vrh": float(K_dopant),
-                        "unit": "GPa"
-                    },
-                    "num_alloys_analyzed": 0,
-                    "used_metastable_entries": False,
-                    "used_mixture_model": True,
-                    "mixture_model_estimate": {
-                        "method": "Voigt-Reuss-Hill bounds from pure elements",
-                        "k_vrh_gpa": float(K_est),
-                        "k_voigt_gpa": float(K_V),
-                        "k_reuss_gpa": float(K_R),
-                        "percent_change": float(pct),
-                        "unit": "GPa"
-                    },
-                    "comparisons": [],
-                    "notes": [
+                    citations=["Materials Project", "pymatgen"],
+                    confidence=Confidence.MEDIUM,
+                    notes=[
                         f"No {host_element}-{dopant_element} alloy entries found within Ehull ≤ 0.20 eV/atom.",
                         f"Used Voigt-Reuss-Hill mixture model with pure {host_element} and {dopant_element}.",
                         f"This provides an estimate assuming ideal mixing; actual alloys may deviate."
-                    ],
-                    "citations": ["Materials Project", "pymatgen"]
-                }
+                    ]
+                )
             else:
-                return {
-                    "success": False,
-                    "error": (
+                return error_result(
+                    handler="materials",
+                    function="analyze_doping_effect",
+                    error=(
                         f"No {host_element}-{dopant_element} entries found near {dopant_concentration*100:.1f}% "
                         f"{dopant_element} within Ehull ≤ 0.20 eV/atom, and elastic data incomplete "
                         f"for mixture model fallback."
-                    )
-                }
+                    ),
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["Materials Project"]
+                )
         
         # Get properties for each alloy and compare
+        # Extract data from standardized result
+        alloys_data = alloys.get("data", alloys)
+        materials_list = alloys_data.get("materials", [])
+        
         comparisons = []
-        for alloy in alloys["materials"]:
+        for alloy in materials_list:
             alloy_id = alloy["material_id"]
             alloy_props = get_elastic_properties(mpr, alloy_id)
             
@@ -553,15 +619,17 @@ def analyze_doping_effect(
         
         # Always compute VRH estimate at exact composition for comparison
         vrh_estimate = None
-        if (host_props.get("bulk_modulus") and host_props["bulk_modulus"].get("k_vrh")):
+        host_data = host_props.get("data", host_props)
+        if (host_data.get("bulk_modulus") and host_data["bulk_modulus"].get("k_vrh")):
             # Get pure dopant properties (cached)
             dopant_props = get_pure_dopant_props()
             
+            dopant_data = dopant_props.get("data", dopant_props) if dopant_props else {}
             if (dopant_props and dopant_props.get("success") and 
-                dopant_props.get("bulk_modulus") and dopant_props["bulk_modulus"].get("k_vrh")):
+                dopant_data.get("bulk_modulus") and dopant_data["bulk_modulus"].get("k_vrh")):
                 
-                K_host = host_props["bulk_modulus"]["k_vrh"]
-                K_dopant = dopant_props["bulk_modulus"]["k_vrh"]
+                K_host = host_data["bulk_modulus"]["k_vrh"]
+                K_dopant = dopant_data["bulk_modulus"]["k_vrh"]
                 x = dopant_concentration
                 
                 # Voigt-Reuss-Hill bounds (rigorous for isotropic aggregates)
@@ -591,75 +659,81 @@ def analyze_doping_effect(
         if not comparisons:
             if vrh_estimate:
                 # Return VRH estimate as the result
-                return {
-                    "success": True,
-                    "host_element": host_element,
-                    "dopant_element": dopant_element,
-                    "target_dopant_concentration": dopant_concentration,
-                    "requested_composition": target_comp,
-                    "property_analyzed": property_name,
-                    "pure_host": {
-                        "material_id": host_props.get("material_id"),
-                        "formula": host_props.get("formula"),
-                        "bulk_modulus_vrh": vrh_estimate["pure_host_k_vrh"],
-                        "unit": "GPa"
+                return success_result(
+                    handler="materials",
+                    function="analyze_doping_effect",
+                    data={
+                        "host_element": host_element,
+                        "dopant_element": dopant_element,
+                        "target_dopant_concentration": dopant_concentration,
+                        "requested_composition": target_comp,
+                        "property_analyzed": property_name,
+                        "pure_host": {
+                            "material_id": host_data.get("material_id"),
+                            "formula": host_data.get("formula"),
+                            "bulk_modulus_vrh": vrh_estimate["pure_host_k_vrh"],
+                            "unit": "GPa"
+                        },
+                        "num_alloys_analyzed": 0,
+                        "used_metastable_entries": False,
+                        "used_mixture_model": True,
+                        "vrh_estimate": vrh_estimate,
+                        "comparisons": []
                     },
-                    "num_alloys_analyzed": 0,
-                    "used_metastable_entries": False,
-                    "used_mixture_model": True,
-                    "vrh_estimate": vrh_estimate,
-                    "comparisons": [],
-                    "notes": [
+                    citations=["Materials Project", "pymatgen"],
+                    confidence=Confidence.MEDIUM,
+                    notes=[
                         f"No database entries found at {dopant_concentration*100:.1f}% {dopant_element}.",
                         f"Using VRH bounds from pure elements as estimate.",
                         f"VRH predicts {vrh_estimate['percent_change_vrh']:.1f}% change at exact composition "
                         f"(range: {vrh_estimate['percent_change_reuss']:.1f}% to {vrh_estimate['percent_change_voigt']:.1f}%)."
-                    ],
-                    "citations": ["Materials Project", "pymatgen"]
-                }
+                    ]
+                )
             else:
-                return {
-                    "success": False,
-                    "error": "Could not compare properties for any alloys and VRH estimate unavailable"
-                }
+                return error_result(
+                    handler="materials",
+                    function="analyze_doping_effect",
+                    error="Could not compare properties for any alloys and VRH estimate unavailable",
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=["Materials Project"]
+                )
         
-        result = {
-            "success": True,
+        result_data = {
             "host_element": host_element,
             "dopant_element": dopant_element,
             "target_dopant_concentration": dopant_concentration,
             "requested_composition": target_comp,
             "property_analyzed": property_name,
             "pure_host": {
-                "material_id": host_props.get("material_id"),
-                "formula": host_props.get("formula")
+                "material_id": host_data.get("material_id"),
+                "formula": host_data.get("formula")
             },
             "num_alloys_analyzed": len(comparisons),
             "used_metastable_entries": used_metastable,
-            "used_closest_match": alloys.get("closest_match_used", False),
+            "used_closest_match": alloys_data.get("closest_match_used", False),
             "vrh_estimate": vrh_estimate,
-            "comparisons": comparisons,
-            "notes": []
+            "comparisons": comparisons
         }
+        notes = []
         
         if used_metastable:
-            result["notes"].append(
+            notes.append(
                 f"No stable {host_element}-{dopant_element} compounds found on convex hull. "
                 f"Used metastable entries (Ehull ≤ 0.20 eV/atom) which may represent "
                 f"solid solutions or ordered structures."
             )
         
-        if alloys.get("closest_match_used") and comparisons:
+        if alloys_data.get("closest_match_used") and comparisons:
             closest_comp = comparisons[0]["actual_composition"]
             req_comp_str = ", ".join(f"{el}{target_comp[el]:.3f}" for el in sorted(target_comp.keys()))
             actual_comp_str = ", ".join(f"{el}{closest_comp[el]:.3f}" for el in sorted(closest_comp.keys()))
-            l1_dist = alloys.get("l1_distance_to_target", alloys.get("max_composition_deviation", 0))
-            result["notes"].insert(0, 
+            l1_dist = alloys_data.get("l1_distance_to_target", alloys_data.get("max_composition_deviation", 0))
+            notes.insert(0, 
                 f"Requested: {req_comp_str}; using closest DB entry: {actual_comp_str} (Δ={l1_dist:.3f})."
             )
         
         if vrh_estimate:
-            result["notes"].append(
+            notes.append(
                 f"VRH bounds at exact {dopant_concentration*100:.1f}% {dopant_element}: "
                 f"{vrh_estimate['percent_change_vrh']:.1f}% (VRH average), "
                 f"range {vrh_estimate['percent_change_reuss']:.1f}% (Reuss lower) to "
@@ -670,19 +744,29 @@ def analyze_doping_effect(
         # Add summary statistics
         percent_changes = [c["comparison"]["percent_change"] for c in comparisons if c["comparison"].get("percent_change") is not None]
         if percent_changes:
-            result["summary"] = {
+            result_data["summary"] = {
                 "avg_percent_change": float(np.mean(percent_changes)),
                 "min_percent_change": float(np.min(percent_changes)),
                 "max_percent_change": float(np.max(percent_changes)),
                 "std_percent_change": float(np.std(percent_changes)) if len(percent_changes) > 1 else 0.0
             }
         
-        return result
+        return success_result(
+            handler="materials",
+            function="analyze_doping_effect",
+            data=result_data,
+            citations=["Materials Project", "pymatgen"],
+            confidence=Confidence.HIGH if comparisons else Confidence.MEDIUM,
+            notes=notes if notes else None
+        )
         
     except Exception as e:
         _log.error(f"Error analyzing doping effect: {e}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return error_result(
+            handler="materials",
+            function="analyze_doping_effect",
+            error=str(e),
+            error_type=ErrorType.COMPUTATION_ERROR,
+            citations=["Materials Project"]
+        )
 

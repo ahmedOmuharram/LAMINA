@@ -5,6 +5,7 @@ import { AnalyticsModal } from '@/components/analytics/AnalyticsModal';
 import { ToolCallModal } from '@/components/chat/ToolCallModal';
 import { TestingInterface } from '@/components/testing/TestingInterface';
 import { useChat } from '@/hooks/useChat';
+import { getToolActualStatus } from '@/lib/toolUtils';
 import type { ToolCall } from '@/types/api';
 
 // Component to show live elapsed time for running tools
@@ -135,31 +136,34 @@ function App() {
             <div>
               <h3 className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-2">Active Tools</h3>
               <div className="space-y-1.5">
-                {streamingState.toolCalls.map((tool) => (
-                  <button
-                    key={tool.id}
-                    onClick={() => handleToolClick(tool)}
-                    className="w-full backdrop-blur-xl bg-white/20 border border-white/20 rounded-xl p-2 shadow-sm hover:bg-white/30 transition-colors text-left"
-                  >
-                    <div className="flex items-center gap-1.5 mb-0.5">
-                      {tool.status === 'started' && (
-                        <svg className="w-2.5 h-2.5 text-blue-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                      )}
-                      <span className="text-[10px] font-medium text-gray-800 truncate flex-1">{tool.name}</span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0 ${
-                        tool.status === 'completed' ? 'bg-green-100/70 text-green-700' :
-                        tool.status === 'error' ? 'bg-red-100/70 text-red-700' :
-                        'bg-blue-100/70 text-blue-700'
-                      }`}>
-                        {tool.status}
-                      </span>
-                    </div>
-                    <ToolDuration tool={tool} />
-                  </button>
-                ))}
+                {streamingState.toolCalls.map((tool) => {
+                  const actualStatus = getToolActualStatus(tool.status, tool.output);
+                  return (
+                    <button
+                      key={tool.id}
+                      onClick={() => handleToolClick(tool)}
+                      className="w-full backdrop-blur-xl bg-white/20 border border-white/20 rounded-xl p-2 shadow-sm hover:bg-white/30 transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        {actualStatus === 'started' && (
+                          <svg className="w-2.5 h-2.5 text-blue-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                        )}
+                        <span className="text-[10px] font-medium text-gray-800 truncate flex-1">{tool.name}</span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                          actualStatus === 'completed' ? 'bg-green-100/70 text-green-700' :
+                          actualStatus === 'error' ? 'bg-red-100/70 text-red-700' :
+                          'bg-blue-100/70 text-blue-700'
+                        }`}>
+                          {actualStatus}
+                        </span>
+                      </div>
+                      <ToolDuration tool={tool} />
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -169,25 +173,28 @@ function App() {
             <div>
               <h3 className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-2">Recent Tools</h3>
               <div className="space-y-1.5">
-                {metrics.toolCalls.slice(-5).reverse().map((tool, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleToolClick(tool)}
-                    className="w-full backdrop-blur-xl bg-white/20 border border-white/20 rounded-xl p-2 shadow-sm hover:bg-white/30 transition-colors text-left"
-                  >
-                    <div className="flex items-center justify-between mb-0.5">
-                      <span className="text-[10px] font-medium text-gray-800 truncate">{tool.name}</span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0 ${
-                        tool.status === 'completed' ? 'bg-green-100/70 text-green-700' :
-                        tool.status === 'error' ? 'bg-red-100/70 text-red-700' :
-                        'bg-gray-100/70 text-gray-600'
-                      }`}>
-                        {tool.status}
-                      </span>
-                    </div>
-                    <ToolDuration tool={tool} />
-                  </button>
-                ))}
+                {metrics.toolCalls.slice(-5).reverse().map((tool, idx) => {
+                  const actualStatus = getToolActualStatus(tool.status, tool.output);
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => handleToolClick(tool)}
+                      className="w-full backdrop-blur-xl bg-white/20 border border-white/20 rounded-xl p-2 shadow-sm hover:bg-white/30 transition-colors text-left"
+                    >
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-[10px] font-medium text-gray-800 truncate">{tool.name}</span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                          actualStatus === 'completed' ? 'bg-green-100/70 text-green-700' :
+                          actualStatus === 'error' ? 'bg-red-100/70 text-red-700' :
+                          'bg-gray-100/70 text-gray-600'
+                        }`}>
+                          {actualStatus}
+                        </span>
+                      </div>
+                      <ToolDuration tool={tool} />
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}

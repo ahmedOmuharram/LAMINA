@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import time
 
 from ..base.base import BaseHandler
+from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
 from .ai_functions import SearchAIFunctionsMixin
 
 _log = logging.getLogger(__name__)
@@ -92,31 +93,49 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
             response.raise_for_status()
             
             if format == 'json':
-                return response.json()
+                data = response.json()
+                return success_result(
+                    handler="search",
+                    function="search",
+                    data=data,
+                    citations=["SearXNG"],
+                    confidence=Confidence.HIGH if data.get('results') else Confidence.LOW
+                )
             else:
-                return {'content': response.text, 'format': format}
+                return success_result(
+                    handler="search",
+                    function="search",
+                    data={'content': response.text, 'format': format},
+                    citations=["SearXNG"]
+                )
                 
         except requests.exceptions.RequestException as e:
             _log.error(f"SearXNG search request failed: {e}")
-            return {
-                'error': f'Search request failed: {str(e)}',
-                'query': query,
-                'results': []
-            }
+            return error_result(
+                handler="search",
+                function="search",
+                error=f'Search request failed: {str(e)}',
+                error_type=ErrorType.API_ERROR,
+                citations=["SearXNG"]
+            )
         except json.JSONDecodeError as e:
             _log.error(f"Failed to parse SearXNG JSON response: {e}")
-            return {
-                'error': f'Failed to parse search results: {str(e)}',
-                'query': query,
-                'results': []
-            }
+            return error_result(
+                handler="search",
+                function="search",
+                error=f'Failed to parse search results: {str(e)}',
+                error_type=ErrorType.API_ERROR,
+                citations=["SearXNG"]
+            )
         except Exception as e:
             _log.error(f"Unexpected error during SearXNG search: {e}")
-            return {
-                'error': f'Unexpected error: {str(e)}',
-                'query': query,
-                'results': []
-            }
+            return error_result(
+                handler="search",
+                function="search",
+                error=f'Unexpected error: {str(e)}',
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["SearXNG"]
+            )
     
     def search_scientific(self, 
                          query: str,
@@ -198,10 +217,23 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
                 headers={'User-Agent': 'MCP-Materials-Project/1.0'}
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            return success_result(
+                handler="search",
+                function="get_engine_stats",
+                data=data,
+                citations=["SearXNG"],
+                confidence=Confidence.HIGH
+            )
         except Exception as e:
             _log.error(f"Failed to get engine stats: {e}")
-            return {'error': f'Failed to get engine stats: {str(e)}'}
+            return error_result(
+                handler="search",
+                function="get_engine_stats",
+                error=f'Failed to get engine stats: {str(e)}',
+                error_type=ErrorType.API_ERROR,
+                citations=["SearXNG"]
+            )
     
     def _extract_single_url_content(self, url: str, timeout: int = 10) -> Dict[str, Any]:
         """
@@ -264,77 +296,84 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
                 if len(content) > 10000:
                     content = content[:10000] + "..."
             
-            return {
-                'url': url,
-                'title': title,
-                'content': content,
-                'status_code': response.status_code,
-                'content_length': len(content),
-                'content_type': response.headers.get('content-type', ''),
-                'success': True
-            }
+            return success_result(
+                handler="search",
+                function="_extract_single_url_content",
+                data={
+                    'url': url,
+                    'title': title,
+                    'content': content,
+                    'status_code': response.status_code,
+                    'content_length': len(content),
+                    'content_type': response.headers.get('content-type', '')
+                },
+                citations=[url],
+                confidence=Confidence.HIGH
+            )
             
         except requests.exceptions.Timeout:
             _log.warning(f"Timeout while extracting content from {url}")
-            return {
-                'url': url,
-                'error': 'Request timeout',
-                'content': '',
-                'title': '',
-                'status_code': None,
-                'success': False
-            }
+            return error_result(
+                handler="search",
+                function="_extract_single_url_content",
+                error='Request timeout',
+                error_type=ErrorType.TIMEOUT,
+                citations=[url]
+            )
         except requests.exceptions.RequestException as e:
             _log.warning(f"Request failed for {url}: {e}")
-            return {
-                'url': url,
-                'error': f'Request failed: {str(e)}',
-                'content': '',
-                'title': '',
-                'status_code': getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None,
-                'success': False
-            }
+            return error_result(
+                handler="search",
+                function="_extract_single_url_content",
+                error=f'Request failed: {str(e)}',
+                error_type=ErrorType.API_ERROR,
+                citations=[url]
+            )
         except Exception as e:
             _log.error(f"Unexpected error extracting content from {url}: {e}")
-            return {
-                'url': url,
-                'error': f'Unexpected error: {str(e)}',
-                'content': '',
-                'title': '',
-                'status_code': None,
-                'success': False
-            }
+            return error_result(
+                handler="search",
+                function="_extract_single_url_content",
+                error=f'Unexpected error: {str(e)}',
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=[url]
+            )
     
     def extract_content_from_high_score_urls(self, search_results: Dict[str, Any], min_score: float = 5.0) -> Dict[str, Any]:
         """
         Extract content from URLs in search results that have a score >= min_score.
         
         Args:
-            search_results: Search results from SearXNG
+            search_results: Search results from SearXNG (standardized result format)
             min_score: Minimum score threshold for URL extraction
             
         Returns:
-            Dictionary containing original results plus extracted content
+            Dictionary containing original results plus extracted content (standardized format)
         """
-        if not search_results:
+        if not search_results or not search_results.get('success'):
             return search_results
+        
+        # Extract data from standardized result
+        data = search_results.get('data', {})
         
         # Try to find results in different possible keys
         results_list = None
-        if 'results' in search_results:
+        if 'results' in data:
+            results_list = data['results']
+        elif 'results' in search_results:
             results_list = search_results['results']
-        elif isinstance(search_results, list):
-            results_list = search_results
+        elif isinstance(data, list):
+            results_list = data
         else:
             # Look for any list in the response that might contain results
-            for key, value in search_results.items():
+            for key, value in data.items():
                 if isinstance(value, list) and value and isinstance(value[0], dict) and 'url' in value[0]:
                     results_list = value
                     break
         
         if not results_list:
-            search_results['extracted_content'] = []
-            search_results['extraction_summary'] = f"No results found in search response"
+            data['extracted_content'] = []
+            data['extraction_summary'] = "No results found in search response"
             return search_results
         
         # Filter URLs with score >= min_score
@@ -344,8 +383,8 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
                 high_score_urls.append(result)
         
         if not high_score_urls:
-            search_results['extracted_content'] = []
-            search_results['extraction_summary'] = f"No URLs found with score >= {min_score}"
+            data['extracted_content'] = []
+            data['extraction_summary'] = f"No URLs found with score >= {min_score}"
             return search_results
         
         # Extract content from high-score URLs
@@ -360,18 +399,27 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
             # Add small delay to be respectful to servers
             time.sleep(0.5)
             
-            content_data = self._extract_single_url_content(url)
-            content_data['original_score'] = result.get('score', 0)
-            content_data['original_title'] = result.get('title', '')
+            extraction_result = self._extract_single_url_content(url)
             
-            extracted_content.append(content_data)
+            # Unwrap standardized result
+            content_entry = {
+                'original_score': result.get('score', 0),
+                'original_title': result.get('title', ''),
+                'success': extraction_result.get('success', False)
+            }
             
-            if content_data.get('success', False):
+            if extraction_result.get('success'):
+                content_entry.update(extraction_result.get('data', {}))
                 successful_extractions += 1
+            else:
+                content_entry['error'] = extraction_result.get('error', 'Unknown error')
+                content_entry['url'] = url
+            
+            extracted_content.append(content_entry)
         
         # Add extracted content to results
-        search_results['extracted_content'] = extracted_content
-        search_results['extraction_summary'] = {
+        data['extracted_content'] = extracted_content
+        data['extraction_summary'] = {
             'total_high_score_urls': len(high_score_urls),
             'successful_extractions': successful_extractions,
             'failed_extractions': len(high_score_urls) - successful_extractions,
@@ -387,7 +435,13 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
     ) -> Dict[str, Any]:
         """Extract content from specific URLs."""
         if not urls:
-            return {'error': 'No URLs provided', 'extracted_content': []}
+            return error_result(
+                handler="search",
+                function="extract_url_content",
+                error='No URLs provided',
+                error_type=ErrorType.INVALID_INPUT,
+                citations=["SearXNG"]
+            )
         
         extracted_content = []
         successful_extractions = 0
@@ -398,29 +452,49 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
             # Add small delay to be respectful to servers
             time.sleep(0.5)
             
-            content_data = self._extract_single_url_content(url, timeout)
-            extracted_content.append(content_data)
+            extraction_result = self._extract_single_url_content(url, timeout)
             
-            if content_data.get('success', False):
-                successful_extractions += 1
-        
-        result = {
-            'extracted_content': extracted_content,
-            'extraction_summary': {
-                'total_urls': len(urls),
-                'successful_extractions': successful_extractions,
-                'failed_extractions': len(urls) - successful_extractions
+            # Unwrap standardized result
+            content_entry = {
+                'success': extraction_result.get('success', False)
             }
-        }
+            
+            if extraction_result.get('success'):
+                content_entry.update(extraction_result.get('data', {}))
+                successful_extractions += 1
+            else:
+                content_entry['error'] = extraction_result.get('error', 'Unknown error')
+                content_entry['url'] = url
+            
+            extracted_content.append(content_entry)
         
-        return result
+        return success_result(
+            handler="search",
+            function="extract_url_content",
+            data={
+                'extracted_content': extracted_content,
+                'extraction_summary': {
+                    'total_urls': len(urls),
+                    'successful_extractions': successful_extractions,
+                    'failed_extractions': len(urls) - successful_extractions
+                }
+            },
+            citations=urls,
+            confidence=Confidence.HIGH if successful_extractions > 0 else Confidence.LOW
+        )
 
     def handle_searxng_search(self, params: Mapping[str, Any]) -> Dict[str, Any]:
         """Handle SearXNG search requests."""
         # Extract search parameters
         query = params.get('query', '')
         if not query:
-            return {'error': 'Query parameter is required', 'results': []}
+            return error_result(
+                handler="search",
+                function="handle_searxng_search",
+                error='Query parameter is required',
+                error_type=ErrorType.INVALID_INPUT,
+                citations=["SearXNG"]
+            )
         
         search_type = params.get('search_type', 'general')
         extract_content = params.get('extract_content', True)
@@ -453,7 +527,7 @@ class SearXNGSearchHandler(SearchAIFunctionsMixin, BaseHandler):
             )
         
         # Extract content from high-score URLs if requested
-        if extract_content and search_results:
+        if extract_content and search_results and search_results.get('success'):
             search_results = self.extract_content_from_high_score_urls(search_results, min_score)
         
         return search_results

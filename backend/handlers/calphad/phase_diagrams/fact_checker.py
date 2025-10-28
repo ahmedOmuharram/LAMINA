@@ -19,8 +19,8 @@ from dataclasses import dataclass
 import numpy as np
 from pycalphad import Database
 
-from .equilibrium_utils import (
-    calculate_equilibrium_at_point,
+from ...shared.calphad_utils import (
+    compute_equilibrium,
     extract_phase_fractions_from_equilibrium
 )
 from .database_utils import map_phase_name
@@ -190,7 +190,7 @@ class ClaimChecker:
             phase_fractions = precalculated_fractions
         else:
             # Calculate equilibrium
-            eq = calculate_equilibrium_at_point(
+            eq = compute_equilibrium(
                 self.db, self.elements, self.phases,
                 composition, self.temperature
             )

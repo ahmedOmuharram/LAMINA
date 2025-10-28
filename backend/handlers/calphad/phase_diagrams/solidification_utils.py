@@ -11,7 +11,7 @@ from typing import Dict, List, Tuple, Optional
 from pycalphad import Database, equilibrium
 import pycalphad.variables as v
 
-from .equilibrium_utils import extract_phase_fractions_from_equilibrium
+from ...shared.calphad_utils import extract_phase_fractions_from_equilibrium
 
 _log = logging.getLogger(__name__)
 

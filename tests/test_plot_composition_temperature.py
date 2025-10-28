@@ -17,7 +17,7 @@ async def test_plot_composition_temperature():
     
     # Create handler
     handler = CalPhadHandler()
-    print(f"✓ Handler created, TDB directory: {handler.tdb_dir}")
+    print("✓ Handler created")
     
     # Test composition: Al20Zn80
     composition = "Al20Zn80"

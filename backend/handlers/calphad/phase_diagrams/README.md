@@ -37,12 +37,12 @@ The phase diagrams module is organized into focused, modular components:
 
 ### Utility Modules
 
-- **`database_utils.py`** (155 lines): Database management
-  - `load_database()` - Load thermodynamic databases
+- **`database_utils.py`** (111 lines): Database management
   - `get_db_elements()` - Extract elements from database
-  - `pick_tdb_path()` - Select appropriate database
   - `is_excluded_phase()` - Filter non-equilibrium phases
   - `compose_alias_map()` - Element alias handling
+  - `map_phase_name()` - Map phase names to readable format
+  - Database loading: Use `shared.calphad_utils.load_tdb_database()` or `find_tdb_database()`
 
 - **`diagram_utils.py`** (181 lines): Phase diagram generation
   - `generate_binary_phase_diagram()` - Create binary phase diagrams
@@ -267,7 +267,6 @@ List all binary systems supported by the thermodynamic database.
 - `systems`: List of available binary systems
 - `total_systems`: Count
 - `database_file`: Name of .tdb file used
-- `tdb_directory`: Path to database directory
 
 **Example Usage**:
 ```python
