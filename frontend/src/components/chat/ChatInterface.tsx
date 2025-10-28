@@ -13,8 +13,8 @@ export function ChatInterface({ chatData, onOpenAnalytics }: ChatInterfaceProps)
   const { messages, isLoading, streamingState, sendMessage, clearMessages, stopGeneration } = chatData;
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const hasStreamingContent = streamingState.text || streamingState.toolCalls.length > 0 || 
-                              streamingState.images.length > 0 || streamingState.analyses.length > 0;
+  // Show streaming content when we have text, images, or analyses (not just tool calls)
+  const hasStreamingContent = streamingState.text || streamingState.images.length > 0 || streamingState.analyses.length > 0;
 
   // Auto-scroll to bottom when content updates
   useEffect(() => {

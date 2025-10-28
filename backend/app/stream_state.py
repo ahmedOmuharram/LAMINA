@@ -7,8 +7,7 @@ from .utils import (
     tool_end_event, 
     image_event, 
     analysis_event,
-    linkify_mp_numbers,
-    pretty_print_tool_output
+    linkify_mp_numbers
 )
 from ..kani_client import MPKani
 

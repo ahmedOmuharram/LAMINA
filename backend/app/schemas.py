@@ -34,8 +34,6 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
-    # Optional OpenAI-style multimodal input array, e.g. [{type: 'input_image', image: <file|b64>}]
-    input: Optional[List[Dict[str, Any]]] = None
 
 class ChatResponse(BaseModel):
     id: str

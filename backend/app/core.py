@@ -1,9 +1,9 @@
 from __future__ import annotations
 from typing import List, Iterable, Any
 from fastapi import HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 import logging
-from .schemas import ChatMessage, ChatRequest
+from .schemas import ChatMessage
 from .utils import role_header_chunk, final_stop_chunk, delta_chunk_raw, usage_event
 from .stream_state import StreamState
 from ..kani_client import MPKani
@@ -128,7 +128,8 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
             raise asyncio.CancelledError("Client disconnected")
 
     model_name = model or DEFAULT_MODEL
-    user_prompt = extract_text_from_message_content(messages[-1].content)
+    # Preserve multimodal content (text + images) for the last message
+    user_content = messages[-1].content
     prior_api_msgs = messages[:-1]
     kani_chat_history = to_kani_history(prior_api_msgs)
 
@@ -147,7 +148,8 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
     prompt_tokens = count_message_tokens(messages, model_name)
 
     try:
-        stream_iterator = kani_instance.full_round_stream(user_prompt)
+        # Pass raw content (supports both str and multimodal list)
+        stream_iterator = kani_instance.full_round_stream(user_content)
         async for stream in stream_iterator:
             # Check cancellation flag (set by background monitor)
             check_cancelled()
@@ -162,15 +164,25 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
                     yield chunk
                 continue
 
-            # For ANY other role, buffer first, then decide
+            # For ANY other role, stream tokens immediately
             yield role_header_chunk(model_name)
 
-            tmp_tokens: list[str] = []
+            # Stream tokens as they arrive for real-time display
             async for token in stream:
                 check_cancelled()
                 if token is not None:
-                    tmp_tokens.append(token)
+                    # Check if this looks like a function call tag
+                    if "<|functions." in token or "<|function." in token:
+                        # Buffer function tags - don't emit them
+                        continue
+                    
+                    # Emit token immediately for real-time streaming
+                    chunk = state.emit_stream_text(token)
+                    if chunk:
+                        accumulated_text += token
+                        yield chunk
 
+            # Get the final message to check for tool calls
             msg = await stream.message()
             
             has_tools = bool(
@@ -178,7 +190,7 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
                 getattr(msg, "function_call", None)  # older field, just in case
             )
             
-            # Register and emit tool start events
+            # Register and emit tool start events if tools were called
             if has_tools:
                 state.register_tool_calls(msg)
                 # Emit tool start events for each registered tool
@@ -187,18 +199,6 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
                         tool_name = state.tool_name_by_id.get(tc_id, "tool")
                         tool_input = state.tool_input_by_id.get(tc_id, None)
                         yield state.emit_tool_start(tool_name, tc_id, tool_input)
-
-            # Heuristic fallback: if the buffered text contains a function tag, treat as tool call
-            raw = "".join(tmp_tokens)
-            looks_like_func_tag = ("<|functions." in raw) or ("<|function." in raw)
-
-            if not (has_tools or looks_like_func_tag):
-                for tok in tmp_tokens:
-                    chunk = state.emit_stream_text(tok)
-                    if chunk:
-                        accumulated_text += tok
-                        yield chunk
-            # else: drop the prelude & markup entirely
 
         # End-of-stream safety: flush anything still buffered
         for chunk in state.flush_buffer_if_any():
@@ -260,7 +260,10 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
         pass
 
 async def do_stream_response(messages: List[ChatMessage], model: str = DEFAULT_MODEL, request: Any = None) -> StreamingResponse:
-    """Return a StreamingResponse wrapping the SSE generator."""
+    """Return a StreamingResponse wrapping the SSE generator.
+    
+    Handles both text-only and multimodal (text + images) messages.
+    """
     import asyncio
     
     async def cancellable_generator():
@@ -291,169 +294,3 @@ async def do_stream_response(messages: List[ChatMessage], model: str = DEFAULT_M
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         }
     )
-
-async def openai_stream_generator(request_like: ChatRequest, model: str) -> Iterable[str]:
-    """Stream assistant tokens from OpenAI Chat Completions when images are present.
-
-    We convert any input/image parts to OpenAI-compatible content, call with stream=True,
-    and yield SSE chunks in OpenAI Chat Completions format.
-    """
-    from openai import OpenAI
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("openai_stream_generator: ERROR - OPENAI_API_KEY is not configured", flush=True)
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
-
-    client = OpenAI(api_key=api_key)
-
-    temperature = request_like.temperature
-    max_tokens = request_like.max_tokens
-
-    # Reuse the same normalization used in do_json_response
-    msgs: List[ChatMessage] = request_like.messages
-    messages_payload: list[dict[str, Any]] = []
-    for m in msgs:
-        content = m.content
-        if isinstance(content, list):
-            normalized: list[dict[str, Any]] = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") in ("input_image", "image"):
-                    img = part.get("image") or part.get("data") or part.get("b64")
-                    mime = None
-                    if isinstance(img, dict):
-                        b64 = img.get("data") or img.get("b64") or img.get("base64")
-                        mime = img.get("mime_type") or img.get("media_type") or img.get("type") or "image/png"
-                        if isinstance(img.get("url"), str):
-                            normalized.append({"type": "image_url", "image_url": {"url": img["url"], "detail": "high"}})
-                        elif isinstance(b64, str):
-                            url = f"data:{mime};base64,{b64}"
-                            normalized.append({"type": "image_url", "image_url": {"url": url, "detail": "high"}})
-                    elif isinstance(img, str):
-                        if img.startswith("data:"):
-                            url = img
-                        else:
-                            url = f"data:{mime or 'image/png'};base64,{img}"
-                        normalized.append({"type": "image_url", "image_url": {"url": url, "detail": "high"}})
-                else:
-                    normalized.append(part if isinstance(part, dict) else part)  # pass-through
-            content = normalized
-        messages_payload.append({"role": m.role, "content": content})
-
-    # Append request.input parts if present
-    if request_like.input:
-        from .utils import _owui_input_to_image_parts
-        img_parts = _owui_input_to_image_parts(request_like.input)  # type: ignore[arg-type]
-        if messages_payload and messages_payload[-1]["role"] == "user":
-            last = messages_payload[-1]
-            if isinstance(last["content"], list):
-                last["content"].extend(img_parts)
-            else:
-                last["content"] = [{"type": "text", "text": str(last["content"])}] + img_parts
-        else:
-            messages_payload.append({"role": "user", "content": img_parts})
-
-    # Ensure there is a final user instruction text if message is image-only
-    DEFAULT_IMAGE_PROMPT = "Describe the attached image in detail."
-    if not messages_payload:
-        messages_payload.append({"role": "user", "content": [{"type": "text", "text": DEFAULT_IMAGE_PROMPT}]})
-    else:
-        last = messages_payload[-1]
-        if last.get("role") != "user":
-            messages_payload.append({"role": "user", "content": [{"type": "text", "text": DEFAULT_IMAGE_PROMPT}]})
-        else:
-            content = last.get("content")
-            if isinstance(content, list):
-                has_text = any(isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str) and p["text"].strip() for p in content)
-                has_image = any(isinstance(p, dict) and p.get("type") == "image_url" for p in content)
-                if has_image and not has_text:
-                    content.insert(0, {"type": "text", "text": DEFAULT_IMAGE_PROMPT})
-            elif isinstance(content, str):
-                if not content.strip():
-                    last["content"] = [{"type": "text", "text": DEFAULT_IMAGE_PROMPT}]
-            else:
-                last["content"] = [{"type": "text", "text": DEFAULT_IMAGE_PROMPT}]
-
-    # Convert any lingering Pydantic models to plain Python types
-    from pydantic import BaseModel as _BM
-    def to_plain(obj: Any) -> Any:
-        if isinstance(obj, _BM):
-            return {k: to_plain(v) for k, v in obj.model_dump().items()}
-        if isinstance(obj, dict):
-            return {k: to_plain(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [to_plain(v) for v in obj]
-        return obj
-    messages_payload = to_plain(messages_payload)
-
-    # Ensure we always send a role header and stream deltas
-    model_name = model or DEFAULT_MODEL
-    print(f"openai_stream_generator: starting stream with model={model_name} msgs={len(messages_payload)}", flush=True)
-    
-    # Send role header first
-    role_chunk = role_header_chunk(model_name)
-    print(f"openai_stream_generator: sending role header: {role_chunk[:100]}...", flush=True)
-    yield role_chunk
-
-    try:
-        print(f"openai_stream_generator: calling OpenAI streaming API", flush=True)
-        with client.chat.completions.stream(
-            model=model_name,
-            messages=messages_payload,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        ) as stream:
-            chunk_count = 0
-            text_chunk_count = 0
-            for event in stream:
-                chunk_count += 1
-                try:
-                    # Handle OpenAI's new streaming event format
-                    if hasattr(event, 'type') and event.type == 'content.delta':
-                        # This is a ContentDeltaEvent
-                        if hasattr(event, 'delta') and hasattr(event.delta, 'content'):
-                            text = event.delta.content
-                            if text:
-                                text_chunk_count += 1
-                                chunk = delta_chunk_raw(text, model_name)
-                                if text_chunk_count <= 3:  # Log first few text chunks
-                                    print(f"openai_stream_generator: text chunk {text_chunk_count}: '{text}' -> {chunk[:100]}...", flush=True)
-                                yield chunk
-                        elif chunk_count <= 5:
-                            print(f"openai_stream_generator: chunk {chunk_count}: ContentDeltaEvent but no delta.content", flush=True)
-                    elif hasattr(event, 'type') and event.type == 'chunk':
-                        # This is a ChunkEvent - try to extract from the raw chunk
-                        if hasattr(event, 'chunk'):
-                            chunk_obj = event.chunk
-                            if hasattr(chunk_obj, 'choices') and chunk_obj.choices:
-                                choice = chunk_obj.choices[0]
-                                if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
-                                    text = choice.delta.content
-                                    if text:
-                                        text_chunk_count += 1
-                                        chunk = delta_chunk_raw(text, model_name)
-                                        if text_chunk_count <= 3:
-                                            print(f"openai_stream_generator: text chunk {text_chunk_count}: '{text}' -> {chunk[:100]}...", flush=True)
-                                        yield chunk
-                        elif chunk_count <= 5:
-                            print(f"openai_stream_generator: chunk {chunk_count}: ChunkEvent but no extractable content", flush=True)
-                    elif chunk_count <= 5:
-                        event_type = getattr(event, 'type', 'unknown')
-                        print(f"openai_stream_generator: chunk {chunk_count}: unhandled event type {event_type}", flush=True)
-                except Exception as e:
-                    if chunk_count <= 5:
-                        print(f"openai_stream_generator: chunk {chunk_count}: error {e}", flush=True)
-                    continue
-            print(f"openai_stream_generator: stream completed, total chunks: {chunk_count}", flush=True)
-    except Exception as e:
-        _log.exception("openai_stream_generator: OpenAI streaming error")
-        print(f"openai_stream_generator: error: {e}", flush=True)
-        raise HTTPException(status_code=502, detail=f"Upstream OpenAI stream error: {e}")
-
-    print("openai_stream_generator: sending final stop chunk", flush=True)
-    yield final_stop_chunk(model_name)
-    yield "data: [DONE]\n\n"
-
-
-async def do_openai_stream_response(request_like: ChatRequest, model: str) -> StreamingResponse:
-    """Return a StreamingResponse that relays OpenAI streaming chunks for image requests."""
-    return StreamingResponse(openai_stream_generator(request_like, model), media_type="text/event-stream")
