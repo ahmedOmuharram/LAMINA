@@ -24,7 +24,7 @@ from ...shared.calphad_utils import (
     extract_phase_fractions_from_equilibrium
 )
 from .database_utils import map_phase_name
-from ...base.constants import PhaseCategory, PHASE_CLASSIFICATION
+from ...shared.constants import PhaseCategory, PHASE_CLASSIFICATION
 
 _log = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ from ...base.base import BaseHandler
 
 # Import from utility modules
 from .database_utils import is_excluded_phase, compose_alias_map
-from ...base.converters import weight_to_mole_fraction
+from ...shared.converters import weight_to_mole_fraction
 from .plotting import PlottingMixin
 from .analysis import AnalysisMixin
 from .ai_functions import AIFunctionsMixin
@@ -27,7 +27,12 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
     using pycalphad and thermodynamic databases.
     """
     
-    def __init__(self):
+    def __init__(self, mpr=None, **kwargs):
+        if mpr is not None and 'mpr' not in kwargs:
+            kwargs['mpr'] = mpr
+        super().__init__(**kwargs)
+        if mpr is not None:
+            self.mpr = mpr
         self._last_image_metadata = None
         self._last_image_data = None
         self._last_key_points = []

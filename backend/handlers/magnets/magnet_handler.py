@@ -29,27 +29,17 @@ class MagnetHandler(BaseHandler, MagnetAIFunctionsMixin):
     Focus: Permanent magnet applications where "strength" = pull force capability.
     """
     
-    def __init__(self, mpr: MPRester):
+    def __init__(self, mpr: MPRester = None, **kwargs):
         """
         Initialize the magnet handler.
         
         Args:
             mpr: MPRester client instance for Materials Project API access
         """
-        super().__init__(mpr)
-        self.recent_tool_outputs = []
+        if mpr is not None and 'mpr' not in kwargs:
+            kwargs['mpr'] = mpr
+        super().__init__(**kwargs)
+        if mpr is not None:
+            self.mpr = mpr
         _log.info("MagnetHandler initialized")
-
-
-def create_magnet_handler(mpr: MPRester) -> MagnetHandler:
-    """
-    Factory function to create a MagnetHandler instance.
-    
-    Args:
-        mpr: MPRester client instance
-        
-    Returns:
-        Configured MagnetHandler instance
-    """
-    return MagnetHandler(mpr)
 

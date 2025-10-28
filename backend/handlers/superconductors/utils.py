@@ -16,7 +16,8 @@ def analyze_cuprate_octahedral_stability(
     c_axis_spacing: Optional[float] = None,
     structure_data: Optional[Dict[str, Any]] = None,
     scenario: str = "trend_increase",  # "observed" | "trend_increase" | "trend_decrease"
-    trend_probe: float = 0.01          # ±1% hypothetical change for trend mode
+    trend_probe: float = 0.01,         # ±1% hypothetical change for trend mode
+    threshold: float = 0.01
 ) -> Dict[str, Any]:
     """
     Analyze how c-axis spacing affects Cu-O octahedral stability in cuprates.
@@ -89,8 +90,6 @@ def analyze_cuprate_octahedral_stability(
         # Thus, larger c tends to correlate with RETAINED apicals (octahedral more stable),
         # while smaller c correlates with apical loss (toward square-planar, octahedral less stable).
         
-        THRESH = 0.01  # 1% threshold
-        
         # --- Trend mode: answer the general-direction question even if Δc=0 ---
         if scenario in ("trend_increase", "trend_decrease"):
             # Use typical_c as consistent baseline for trend mode
@@ -143,14 +142,14 @@ def analyze_cuprate_octahedral_stability(
             return out
         
         # --- Observed mode: use actual Δc ---
-        if delta_c_rel > THRESH:
+        if delta_c_rel > threshold:
             stability_effect = "stabilized"
             mechanism = (
                 f"Increasing c-axis by {delta_c_abs:.3f} Å ({100*delta_c_rel:.1f}%) "
                 "correlates with retention of apical oxygen and thus stabilizes CuO6 octahedra."
             )
             claim_verdict = "TRUE"
-        elif delta_c_rel < -THRESH:
+        elif delta_c_rel < -threshold:
             stability_effect = "destabilized"
             mechanism = (
                 f"Decreasing c-axis by {abs(delta_c_abs):.3f} Å ({100*abs(delta_c_rel):.1f}%) "

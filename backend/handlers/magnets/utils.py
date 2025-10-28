@@ -16,14 +16,14 @@ from pymatgen.core import Element, Composition
 _log = logging.getLogger(__name__)
 
 # Import physical constants and converters from centralized location
-from ..base.constants import (
+from ..shared.constants import (
     MU_0,
     BOHR_MAGNETON,
     AVOGADRO,
     MU_B_TO_EMU,
     MUB_PER_BOHR3_TO_KA_PER_M,
 )
-from ..base.converters import muB_per_bohr3_to_kA_per_m
+from ..shared import muB_per_bohr3_to_kA_per_m
 
 
 def select_representative_entry(candidates, requested_formula: str):

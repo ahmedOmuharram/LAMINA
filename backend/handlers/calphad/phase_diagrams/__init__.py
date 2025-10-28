@@ -12,8 +12,8 @@ from .database_utils import (
     compose_alias_map,
 )
 from ...shared.calphad_utils import find_tdb_database
-from ...base.converters import weight_to_mole_fraction
-from ...base.constants import ELEMENT_ALIASES
+from ...shared.converters import weight_to_mole_fraction
+from ...shared.constants import ELEMENT_ALIASES
 from .plotting import PlottingMixin
 from .analysis import AnalysisMixin
 from .ai_functions import AIFunctionsMixin

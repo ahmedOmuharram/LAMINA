@@ -9,28 +9,21 @@ This package contains organized handlers for different aspects of materials scie
 - semiconductors/: Semiconductor defect and doping analysis
 - magnets/: Permanent magnet strength assessment and doping effects
 - solutes/: Lattice parameter effects of substitutional solutes in fcc matrices
+- alloys/: Alloy surface and microstructure analysis
+- superconductors/: Superconductor materials analysis
 """
 
 from .base.base import BaseHandler, InvalidRangeError
-from .base.constants import RANGE_KEYS
-from .materials import (
-    MaterialDetailsHandler, 
-    MaterialSearchHandler,
-    handle_material_details, 
-    handle_material_search,
-    handle_material_by_char
-)
-from .search import (
-    SearXNGSearchHandler, 
-    handle_searxng_search, 
-    handle_searxng_engine_stats
-)
+from .shared.constants import RANGE_KEYS
+from .materials import MaterialHandler
+from .search import SearXNGSearchHandler
 from .electrochemistry import BatteryHandler
 from .alloys import AlloyHandler
 from .superconductors import SuperconductorHandler
-from .semiconductors import SemiconductorHandler, create_semiconductor_handler
-from .magnets import MagnetHandler, create_magnet_handler
+from .semiconductors import SemiconductorHandler
+from .magnets import MagnetHandler
 from .solutes import SolutesHandler
+from .calphad import CalPhadHandler
 
 __all__ = [
     # Base classes
@@ -39,16 +32,10 @@ __all__ = [
     "RANGE_KEYS",
     
     # Materials handlers
-    "MaterialDetailsHandler",
-    "MaterialSearchHandler", 
-    "handle_material_details", 
-    "handle_material_search",
-    "handle_material_by_char",
+    "MaterialHandler",
     
     # Search handlers
     "SearXNGSearchHandler",
-    "handle_searxng_search",
-    "handle_searxng_engine_stats",
     
     # Electrochemistry handlers
     "BatteryHandler",
@@ -61,12 +48,13 @@ __all__ = [
     
     # Semiconductor handlers
     "SemiconductorHandler",
-    "create_semiconductor_handler",
     
     # Magnet handlers
     "MagnetHandler",
-    "create_magnet_handler",
     
     # Solutes handlers
     "SolutesHandler",
+    
+    # CALPHAD handlers
+    "CalPhadHandler",
 ]

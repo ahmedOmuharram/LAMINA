@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from typing import Dict, Any, Optional
 import logging
+import time
 
 from pycalphad import Database, binplot
 import pycalphad.variables as v
@@ -25,6 +26,7 @@ from ...shared.calphad_utils import (
     load_tdb_database,
     compute_equilibrium
 )
+from ...shared.result_wrappers import success_result, error_result, Confidence, ErrorType
 
 _log = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ class CoreVisualizationMixin:
         
         Currently supports Al-Zn and other systems in available .tdb databases.
         """
+        start_time = time.time()
         
         try:
             # Clear any previous plot metadata at the start of new generation
@@ -69,12 +72,28 @@ class CoreVisualizationMixin:
             # Select database based on elements
             db = load_tdb_database([A, B])
             if db is None:
-                return {"success": False, "error": "No .tdb database found for this system.", "citations": ["pycalphad"]}
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="plot_binary_phase_diagram",
+                    error="No .tdb database found for this system.",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
 
             # Ensure both elements are in the selected DB
             db_elems = get_db_elements(db)
             if not (A in db_elems and B in db_elems):
-                return {"success": False, "error": f"Elements '{A}' and '{B}' must both exist in the database ({sorted(db_elems)}).", "citations": ["pycalphad"]}
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="plot_binary_phase_diagram",
+                    error=f"Elements '{A}' and '{B}' must both exist in the database ({sorted(db_elems)}).",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             # Use A-B; x-axis will be X(B)
             elements = [A, B, 'VA']
             comp_el = B  # x variable
@@ -250,28 +269,45 @@ class CoreVisualizationMixin:
             _log.debug(f"SUCCESS MESSAGE LENGTH: {len(success_msg)} characters")
             
             # Safeguard: ensure we're not accidentally returning base64 data
+            duration_ms = (time.time() - start_time) * 1000
+            
             if "data:image/png;base64," in success_msg or len(success_msg) > 1000:
                 _log.error("ERROR - Success message contains base64 data or is too long! Truncating.")
-                result = {"success": True, "message": "Successfully generated phase diagram. Image will be displayed separately.", "citations": ["pycalphad"]}
-            else:
-                result = {"success": True, "message": success_msg, "citations": ["pycalphad"]}
+                success_msg = "Successfully generated phase diagram. Image will be displayed separately."
+            
+            result = success_result(
+                handler="calphad",
+                function="plot_binary_phase_diagram",
+                data={
+                    "message": success_msg,
+                    "system": f"{A}-{B}",
+                    "phases": phases,
+                    "temperature_range_K": [T_display_lo, T_display_hi],
+                    "key_points": key_points if key_points else []
+                },
+                citations=["pycalphad"],
+                has_image=True,
+                image_url=plot_url,
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
+            )
             
             # Store the result for tooltip display
-            if hasattr(self, 'recent_tool_outputs'):
-                self.recent_tool_outputs.append({
-                    "tool_name": "plot_binary_phase_diagram",
-                    "result": result
-                })
+            self._track_tool_output("plot_binary_phase_diagram", result)
             return result
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception(f"Error generating phase diagram for {system}")
-            result = {"success": False, "error": f"Failed to generate phase diagram for {system}: {str(e)}", "citations": ["pycalphad"]}
-            if hasattr(self, 'recent_tool_outputs'):
-                self.recent_tool_outputs.append({
-                    "tool_name": "plot_binary_phase_diagram",
-                    "result": result
-                })
+            result = error_result(
+                handler="calphad",
+                function="plot_binary_phase_diagram",
+                error=f"Failed to generate phase diagram for {system}: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
+            self._track_tool_output("plot_binary_phase_diagram", result)
             return result
 
     @ai_function(desc="PREFERRED for composition-specific thermodynamic questions. Plot phase stability vs temperature for a specific composition. Use for queries like 'Al20Zn80', 'Al80Zn20', single elements like 'Zn' or 'Al', melting point questions, phase transitions. Shows which phases are stable at different temperatures.")
@@ -301,6 +337,8 @@ class CoreVisualizationMixin:
             - Stores URLs and metadata in self._last_image_url, self._last_html_url, and self._last_image_metadata
             - Files are served at http://localhost:8000/static/plots/[filename]
         """
+        start_time = time.time()
+        
         try:
             # reset previous artifacts
             if hasattr(self, '_last_image_metadata'):
@@ -314,12 +352,28 @@ class CoreVisualizationMixin:
             # Load database with element-based selection
             db = load_tdb_database([A, B])
             if db is None:
-                return f"No thermodynamic database found for {A}-{B} system."
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="plot_composition_temperature",
+                    error=f"No thermodynamic database found for {A}-{B} system.",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Check elements exist in database
             db_elems = get_db_elements(db)
             if not (A in db_elems and B in db_elems):
-                return f"Elements '{A}' and '{B}' not found in database. Available: {sorted(db_elems)}"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="plot_composition_temperature",
+                    error=f"Elements '{A}' and '{B}' not found in database. Available: {sorted(db_elems)}",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Set temperature range with AUTO detection (same as plot_binary_phase_diagram)
             auto_T = (min_temperature is None and max_temperature is None)
@@ -442,8 +496,28 @@ class CoreVisualizationMixin:
                 }
                 setattr(self, '_last_image_metadata', metadata)
                 
-                return (f"Generated phase stability plot for {comp_label} composition showing phase fractions vs temperature.\n\n"
-                       f"📊 [View Interactive Plot]({html_url}) - Click to explore the interactive Plotly version with hover details and zoom.")
+                duration_ms = (time.time() - start_time) * 1000
+                result = success_result(
+                    handler="calphad",
+                    function="plot_composition_temperature",
+                    data={
+                        "message": f"Generated phase stability plot for {comp_label} composition showing phase fractions vs temperature.",
+                        "composition": comp_label,
+                        "system": f"{A}-{B}",
+                        "temperature_range_K": list(temp_range),
+                        "composition_type": comp_type,
+                        "interactive_html_url": html_url
+                    },
+                    citations=["pycalphad"],
+                    has_image=True,
+                    image_url=png_url,
+                    has_html=True,
+                    html_url=html_url,
+                    confidence=Confidence.HIGH,
+                    notes=[f"📊 View interactive plot at {html_url} for hover details and zoom"],
+                    duration_ms=duration_ms
+                )
+                return result
             
             else:
                 # Create static matplotlib plot
@@ -481,11 +555,36 @@ class CoreVisualizationMixin:
                 }
                 setattr(self, '_last_image_metadata', metadata)
                 
-                return {"success": True, "message": f"Generated phase stability plot for {comp_label} composition showing phase fractions vs temperature.", "citations": ["pycalphad"]}
+                duration_ms = (time.time() - start_time) * 1000
+                return success_result(
+                    handler="calphad",
+                    function="plot_composition_temperature",
+                    data={
+                        "message": f"Generated phase stability plot for {comp_label} composition showing phase fractions vs temperature.",
+                        "composition": comp_label,
+                        "system": f"{A}-{B}",
+                        "temperature_range_K": list(temp_range),
+                        "composition_type": comp_type,
+                        "phases": phases
+                    },
+                    citations=["pycalphad"],
+                    has_image=True,
+                    image_url=plot_url,
+                    confidence=Confidence.HIGH,
+                    duration_ms=duration_ms
+                )
                 
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception(f"Error generating composition-temperature plot for {composition}")
-            return {"success": False, "error": f"Failed to generate composition-temperature plot: {str(e)}", "citations": ["pycalphad"]}
+            return error_result(
+                handler="calphad",
+                function="plot_composition_temperature",
+                error=f"Failed to generate composition-temperature plot: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
 
     @ai_function(desc="Analyze and interpret the most recently generated phase diagram or composition plot. Provides detailed analysis of visual features, phase boundaries, and thermodynamic insights based on the actual generated plot.")
     async def analyze_last_generated_plot(self) -> str:
@@ -495,11 +594,20 @@ class CoreVisualizationMixin:
         This function provides detailed analysis of the visual content and thermodynamic features
         of the last generated plot, allowing the model to "see" and interpret its own output.
         """
+        start_time = time.time()
         
         # Check if we have metadata from a recently generated plot
         metadata = getattr(self, '_last_image_metadata', None)
         if not metadata:
-            return {"success": False, "error": "No recently generated phase diagram or composition plot available to analyze. Please generate a plot first using plot_binary_phase_diagram() or plot_composition_temperature().", "citations": ["pycalphad"]}
+            duration_ms = (time.time() - start_time) * 1000
+            return error_result(
+                handler="calphad",
+                function="analyze_last_generated_plot",
+                error="No recently generated phase diagram or composition plot available to analyze. Please generate a plot first using plot_binary_phase_diagram() or plot_composition_temperature().",
+                error_type=ErrorType.NOT_FOUND,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
         
         # Extract analysis components
         visual_analysis = metadata.get("visual_analysis", "")
@@ -508,9 +616,36 @@ class CoreVisualizationMixin:
         
         # Check if image data is available (may be cleared after display to save memory)
         image_data = getattr(self, '_last_image_data', None)
+        duration_ms = (time.time() - start_time) * 1000
+        
         if not image_data:
-            return {"success": True, "message": f"Plot analysis (image data cleared to save memory):\n\n{combined_analysis}", "citations": ["pycalphad"]}
+            return success_result(
+                handler="calphad",
+                function="analyze_last_generated_plot",
+                data={
+                    "message": combined_analysis,
+                    "analysis": combined_analysis,
+                    "image_data_available": False
+                },
+                citations=["pycalphad"],
+                notes=["Image data cleared to save memory"],
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
+            )
         
         # Return the combined analysis
-        return {"success": True, "message": combined_analysis, "citations": ["pycalphad"]}
+        return success_result(
+            handler="calphad",
+            function="analyze_last_generated_plot",
+            data={
+                "message": combined_analysis,
+                "analysis": combined_analysis,
+                "visual_analysis": visual_analysis,
+                "thermodynamic_analysis": thermodynamic_analysis,
+                "image_data_available": True
+            },
+            citations=["pycalphad"],
+            confidence=Confidence.HIGH,
+            duration_ms=duration_ms
+        )
 

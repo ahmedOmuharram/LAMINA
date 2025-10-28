@@ -9,6 +9,7 @@ Contains equilibrium calculation and phase fraction analysis functions:
 import numpy as np
 from typing import Optional
 import logging
+import time
 
 from pycalphad import Database, equilibrium
 import pycalphad.variables as v
@@ -22,6 +23,7 @@ from ...shared.calphad_utils import (
     get_phase_fraction_by_base_name,
     load_tdb_database
 )
+from ...shared.result_wrappers import success_result, error_result, Confidence, ErrorType
 
 _log = logging.getLogger(__name__)
 
@@ -46,12 +48,22 @@ class CalculationsMixin:
         Returns:
             Formatted text with phase fractions and per-phase compositions.
         """
+        start_time = time.time()
+        
         try:
             # Parse composition string (e.g., "Al30Si55C15" -> {AL: 0.30, SI: 0.55, C: 0.15})
             # Note: Always returns atomic (mole) fractions, converting from weight if needed
             comp_dict = self._parse_multicomponent_composition(composition, composition_type)
             if not comp_dict:
-                return f"Failed to parse composition: {composition}. Use format like 'Al30Si55C15' or 'Fe70Cr20Ni10'"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="calculate_equilibrium_at_point",
+                    error=f"Failed to parse composition: {composition}. Use format like 'Al30Si55C15' or 'Fe70Cr20Ni10'",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             elements = list(comp_dict.keys())
             system_str = "-".join(elements)
@@ -59,7 +71,15 @@ class CalculationsMixin:
             # Load database (pass elements to select appropriate .tdb)
             db = load_tdb_database(elements)
             if db is None:
-                return f"No thermodynamic database found for {system_str} system."
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="calculate_equilibrium_at_point",
+                    error=f"No thermodynamic database found for {system_str} system.",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Get phases - use correct filter for binary vs multicomponent
             if len(elements) == 2:
@@ -141,11 +161,33 @@ class CalculationsMixin:
             
             response_lines.append(f"\n**Total phase fraction**: {total_fraction*100:.2f}%")
             
-            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
+            duration_ms = (time.time() - start_time) * 1000
+            return success_result(
+                handler="calphad",
+                function="calculate_equilibrium_at_point",
+                data={
+                    "message": "\n".join(response_lines),
+                    "temperature_K": temperature,
+                    "composition": comp_str,
+                    "phases": phase_info,
+                    "total_fraction": total_fraction
+                },
+                citations=["pycalphad"],
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
+            )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception(f"Error calculating equilibrium at {temperature}K for {composition}")
-            return {"success": False, "error": f"Failed to calculate equilibrium: {str(e)}", "citations": ["pycalphad"]}
+            return error_result(
+                handler="calphad",
+                function="calculate_equilibrium_at_point",
+                error=f"Failed to calculate equilibrium: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
     
     @ai_function(desc="Calculate how phase fractions change with temperature for a specific composition. Essential for understanding precipitation, dissolution, and phase transformations. Returns phase fraction data across temperature range.")
     async def calculate_phase_fractions_vs_temperature(
@@ -167,11 +209,21 @@ class CalculationsMixin:
         
         Returns detailed phase fraction data and analysis.
         """
+        start_time = time.time()
+        
         try:
             # Parse composition (always returns atomic/mole fractions, converting from weight if needed)
             comp_dict = self._parse_multicomponent_composition(composition, composition_type)
             if not comp_dict:
-                return f"Failed to parse composition: {composition}"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="calculate_phase_fractions_vs_temperature",
+                    error=f"Failed to parse composition: {composition}",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             elements = list(comp_dict.keys())
             system_str = "-".join(elements)
@@ -179,7 +231,15 @@ class CalculationsMixin:
             # Load database (pass elements to select appropriate .tdb)
             db = load_tdb_database(elements)
             if db is None:
-                return f"No thermodynamic database found for {system_str} system."
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="calculate_phase_fractions_vs_temperature",
+                    error=f"No thermodynamic database found for {system_str} system.",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Get phases - use correct filter for binary vs multicomponent
             if len(elements) == 2:
@@ -277,11 +337,34 @@ class CalculationsMixin:
                 'composition_str': comp_str
             })
             
-            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
+            duration_ms = (time.time() - start_time) * 1000
+            return success_result(
+                handler="calphad",
+                function="calculate_phase_fractions_vs_temperature",
+                data={
+                    "message": "\n".join(response_lines),
+                    "composition": comp_str,
+                    "temperature_range_K": [min_temperature, max_temperature],
+                    "temperature_points": len(temps),
+                    "phase_evolution": {phase: {"start": fractions[0], "end": fractions[-1], "max": max(fractions)}
+                                      for phase, fractions in phase_fractions.items() if max(fractions) > 1e-6}
+                },
+                citations=["pycalphad"],
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
+            )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception(f"Error calculating phase fractions vs temperature")
-            return {"success": False, "error": f"Failed to calculate phase fractions vs temperature: {str(e)}", "citations": ["pycalphad"]}
+            return error_result(
+                handler="calphad",
+                function="calculate_phase_fractions_vs_temperature",
+                error=f"Failed to calculate phase fractions vs temperature: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
     
     @ai_function(desc="Analyze whether a specific phase increases or decreases with temperature. Use to verify statements about precipitation or dissolution behavior.")
     async def analyze_phase_fraction_trend(
@@ -302,12 +385,22 @@ class CalculationsMixin:
         
         Returns detailed analysis with verification of expected trends.
         """
+        start_time = time.time()
+        
         try:
             # Parse composition (note: expected_trend doesn't have composition_type, default to atomic)
             # Always returns atomic/mole fractions
             comp_dict = self._parse_multicomponent_composition(composition, composition_type="atomic")
             if not comp_dict:
-                return f"Failed to parse composition: {composition}"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="analyze_phase_fraction_trend",
+                    error=f"Failed to parse composition: {composition}",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             elements = list(comp_dict.keys())
             system_str = "-".join(elements)
@@ -315,7 +408,15 @@ class CalculationsMixin:
             # Load database (pass elements to select appropriate .tdb)
             db = load_tdb_database(elements)
             if db is None:
-                return f"No thermodynamic database found for {system_str} system."
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="analyze_phase_fraction_trend",
+                    error=f"No thermodynamic database found for {system_str} system.",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Debug: List all available phases in the database
             available_phases = {p.name for p in db.phases.values()}
@@ -337,7 +438,15 @@ class CalculationsMixin:
             # Check if phase exists in database
             if phase_name_upper not in phases and phase_name not in phases:
                 available = ", ".join(sorted(phases))
-                return f"Phase '{phase_name}' not found in database. Available phases: {available}"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="analyze_phase_fraction_trend",
+                    error=f"Phase '{phase_name}' not found in database. Available phases: {available}",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             phase_to_track = phase_name_upper if phase_name_upper in phases else phase_name
             
@@ -448,9 +557,38 @@ class CalculationsMixin:
                 else:
                     response_lines.append(f"\n❌ **Verification**: The expected trend ('{expected_trend}') **does NOT match** the calculated behavior.")
             
-            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
+            duration_ms = (time.time() - start_time) * 1000
+            return success_result(
+                handler="calphad",
+                function="analyze_phase_fraction_trend",
+                data={
+                    "message": "\n".join(response_lines),
+                    "phase": phase_to_track,
+                    "composition": comp_str,
+                    "temperature_range_K": [min_temperature, max_temperature],
+                    "trend": trend,
+                    "fraction_change": delta,
+                    "fraction_at_low_T": frac_low_T,
+                    "fraction_at_high_T": frac_high_T,
+                    "max_fraction": max_frac,
+                    "min_fraction": min_frac,
+                    "expected_trend": expected_trend,
+                    "matches_expectation": matches if expected_trend else None
+                },
+                citations=["pycalphad"],
+                confidence=Confidence.HIGH if matches or expected_trend is None else Confidence.MEDIUM,
+                duration_ms=duration_ms
+            )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception(f"Error analyzing phase fraction trend")
-            return {"success": False, "error": f"Failed to analyze phase fraction trend: {str(e)}", "citations": ["pycalphad"]}
+            return error_result(
+                handler="calphad",
+                function="analyze_phase_fraction_trend",
+                error=f"Failed to analyze phase fraction trend: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
 

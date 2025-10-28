@@ -9,12 +9,13 @@ The implementation is modular, with specialized utilities organized into separat
 """
 from __future__ import annotations
 import logging
+import time
 from typing import Any, Dict, Optional, Annotated
 from kani import ai_function, AIParam
 
-from ..base.base import BaseHandler
-from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
-from ..base.constants import (
+from ..base import BaseHandler
+from ..shared import success_result, error_result, ErrorType, Confidence
+from ..shared.constants import (
     ADS_OVER_COH_111,
     ADS_OVER_COH_100,
     ADS_OVER_COH_110,
@@ -41,8 +42,14 @@ class AlloyHandler(BaseHandler):
     2. Comprehensive alloy microstructure and mechanical property assessment
     """
 
-    def __init__(self, mpr_client: Optional[object] = None) -> None:
-        super().__init__(mpr_client)
+    def __init__(self, mpr_client: Optional[object] = None, **kwargs) -> None:
+        # Store mpr_client as mpr for BaseHandler
+        if mpr_client is not None and 'mpr' not in kwargs:
+            kwargs['mpr'] = mpr_client
+        super().__init__(**kwargs)
+        # Also set self.mpr if needed (for compatibility)
+        if mpr_client is not None:
+            self.mpr = mpr_client
         _log.info("AlloyHandler initialized")
 
     @ai_function(
@@ -66,6 +73,8 @@ class AlloyHandler(BaseHandler):
         the activation energy for an adatom diffusing on a metal surface.
         Facet-specific scaling is applied.
         """
+        start_time = time.time()
+        
         try:
             ad = adatom_element.capitalize()
             host = host_element.capitalize()
@@ -76,6 +85,7 @@ class AlloyHandler(BaseHandler):
             r_host = get_metal_radius(host)
 
             if ecoh_host is None or r_ad is None or r_host is None:
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="alloys",
                     function="estimate_surface_diffusion_barrier",
@@ -88,7 +98,8 @@ class AlloyHandler(BaseHandler):
                             "radius_adatom": r_ad,
                             "radius_host": r_host,
                         }
-                    }
+                    },
+                    duration_ms=duration_ms
                 )
 
             facet, facet_mult, mechanism, diff_over_ads = normalize_surface(surface_miller)
@@ -115,6 +126,8 @@ class AlloyHandler(BaseHandler):
 
             # Confidence: facet specified → medium; unspecified → low
             confidence = "high" if facet in ("111", "100", "110") else "low"
+
+            duration_ms = (time.time() - start_time) * 1000
 
             return success_result(
                 handler="alloys",
@@ -151,16 +164,19 @@ class AlloyHandler(BaseHandler):
                     "Heuristic scaling; actual barriers depend on site, mechanism (hopping vs exchange), "
                     "and reconstruction/segregation.",
                     "Use DFT+NEB for accuracy; consider alloying tendencies."
-                ]
+                ],
+                duration_ms=duration_ms
             )
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error estimating surface diffusion barrier for {adatom_element} on {host_element}: {e}", exc_info=True)
             return error_result(
                 handler="alloys",
                 function="estimate_surface_diffusion_barrier",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=["mendeleev", "pymatgen"]
+                citations=["mendeleev", "pymatgen"],
+                duration_ms=duration_ms
             )
 
     @ai_function(
@@ -194,16 +210,20 @@ class AlloyHandler(BaseHandler):
         and stiffness (elastic modulus) changes based on thermodynamic calculations (CALPHAD),
         mechanical property estimates (Materials Project), and rule-of-mixtures stiffness modeling.
         """
+        start_time = time.time()
+        
         try:
             # Parse system
             system_elems, error = parse_system_string(system)
             if error:
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="alloys",
                     function="assess_phase_strength_and_stiffness_claims",
                     error=error,
                     error_type=ErrorType.INVALID_INPUT,
-                    suggestions=["Use format like 'Fe-Al' for binary systems or 'Al-Mg-Zn' for ternary systems"]
+                    suggestions=["Use format like 'Fe-Al' for binary systems or 'Al-Mg-Zn' for ternary systems"],
+                    duration_ms=duration_ms
                 )
             
             expected_elements = set(system_elems)
@@ -211,12 +231,14 @@ class AlloyHandler(BaseHandler):
             # Parse composition
             comp_dict, error = parse_composition_string(composition, expected_elements)
             if error:
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="alloys",
                     function="assess_phase_strength_and_stiffness_claims",
                     error=f"Could not parse composition: '{composition}'. {error}",
                     error_type=ErrorType.INVALID_INPUT,
-                    suggestions=["Use format like 'Fe30Al70' (concatenated) or 'Al-8Mg-4Zn' (hyphenated)"]
+                    suggestions=["Use format like 'Fe30Al70' (concatenated) or 'Al-8Mg-4Zn' (hyphenated)"],
+                    duration_ms=duration_ms
                 )
             
             _log.info(f"Assessing {system} at composition {comp_dict} and T={temperature_K}K")
@@ -236,13 +258,15 @@ class AlloyHandler(BaseHandler):
             )
             
             if not microstructure.get("success"):
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="alloys",
                     function="assess_phase_strength_and_stiffness_claims",
                     error=f"Failed to compute equilibrium: {microstructure.get('error')}",
                     error_type=ErrorType.COMPUTATION_ERROR,
                     citations=["pycalphad"],
-                    diagnostics={"equilibrium_microstructure": microstructure}
+                    diagnostics={"equilibrium_microstructure": microstructure},
+                    duration_ms=duration_ms
                 )
             
             # Step 2: Get mechanical descriptors for all phases
@@ -284,6 +308,8 @@ class AlloyHandler(BaseHandler):
                 claimed_matrix_phase
             )
             
+            duration_ms = (time.time() - start_time) * 1000
+            
             return success_result(
                 handler="alloys",
                 function="assess_phase_strength_and_stiffness_claims",
@@ -307,15 +333,18 @@ class AlloyHandler(BaseHandler):
                     "CALPHAD predictions assume equilibrium conditions",
                     "Actual microstructure may differ due to kinetic effects",
                     "Mechanical property estimates are based on bulk elastic moduli"
-                ]
+                ],
+                duration_ms=duration_ms
             )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error in assess_phase_strength_claim: {e}", exc_info=True)
             return error_result(
                 handler="alloys",
                 function="assess_phase_strength_and_stiffness_claims",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=["pycalphad", "Materials Project"]
+                citations=["pycalphad", "Materials Project"],
+                duration_ms=duration_ms
             )

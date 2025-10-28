@@ -9,7 +9,7 @@ This module handles surface-specific calculations including:
 from __future__ import annotations
 import logging
 from typing import Optional, Tuple
-from ..base.constants import (
+from ..shared.constants import (
     DIFF_OVER_ADS_111,
     DIFF_OVER_ADS_100,
     DIFF_OVER_ADS_110,

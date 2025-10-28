@@ -6,10 +6,11 @@ using SearXNG metasearch engine.
 """
 
 import logging
+import time
 from typing import Any, Dict, Annotated
 
 from kani import ai_function, AIParam
-from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
+from ..shared import success_result, error_result, ErrorType, Confidence
 
 _log = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class SearchAIFunctionsMixin:
         min_score: Annotated[float, AIParam(desc="Minimum score threshold for content extraction")] = 5.0
     ) -> Dict[str, Any]:
         """Search the web and scientific literature using SearXNG for any topic."""
+        start_time = time.time()
+        
         params = {
             'query': query,
             'search_type': search_type,
@@ -49,37 +52,83 @@ class SearchAIFunctionsMixin:
         
         util_result = self.handle_searxng_search(params)
         
+        duration_ms = (time.time() - start_time) * 1000
+        
         if not util_result.get("success"):
             result = error_result(
                 handler="search",
                 function="search_web",
                 error=util_result.get("error", "Search failed"),
                 error_type=ErrorType.API_ERROR,
-                citations=["Web Search"]
+                citations=["Web Search"],
+                duration_ms=duration_ms
             )
         else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
+            # Extract the enriched data
+            raw_data = util_result.get("data", {})
+            
+            # Build layered response with digestible components
+            high_level_summary = raw_data.get("high_level_summary", {})
+            ranked_results = raw_data.get("ranked_results", [])
+            extracted_enriched = raw_data.get("extracted_enriched", [])
+            
+            # Build citation list from top ranked results
+            top_citations = [r.get("url") for r in ranked_results[:5] if r.get("url")]
+            
+            # Create comprehensive but organized response
+            layered_data = {
+                # LAYER 1: High-level synthesis (what the AI should read first)
+                "high_level_summary": high_level_summary,
+                
+                # LAYER 2: Top results (lightweight, ranked, ready to present)
+                "top_results": ranked_results[:10],  # Top 10 ranked results
+                
+                # LAYER 3: Enriched content with summaries (deeper dive)
+                "extracted_enriched": extracted_enriched[:5],  # Top 5 with full summaries
+                
+                # LAYER 4: Metadata and stats
+                "stats": {
+                    "total_results": len(ranked_results),
+                    "total_enriched": len(extracted_enriched),
+                    "num_academic": sum(1 for r in ranked_results if r.get("is_academic", False)),
+                    "unique_domains": len(set(r.get("source_domain") for r in ranked_results if r.get("source_domain"))),
+                    "extraction_summary": raw_data.get("extraction_summary", {})
+                },
+                
+                # LAYER 5: Full raw data (for debugging/deep analysis)
+                "raw": raw_data
+            }
+            
+            # Use calculated confidence from pipeline
+            calculated_confidence = util_result.get("confidence", Confidence.MEDIUM)
+            
             result = success_result(
                 handler="search",
                 function="search_web",
-                data=data,
-                citations=["Web Search"],
-                confidence=Confidence.HIGH if data.get("results") else Confidence.LOW,
-                notes=[f"Search type: {search_type}", f"Query: {query}"]
+                data=layered_data,
+                citations=top_citations or ["Web Search"],
+                confidence=calculated_confidence,
+                notes=[
+                    f"Search type: {search_type}",
+                    f"Query: {query}",
+                    f"Found {len(ranked_results)} results from {layered_data['stats']['unique_domains']} domains",
+                    f"Academic sources: {layered_data['stats']['num_academic']}"
+                ],
+                duration_ms=duration_ms
             )
         
         # Store the result for tooltip display
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "search_web",
-                "result": result
-            })
+        self._track_tool_output("search_web", result)
         return result
 
     @ai_function(desc="Get information about available search engines and their status in SearXNG.", auto_truncate=128000)
     async def get_search_engines(self) -> Dict[str, Any]:
         """Get information about available search engines and their status."""
+        start_time = time.time()
+        
         util_result = self.handle_searxng_engine_stats({})
+        
+        duration_ms = (time.time() - start_time) * 1000
         
         if not util_result.get("success"):
             result = error_result(
@@ -87,7 +136,8 @@ class SearchAIFunctionsMixin:
                 function="get_search_engines",
                 error=util_result.get("error", "Failed to get engine stats"),
                 error_type=ErrorType.API_ERROR,
-                citations=["Web Search"]
+                citations=["Web Search"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -97,13 +147,10 @@ class SearchAIFunctionsMixin:
                 data=data,
                 citations=["Web Search"],
                 confidence=Confidence.HIGH,
-                notes=["Engine statistics from SearXNG instance"]
+                notes=["Engine statistics from SearXNG instance"],
+                duration_ms=duration_ms
             )
         
         # Store the result for tooltip display
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "get_search_engines",
-                "result": result
-            })
+        self._track_tool_output("get_search_engines", result)
         return result

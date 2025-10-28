@@ -9,6 +9,7 @@ Contains sophisticated verification and fact-checking functions:
 import numpy as np
 from typing import Dict, Any, Optional, List
 import logging
+import time
 
 from pycalphad import Database
 from kani.ai_function import ai_function
@@ -21,6 +22,7 @@ from .verification_utils import (
     get_phases_for_elements
 )
 from ...shared.calphad_utils import load_tdb_database, compute_equilibrium
+from ...shared.result_wrappers import success_result, error_result, Confidence, ErrorType
 
 _log = logging.getLogger(__name__)
 
@@ -55,6 +57,8 @@ class VerificationMixin:
         - Whether the specified phase forms above/below threshold
         - Phase fractions across the composition range
         """
+        start_time = time.time()
+        
         try:
             from pycalphad import Database, equilibrium, variables as v
             import numpy as np
@@ -65,7 +69,15 @@ class VerificationMixin:
             elements = [e for e in elements if len(e) <= 2 and e.isalpha()]
             
             if len(elements) < 2:
-                return f"System must have at least 2 elements. Got: {system}"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="verify_phase_formation_across_composition",
+                    error=f"System must have at least 2 elements. Got: {system}",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             is_ternary = len(elements) >= 3
             system_str = "-".join(elements)
@@ -73,18 +85,50 @@ class VerificationMixin:
             # Validate threshold element
             threshold_elem = threshold_element.strip().upper()
             if threshold_elem not in elements:
-                return f"Element '{threshold_element}' not found in system {system_str}. Must be one of: {', '.join(elements)}"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="verify_phase_formation_across_composition",
+                    error=f"Element '{threshold_element}' not found in system {system_str}. Must be one of: {', '.join(elements)}",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # For ternary systems, validate fixed element
             if is_ternary:
                 if not fixed_element or fixed_composition is None:
-                    return f"For ternary system {system_str}, must specify fixed_element and fixed_composition"
+                    duration_ms = (time.time() - start_time) * 1000
+                    return error_result(
+                        handler="calphad",
+                        function="verify_phase_formation_across_composition",
+                        error=f"For ternary system {system_str}, must specify fixed_element and fixed_composition",
+                        error_type=ErrorType.INVALID_INPUT,
+                        citations=["pycalphad"],
+                        duration_ms=duration_ms
+                    )
                 
                 fixed_elem = fixed_element.strip().upper()
                 if fixed_elem not in elements:
-                    return f"Fixed element '{fixed_element}' not found in system {system_str}"
+                    duration_ms = (time.time() - start_time) * 1000
+                    return error_result(
+                        handler="calphad",
+                        function="verify_phase_formation_across_composition",
+                        error=f"Fixed element '{fixed_element}' not found in system {system_str}",
+                        error_type=ErrorType.INVALID_INPUT,
+                        citations=["pycalphad"],
+                        duration_ms=duration_ms
+                    )
                 if fixed_elem == threshold_elem:
-                    return f"Fixed element and threshold element cannot be the same"
+                    duration_ms = (time.time() - start_time) * 1000
+                    return error_result(
+                        handler="calphad",
+                        function="verify_phase_formation_across_composition",
+                        error=f"Fixed element and threshold element cannot be the same",
+                        error_type=ErrorType.INVALID_INPUT,
+                        citations=["pycalphad"],
+                        duration_ms=duration_ms
+                    )
                 
                 # The third element is the balance
                 balance_elem = [e for e in elements if e not in [threshold_elem, fixed_elem]][0]
@@ -96,7 +140,15 @@ class VerificationMixin:
             # Load database
             db = load_tdb_database(elements)
             if db is None:
-                return f"No thermodynamic database found for {system_str} system."
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="verify_phase_formation_across_composition",
+                    error=f"No thermodynamic database found for {system_str} system.",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Get phases
             if len(elements) == 2:
@@ -142,7 +194,15 @@ class VerificationMixin:
             
             # Final check: did we find any matching phase?
             if not phase_to_check:
-                return f"Phase '{phase_name}' not found in database. Available phases: {', '.join(available_phases)}. Try using exact database names or categories like: fcc, bcc, hcp, tau, laves, gamma"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="verify_phase_formation_across_composition",
+                    error=f"Phase '{phase_name}' not found in database. Available phases: {', '.join(available_phases)}. Try using exact database names or categories like: fcc, bcc, hcp, tau, laves, gamma",
+                    error_type=ErrorType.NOT_FOUND,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Determine the set of database phase names to aggregate
             target_names = set(candidate_phases) if candidate_phases else {phase_to_check}
@@ -231,7 +291,15 @@ class VerificationMixin:
                     continue
             
             if not results:
-                return f"Failed to calculate equilibrium for any compositions in {system_str} at {temperature}K"
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="verify_phase_formation_across_composition",
+                    error=f"Failed to calculate equilibrium for any compositions in {system_str} at {temperature}K",
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
             # Analyze results around threshold
             threshold_pct = composition_threshold
@@ -408,11 +476,41 @@ class VerificationMixin:
                 element_values = " | ".join([f"{r[f'at_pct_{el}']:.1f}" for el in elements])
                 response_lines.append(f"| {element_values} | {present} | {fraction} | {other_phases} |")
             
-            return {"success": True, "message": "\n".join(response_lines), "citations": ["pycalphad"]}
+            duration_ms = (time.time() - start_time) * 1000
+            return success_result(
+                handler="calphad",
+                function="verify_phase_formation_across_composition",
+                data={
+                    "message": "\n".join(response_lines),
+                    "system": system_str,
+                    "phase": display_name,
+                    "threshold": {"element": threshold_elem, "value_at_pct": threshold_pct},
+                    "temperature_K": temperature,
+                    "verification_summary": {
+                        "phase_count_below": phase_count_below,
+                        "phase_count_above": phase_count_above,
+                        "total_below": total_below,
+                        "total_above": total_above,
+                        "fraction_below": fraction_below,
+                        "fraction_above": fraction_above
+                    }
+                },
+                citations=["pycalphad"],
+                confidence=Confidence.HIGH if (fraction_above > 0 and fraction_below == 0) else Confidence.MEDIUM,
+                duration_ms=duration_ms
+            )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception(f"Error verifying phase formation across composition")
-            return {"success": False, "error": f"Failed to verify phase formation: {str(e)}", "citations": ["pycalphad"]}
+            return error_result(
+                handler="calphad",
+                function="verify_phase_formation_across_composition",
+                error=f"Failed to verify phase formation: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
     
     @ai_function(desc="Sweep composition space and evaluate whether a microstructure claim holds across an entire region. Use this to test universal claims like 'all Al-Mg-Zn alloys with Mg<8 at.% and Zn<4 at.% form desirable fcc+tau microstructures'. Returns grid of results and overall verdict.")
     async def sweep_microstructure_claim_over_region(
@@ -446,6 +544,8 @@ class VerificationMixin:
         
         Note: Weight percent (wt.%) is not yet fully implemented.
         """
+        start_time = time.time()
+        
         try:
             import json
             import numpy as np
@@ -770,8 +870,16 @@ class VerificationMixin:
             return result_dict
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception("Error in region sweep fact-check")
-            return {"success": False, "error": f"Region sweep failed: {str(e)}", "citations": ["pycalphad"]}
+            return error_result(
+                handler="calphad",
+                function="sweep_microstructure_claim_over_region",
+                error=f"Region sweep failed: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )
     
     @ai_function(desc="Evaluate microstructure claims for multicomponent alloys. Use this to fact-check metallurgical assertions like 'Al-8Mg-4Zn forms fcc + tau phase with tau < 20%' or 'eutectic composition shows >20% intermetallics'. Returns detailed verdict with score (-2 to +2) and supporting thermodynamic data.")
     async def fact_check_microstructure_claim(
@@ -821,12 +929,14 @@ class VerificationMixin:
         - Claim: "Eutectic Al-Mg-Zn (~34.5% Mg, 5% Zn) has >20% tau after casting"
           → claim_type='phase_fraction', phase_to_check='tau', min_fraction=0.20, process_type='as_cast'
         """
+        start_time = time.time()
+        
         try:
             from .fact_checker import (
                 AlloyFactChecker, TwoPhaseChecker, ThreePhaseChecker, 
                 PhaseFractionChecker, interpret_microstructure
             )
-            from ...base.converters import atpct_to_molefrac
+            from ...shared.converters import atpct_to_molefrac
             from .solidification_utils import (
                 simulate_as_cast_microstructure_simple,
                 mechanical_desirability_score
@@ -1146,5 +1256,13 @@ class VerificationMixin:
                 return {"success": False, "error": "No results from fact-checker", "citations": ["pycalphad"]}
                 
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.exception(f"Error in fact-check microstructure claim")
-            return {"success": False, "error": f"Fact-check failed: {str(e)}", "citations": ["pycalphad"]}
+            return error_result(
+                handler="calphad",
+                function="fact_check_microstructure_claim",
+                error=f"Fact-check failed: {str(e)}",
+                error_type=ErrorType.COMPUTATION_ERROR,
+                citations=["pycalphad"],
+                duration_ms=duration_ms
+            )

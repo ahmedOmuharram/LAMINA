@@ -5,10 +5,11 @@ This module contains all AI-accessible functions for analyzing superconducting
 materials, particularly cuprates and their structural properties.
 """
 import logging
+import time
 from typing import Any, Dict, Optional, Annotated
 
 from kani import ai_function, AIParam
-from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
+from ..shared import success_result, error_result, ErrorType, Confidence
 
 from . import utils
 
@@ -43,6 +44,8 @@ class SuperconductorAIFunctionsMixin:
         - Verdict on user's claim
         - Structural details (typical bond distances, coordination)
         """
+        start_time = time.time()
+        
         try:
             # Get structure from Materials Project if available
             structure_data = None
@@ -94,6 +97,8 @@ class SuperconductorAIFunctionsMixin:
                 "Ueda et al., Physica C (2010): T′-La2CuO4+δ c ≈ 12.568 Å (consistent with apical-O removal)."
             ])
             
+            duration_ms = (time.time() - start_time) * 1000
+            
             result = success_result(
                 handler="superconductors",
                 function="analyze_cuprate_octahedral_stability",
@@ -101,17 +106,20 @@ class SuperconductorAIFunctionsMixin:
                 citations=citations,
                 confidence=Confidence.MEDIUM,
                 notes=["Analysis based on cuprate crystal chemistry and structural trends"],
-                caveats=["Simplified model based on apical Cu-O bond length changes", "Does not include electronic structure effects"]
+                caveats=["Simplified model based on apical Cu-O bond length changes", "Does not include electronic structure effects"],
+                duration_ms=duration_ms
             )
             
             return result
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error in cuprate analysis for {material_formula}: {e}", exc_info=True)
             return error_result(
                 handler="superconductors",
                 function="analyze_cuprate_octahedral_stability",
                 error=str(e),
-                error_type=ErrorType.COMPUTATION_ERROR
+                error_type=ErrorType.COMPUTATION_ERROR,
+                duration_ms=duration_ms
             )
 

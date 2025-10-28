@@ -26,27 +26,17 @@ class SemiconductorHandler(BaseHandler, SemiconductorAIFunctionsMixin):
     for analyzing crystal structures, defects, doping, and magnetic properties.
     """
     
-    def __init__(self, mpr: MPRester):
+    def __init__(self, mpr: MPRester = None, **kwargs):
         """
         Initialize the semiconductor handler.
         
         Args:
             mpr: MPRester client instance for Materials Project API access
         """
-        super().__init__(mpr)
-        self.recent_tool_outputs = []
+        if mpr is not None and 'mpr' not in kwargs:
+            kwargs['mpr'] = mpr
+        super().__init__(**kwargs)
+        if mpr is not None:
+            self.mpr = mpr
         _log.info("SemiconductorHandler initialized")
-
-
-def create_semiconductor_handler(mpr: MPRester) -> SemiconductorHandler:
-    """
-    Factory function to create a SemiconductorHandler instance.
-    
-    Args:
-        mpr: MPRester client instance
-        
-    Returns:
-        Configured SemiconductorHandler instance
-    """
-    return SemiconductorHandler(mpr)
 

@@ -7,10 +7,11 @@ material information from the Materials Project database.
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Annotated, Optional
 
 from kani import ai_function, AIParam
-from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
+from ..shared import success_result, error_result, ErrorType, Confidence
 from .utils import (
     get_elastic_properties,
     find_alloy_compositions,
@@ -34,6 +35,8 @@ class MaterialsAIFunctionsMixin:
         per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
         """Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly."""
+        start_time = time.time()
+        
         params = {}
         if chemsys is not None:
             params["chemsys"] = chemsys
@@ -46,13 +49,16 @@ class MaterialsAIFunctionsMixin:
         
         util_result = self.handle_material_search(params)
         
+        duration_ms = (time.time() - start_time) * 1000
+        
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
                 function="get_material",
                 error=util_result.get("error", "Material search failed"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project"]
+                citations=["Materials Project"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -61,15 +67,12 @@ class MaterialsAIFunctionsMixin:
                 function="get_material",
                 data=data,
                 citations=["Materials Project"],
-                confidence=Confidence.HIGH
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
             )
         
         # Store the result for tooltip display
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "get_material",
-                "result": result
-            })
+        self._track_tool_output("get_material", result)
         return result
 
     @ai_function(desc="Fetch a material id and formula by a characteristic of the material", auto_truncate=128000)
@@ -128,6 +131,8 @@ class MaterialsAIFunctionsMixin:
         per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
         """Fetch a material id and formula by a characteristic of the material"""
+        start_time = time.time()
+        
         params = {}
         if band_gap is not None:
             params["band_gap"] = band_gap
@@ -232,13 +237,16 @@ class MaterialsAIFunctionsMixin:
         
         util_result = self.handle_material_by_char(params)
         
+        duration_ms = (time.time() - start_time) * 1000
+        
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
                 function="get_material_by_char",
                 error=util_result.get("error", "Material search by characteristics failed"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project"]
+                citations=["Materials Project"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -247,15 +255,12 @@ class MaterialsAIFunctionsMixin:
                 function="get_material_by_char",
                 data=data,
                 citations=["Materials Project"],
-                confidence=Confidence.HIGH
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
             )
         
         # Store the result for tooltip display
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "get_material_by_char",
-                "result": result
-            })
+        self._track_tool_output("get_material_by_char", result)
         return result
 
     @ai_function(desc="Fetch one or more materials by their material IDs and return detailed information about them.", auto_truncate=128000)
@@ -268,6 +273,8 @@ class MaterialsAIFunctionsMixin:
         per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
         """Fetch one or more materials by their material IDs and return detailed information about them."""
+        start_time = time.time()
+        
         params = {
             "material_ids": material_ids,
             "all_fields": all_fields,
@@ -279,13 +286,16 @@ class MaterialsAIFunctionsMixin:
         
         util_result = self.handle_material_details(params)
         
+        duration_ms = (time.time() - start_time) * 1000
+        
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
                 function="get_material_details_by_ids",
                 error=util_result.get("error", "Failed to fetch material details"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project"]
+                citations=["Materials Project"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -294,15 +304,12 @@ class MaterialsAIFunctionsMixin:
                 function="get_material_details_by_ids",
                 data=data,
                 citations=["Materials Project"],
-                confidence=Confidence.HIGH
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
             )
         
         # Store the result for tooltip display
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "get_material_details_by_ids",
-                "result": result
-            })
+        self._track_tool_output("get_material_details_by_ids", result)
         return result
 
     @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, etc.) for a material.", auto_truncate=128000)
@@ -311,7 +318,11 @@ class MaterialsAIFunctionsMixin:
         material_id: Annotated[str, AIParam(desc="Material ID (e.g., 'mp-81' for Ag, 'mp-30' for Cu).")]
     ) -> Dict[str, Any]:
         """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, etc."""
+        start_time = time.time()
+        
         util_result = get_elastic_properties(self.mpr, material_id)
+        
+        duration_ms = (time.time() - start_time) * 1000
         
         if not util_result.get("success"):
             result = error_result(
@@ -319,7 +330,8 @@ class MaterialsAIFunctionsMixin:
                 function="get_elastic_properties",
                 error=util_result.get("error", "Failed to get elastic properties"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -328,14 +340,11 @@ class MaterialsAIFunctionsMixin:
                 function="get_elastic_properties",
                 data=data,
                 citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.HIGH
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
             )
         
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "get_elastic_properties",
-                "result": result
-            })
+        self._track_tool_output("get_elastic_properties", result)
         return result
 
     @ai_function(desc="Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% Cu).", auto_truncate=128000)
@@ -349,6 +358,8 @@ class MaterialsAIFunctionsMixin:
         require_binaries: Annotated[bool, AIParam(desc="Whether to require exactly 2 elements (default True).")] = True
     ) -> Dict[str, Any]:
         """Find materials with specific alloy compositions."""
+        start_time = time.time()
+        
         util_result = find_alloy_compositions(
             self.mpr,
             elements,
@@ -359,13 +370,16 @@ class MaterialsAIFunctionsMixin:
             require_binaries
         )
         
+        duration_ms = (time.time() - start_time) * 1000
+        
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
                 function="find_alloy_compositions",
                 error=util_result.get("error", "Failed to find alloy compositions"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -374,14 +388,11 @@ class MaterialsAIFunctionsMixin:
                 function="find_alloy_compositions",
                 data=data,
                 citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.HIGH
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
             )
         
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "find_alloy_compositions",
-                "result": result
-            })
+        self._track_tool_output("find_alloy_compositions", result)
         return result
 
     @ai_function(desc="Compare a specific property (e.g., bulk modulus) between two materials.", auto_truncate=128000)
@@ -392,11 +403,15 @@ class MaterialsAIFunctionsMixin:
         property_name: Annotated[str, AIParam(desc="Property to compare: 'bulk_modulus', 'shear_modulus', 'poisson_ratio', etc. (default 'bulk_modulus').")] = "bulk_modulus"
     ) -> Dict[str, Any]:
         """Compare a specific property between two materials and calculate percent change."""
+        start_time = time.time()
+        
         # Get properties for both materials
         props1 = get_elastic_properties(self.mpr, material_id1)
         props2 = get_elastic_properties(self.mpr, material_id2)
         
         util_result = compare_material_properties(props1, props2, property_name)
+        
+        duration_ms = (time.time() - start_time) * 1000
         
         if not util_result.get("success"):
             result = error_result(
@@ -404,7 +419,8 @@ class MaterialsAIFunctionsMixin:
                 function="compare_material_properties",
                 error=util_result.get("error", "Failed to compare properties"),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -413,14 +429,11 @@ class MaterialsAIFunctionsMixin:
                 function="compare_material_properties",
                 data=data,
                 citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.HIGH
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
             )
         
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "compare_material_properties",
-                "result": result
-            })
+        self._track_tool_output("compare_material_properties", result)
         return result
 
     @ai_function(desc="Analyze the effect of doping a host material with a dopant element on a specific property.", auto_truncate=128000)
@@ -432,6 +445,8 @@ class MaterialsAIFunctionsMixin:
         property_name: Annotated[str, AIParam(desc="Property to analyze: 'bulk_modulus', 'shear_modulus', etc. (default 'bulk_modulus').")] = "bulk_modulus"
     ) -> Dict[str, Any]:
         """Analyze how doping a host material affects a specific property, comparing pure vs doped materials."""
+        start_time = time.time()
+        
         util_result = analyze_doping_effect(
             self.mpr,
             host_element,
@@ -440,13 +455,16 @@ class MaterialsAIFunctionsMixin:
             property_name
         )
         
+        duration_ms = (time.time() - start_time) * 1000
+        
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
                 function="analyze_doping_effect",
                 error=util_result.get("error", "Failed to analyze doping effect"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
         else:
             data = {k: v for k, v in util_result.items() if k != "success"}
@@ -456,12 +474,9 @@ class MaterialsAIFunctionsMixin:
                 data=data,
                 citations=["Materials Project", "pymatgen"],
                 confidence=Confidence.MEDIUM,
-                notes=["Comparison between pure and doped materials"]
+                notes=["Comparison between pure and doped materials"],
+                duration_ms=duration_ms
             )
         
-        if hasattr(self, 'recent_tool_outputs'):
-            self.recent_tool_outputs.append({
-                "tool_name": "analyze_doping_effect",
-                "result": result
-            })
+        self._track_tool_output("analyze_doping_effect", result)
         return result

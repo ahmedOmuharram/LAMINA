@@ -9,14 +9,16 @@ Provides AI functions for:
 """
 import logging
 from typing import Optional, List, Dict, Any
+from mp_api.client import MPRester
 
+from ..base import BaseHandler
 from .ai_functions import BatteryAIFunctionsMixin
 from . import utils
 
 _log = logging.getLogger(__name__)
 
 
-class BatteryHandler(BatteryAIFunctionsMixin):
+class BatteryHandler(BaseHandler, BatteryAIFunctionsMixin):
     """
     Handler for battery and electrochemistry calculations using Materials Project data.
     
@@ -24,14 +26,19 @@ class BatteryHandler(BatteryAIFunctionsMixin):
     summary endpoint for formation energy calculations.
     """
     
-    def __init__(self, mpr=None):
+    def __init__(self, mpr: Optional[MPRester] = None, **kwargs):
         """
         Initialize the battery handler.
         
         Args:
             mpr: MPRester client instance (optional, will use existing if available)
         """
-        self.mpr = mpr
+        if mpr is not None and 'mpr' not in kwargs:
+            kwargs['mpr'] = mpr
+        super().__init__(**kwargs)
+        if mpr is not None:
+            self.mpr = mpr
+        _log.info("BatteryHandler initialized")
     
     async def _compute_alloy_voltage_via_hull(
         self,

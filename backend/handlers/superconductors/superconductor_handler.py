@@ -6,13 +6,15 @@ particularly cuprates and structural-property relationships.
 """
 import logging
 from typing import Optional
+from mp_api.client import MPRester
 
+from ..base import BaseHandler
 from .ai_functions import SuperconductorAIFunctionsMixin
 
 _log = logging.getLogger(__name__)
 
 
-class SuperconductorHandler(SuperconductorAIFunctionsMixin):
+class SuperconductorHandler(BaseHandler, SuperconductorAIFunctionsMixin):
     """
     Handler for superconductor materials analysis using Materials Project data.
     
@@ -20,13 +22,17 @@ class SuperconductorHandler(SuperconductorAIFunctionsMixin):
     electronic/superconducting properties.
     """
     
-    def __init__(self, mpr: Optional[object] = None):
+    def __init__(self, mpr: Optional[MPRester] = None, **kwargs):
         """
         Initialize the superconductor handler.
         
         Args:
             mpr: MPRester client instance (optional)
         """
-        self.mpr = mpr
+        if mpr is not None and 'mpr' not in kwargs:
+            kwargs['mpr'] = mpr
+        super().__init__(**kwargs)
+        if mpr is not None:
+            self.mpr = mpr
         _log.info("SuperconductorHandler initialized")
 

@@ -10,8 +10,8 @@ dealing with elements and their properties.
 from __future__ import annotations
 import logging
 from typing import Optional, Tuple
-from ..base.converters import kjmol_to_ev as _kjmol_to_ev
-from ..base.constants import COHESIVE_ENERGY_FALLBACK
+from ..shared import kjmol_to_ev as _kjmol_to_ev
+from ..shared.constants import COHESIVE_ENERGY_FALLBACK
 
 _log = logging.getLogger(__name__)
 

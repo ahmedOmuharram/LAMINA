@@ -6,7 +6,7 @@ This file is kept for backward compatibility but imports from handlers.constants
 
 import logging
 
-from ..base.constants import FARADAY_CONSTANT
+from ..shared.constants import FARADAY_CONSTANT
 
 _log = logging.getLogger(__name__)
 

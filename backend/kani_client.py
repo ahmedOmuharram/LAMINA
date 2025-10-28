@@ -10,8 +10,7 @@ from kani import Kani, ChatMessage as KChatMessage  # alias to avoid clashing wi
 
 from kani.engines.openai.engine import OpenAIEngine  # we subclass this
 
-from .handlers import MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler, BatteryHandler, SemiconductorHandler, AlloyHandler, SuperconductorHandler, MagnetHandler, SolutesHandler
-from .handlers.calphad import CalPhadHandler
+from .handlers import MaterialHandler, SearXNGSearchHandler, BatteryHandler, SemiconductorHandler, AlloyHandler, SuperconductorHandler, MagnetHandler, SolutesHandler, CalPhadHandler
 from .prompts import KANI_SYSTEM_PROMPT
 
 
@@ -46,7 +45,7 @@ def _build_engine(model: str = "gpt-4.1") -> OpenAIEngine:
 # --------------------------------------------------------------------------------------
 # Kani wrapper
 # --------------------------------------------------------------------------------------
-class MPKani(MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandler, SemiconductorHandler, AlloyHandler, SuperconductorHandler, MagnetHandler, SolutesHandler, Kani):
+class MPKani(MaterialHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandler, SemiconductorHandler, AlloyHandler, SuperconductorHandler, MagnetHandler, SolutesHandler, Kani):
     def __init__(
         self,
         client: Optional[object] = None,
@@ -72,8 +71,7 @@ class MPKani(MaterialDetailsHandler, MaterialSearchHandler, SearXNGSearchHandler
         )
         
         # Initialize all handler classes
-        MaterialDetailsHandler.__init__(self, mpr)
-        MaterialSearchHandler.__init__(self, mpr)
+        MaterialHandler.__init__(self, mpr)
         SearXNGSearchHandler.__init__(self)
         BatteryHandler.__init__(self, mpr)
         CalPhadHandler.__init__(self)

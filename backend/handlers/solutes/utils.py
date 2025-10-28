@@ -48,7 +48,7 @@ _log = logging.getLogger(__name__)
 
 # --- Hardcoded reference data with citations in comments ---
 # Import constants from centralized location
-from ..base.constants import FCC_LATTICE_PARAMS_A, METALLIC_RADII_PM
+from ..shared.constants import FCC_LATTICE_PARAMS_A, METALLIC_RADII_PM
 
 
 def _fcc_radius_from_lattice(a_angstrom: float) -> float:

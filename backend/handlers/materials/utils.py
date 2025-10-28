@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Any, List, Optional
 import numpy as np
 
-from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
+from ..shared import success_result, error_result, ErrorType, Confidence
 
 _log = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any, Dict, List, Mapping, Optional
 from mp_api.client import MPRester
-from .constants import RANGE_KEYS
+from ..shared.constants import RANGE_KEYS
 
 _log = logging.getLogger(__name__)
 
@@ -19,8 +19,9 @@ class InvalidRangeError(Exception):
 class BaseHandler:
     """Base class for all endpoint handlers."""
     
-    def __init__(self, mpr: MPRester):
+    def __init__(self, mpr: MPRester = None, **kwargs):
         self.mpr = mpr
+        self.recent_tool_outputs = []
     
     def _get_pagination(self, params: Mapping[str, Any]) -> tuple[int, int]:
         """Return (page, per_page) with defaults and safety caps.
@@ -358,3 +359,20 @@ class BaseHandler:
     def RANGE_KEYS(self):
         """Access to RANGE_KEYS constant."""
         return RANGE_KEYS
+    
+    def _track_tool_output(self, tool_name: str, result: Any) -> None:
+        """
+        Track tool output for tooltip display.
+        
+        This method should be called after every AI function execution to store
+        the result for frontend display. It maintains a list of recent tool outputs
+        that can be accessed by the streaming system.
+        
+        Args:
+            tool_name: Name of the AI function/tool that was executed
+            result: The result dictionary or value returned by the tool
+        """
+        self.recent_tool_outputs.append({
+            "tool_name": tool_name,
+            "result": result
+        })

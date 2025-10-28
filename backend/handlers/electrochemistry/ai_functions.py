@@ -5,15 +5,16 @@ This module contains all AI-accessible functions for battery electrode analysis,
 voltage calculations, and electrochemical properties.
 """
 import logging
+import time
 from typing import Optional, List, Dict, Any
 
 from kani.ai_function import ai_function
 from typing_extensions import Annotated
 from kani import AIParam
 
-from ..base.result_wrappers import success_result, error_result, ErrorType, Confidence
+from ..shared import success_result, error_result, ErrorType, Confidence
 from . import utils
-from ..base.constants import KNOWN_DIFFUSION_BARRIERS, STRUCTURE_DIFFUSION_DEFAULTS
+from ..shared.constants import KNOWN_DIFFUSION_BARRIERS, STRUCTURE_DIFFUSION_DEFAULTS
 
 _log = logging.getLogger(__name__)
 
@@ -150,14 +151,18 @@ class BatteryAIFunctionsMixin:
         
         Returns voltage profiles, capacities, and electrochemical properties.
         """
+        start_time = time.time()
+        
         try:
             if not self.mpr:
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="electrochemistry",
                     function="search_battery_electrodes",
                     error="MPRester client not initialized",
                     error_type=ErrorType.API_ERROR,
-                    citations=["Materials Project"]
+                    citations=["Materials Project"],
+                    duration_ms=duration_ms
                 )
             
             # Check if insertion_electrodes endpoint is available
@@ -213,6 +218,8 @@ class BatteryAIFunctionsMixin:
                         if synth.get("success"):
                             electrode_data = [synth["electrode"]]
 
+                duration_ms = (time.time() - start_time) * 1000
+                
                 return success_result(
                     handler="electrochemistry",
                     function="search_battery_electrodes",
@@ -229,7 +236,8 @@ class BatteryAIFunctionsMixin:
                         "Voltages are reported vs. the working ion (e.g., Li/Li+)",
                         "capacity_grav is in mAh/g, energy_grav is in Wh/kg",
                         "Framework compositions verified to match requested elements" if elements else ""
-                    ]
+                    ],
+                    duration_ms=duration_ms
                 )
                 
             except AttributeError:
@@ -241,6 +249,7 @@ class BatteryAIFunctionsMixin:
                 )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error in search_battery_electrodes: {e}", exc_info=True)
             return error_result(
                 handler="electrochemistry",
@@ -248,7 +257,8 @@ class BatteryAIFunctionsMixin:
                 error=str(e),
                 error_type=ErrorType.API_ERROR,
                 citations=["Materials Project", "pymatgen"],
-                suggestions=["Try using calculate_voltage_from_formation_energy for custom calculations"]
+                suggestions=["Try using calculate_voltage_from_formation_energy for custom calculations"],
+                duration_ms=duration_ms
             )
     
 
@@ -279,6 +289,8 @@ class BatteryAIFunctionsMixin:
         
         Returns error if no suitable framework or if voltage is unphysical.
         """
+        start_time = time.time()
+        
         try:
             # Try InsertionElectrode calculation first
             result = utils.calculate_voltage_from_insertion_electrode(
@@ -291,6 +303,7 @@ class BatteryAIFunctionsMixin:
                     self.mpr, electrode_formula, working_ion=working_ion
                 )
                 if synth.get("success"):
+                    duration_ms = (time.time() - start_time) * 1000
                     e = synth["electrode"]
                     return success_result(
                         handler="electrochemistry",
@@ -310,26 +323,31 @@ class BatteryAIFunctionsMixin:
                             "Voltages from two-phase convex-hull scan along fixed host ratio (0 K)",
                             f"Reported vs. {working_ion}/{working_ion}+; consistent entry set"
                         ],
-                        diagnostics=e.get("diagnostics", {})
+                        diagnostics=e.get("diagnostics", {}),
+                        duration_ms=duration_ms
                     )
                 # If both methods fail, return the original error
+                duration_ms = (time.time() - start_time) * 1000
                 if result:
                     return error_result(
                         handler="electrochemistry",
                         function="calculate_voltage_from_formation_energy",
                         error=result.get("error", "Voltage calculation failed"),
                         error_type=ErrorType.COMPUTATION_ERROR,
-                        citations=["Materials Project", "pymatgen"]
+                        citations=["Materials Project", "pymatgen"],
+                        duration_ms=duration_ms
                     )
                 return error_result(
                     handler="electrochemistry",
                     function="calculate_voltage_from_formation_energy",
                     error="Voltage calculation failed",
                     error_type=ErrorType.COMPUTATION_ERROR,
-                    citations=["Materials Project", "pymatgen"]
+                    citations=["Materials Project", "pymatgen"],
+                    duration_ms=duration_ms
                 )
             
             # Wrap the successful InsertionElectrode result
+            duration_ms = (time.time() - start_time) * 1000
             if result.get("success"):
                 data = {k: v for k, v in result.items() if k not in ["success", "citations", "notes"]}
                 return success_result(
@@ -338,18 +356,21 @@ class BatteryAIFunctionsMixin:
                     data=data,
                     citations=result.get("citations", ["Materials Project", "pymatgen"]),
                     confidence=Confidence.HIGH,
-                    notes=result.get("notes", [])
+                    notes=result.get("notes", []),
+                    duration_ms=duration_ms
                 )
             return result
 
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Voltage calculation failed: {e}", exc_info=True)
             return error_result(
                 handler="electrochemistry",
                 function="calculate_voltage_from_formation_energy",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
     
 
@@ -373,14 +394,18 @@ class BatteryAIFunctionsMixin:
         
         Returns the full charge/discharge curve showing voltage vs. capacity.
         """
+        start_time = time.time()
+        
         try:
             if not self.mpr:
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="electrochemistry",
                     function="get_voltage_profile",
                     error="MPRester client not initialized",
                     error_type=ErrorType.API_ERROR,
-                    citations=["Materials Project"]
+                    citations=["Materials Project"],
+                    duration_ms=duration_ms
                 )
             
             # Try to get electrode data
@@ -394,6 +419,7 @@ class BatteryAIFunctionsMixin:
                         results = self.mpr.insertion_electrodes.search(formula=material_id)
                     
                     if results:
+                        duration_ms = (time.time() - start_time) * 1000
                         electrode = results[0]
                         
                         # Extract voltage profile using utility function
@@ -407,7 +433,8 @@ class BatteryAIFunctionsMixin:
                             },
                             citations=["Materials Project", "pymatgen"],
                             confidence=Confidence.HIGH,
-                            notes=["Full voltage profile extracted from electrode database"]
+                            notes=["Full voltage profile extracted from electrode database"],
+                            duration_ms=duration_ms
                         )
                         
                 except Exception as e:
@@ -421,6 +448,7 @@ class BatteryAIFunctionsMixin:
             )
             
             if mat_data:
+                duration_ms = (time.time() - start_time) * 1000
                 mat = mat_data[0]
                 return success_result(
                     handler="electrochemistry",
@@ -437,25 +465,30 @@ class BatteryAIFunctionsMixin:
                         "Detailed voltage profile not available",
                         "Use search_battery_electrodes to find electrode materials with profiles",
                         "Or use calculate_voltage_from_formation_energy for estimates"
-                    ]
+                    ],
+                    duration_ms=duration_ms
                 )
             
+            duration_ms = (time.time() - start_time) * 1000
             return error_result(
                 handler="electrochemistry",
                 function="get_voltage_profile",
                 error=f"Material {material_id} not found",
                 error_type=ErrorType.NOT_FOUND,
-                citations=["Materials Project"]
+                citations=["Materials Project"],
+                duration_ms=duration_ms
             )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error in get_voltage_profile: {e}", exc_info=True)
             return error_result(
                 handler="electrochemistry",
                 function="get_voltage_profile",
                 error=str(e),
                 error_type=ErrorType.API_ERROR,
-                citations=["Materials Project"]
+                citations=["Materials Project"],
+                duration_ms=duration_ms
             )
     
 
@@ -482,6 +515,8 @@ class BatteryAIFunctionsMixin:
         Returns voltages, capacities, and energy densities for direct comparison.
         Automatically calculates which material has higher/lower voltage.
         """
+        start_time = time.time()
+        
         try:
             formula_list = [f.strip() for f in formulas.split(',')]
             
@@ -529,6 +564,8 @@ class BatteryAIFunctionsMixin:
             # Generate comparison summary using utility function
             summary = utils.generate_comparison_summary(comparison_results, working_ion)
             
+            duration_ms = (time.time() - start_time) * 1000
+            
             return success_result(
                 handler="electrochemistry",
                 function="compare_electrode_materials",
@@ -545,17 +582,20 @@ class BatteryAIFunctionsMixin:
                     "Data from insertion_electrodes database: pre-computed voltage profiles",
                     "Data from convex hull: thermodynamically rigorous phase diagram calculations",
                     "All data is from Materials Project DFT calculations - no heuristics or estimates"
-                ]
+                ],
+                duration_ms=duration_ms
             )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error comparing electrodes: {e}", exc_info=True)
             return error_result(
                 handler="electrochemistry",
                 function="compare_electrode_materials",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
     
 
@@ -580,7 +620,11 @@ class BatteryAIFunctionsMixin:
         - is_stable: Whether an entry exists at this composition and is on the hull
         - decomposition: What phases it decomposes into if unstable
         """
+        start_time = time.time()
+        
         result = utils.check_composition_stability_detailed(self.mpr, composition)
+        
+        duration_ms = (time.time() - start_time) * 1000
         
         if not result.get("success"):
             return error_result(
@@ -588,7 +632,8 @@ class BatteryAIFunctionsMixin:
                 function="check_composition_stability",
                 error=result.get("error", "Stability check failed"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
         
         data = {k: v for k, v in result.items() if k not in ["success", "citations"]}
@@ -598,7 +643,8 @@ class BatteryAIFunctionsMixin:
             data=data,
             citations=["Materials Project", "pymatgen"],
             confidence=Confidence.HIGH,
-            notes=["Stability checked against 0 K convex hull from DFT calculations"]
+            notes=["Stability checked against 0 K convex hull from DFT calculations"],
+            duration_ms=duration_ms
         )
     
 
@@ -627,14 +673,18 @@ class BatteryAIFunctionsMixin:
         3. If unstable: analyze decomposition products as potential anode
         4. Overall assessment of viability
         """
+        start_time = time.time()
+        
         try:
             if not utils.PYMATGEN_AVAILABLE:
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="electrochemistry",
                     function="analyze_anode_viability",
                     error="PyMatGen not available",
                     error_type=ErrorType.COMPUTATION_ERROR,
-                    citations=["Materials Project", "pymatgen"]
+                    citations=["Materials Project", "pymatgen"],
+                    duration_ms=duration_ms
                 )
             
             from pymatgen.core import Composition
@@ -643,12 +693,14 @@ class BatteryAIFunctionsMixin:
             stability = await self.check_composition_stability(composition)
             
             if not stability.get("success"):
+                duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="electrochemistry",
                     function="analyze_anode_viability",
                     error=stability.get("error", "Stability check failed"),
                     error_type=ErrorType.COMPUTATION_ERROR,
-                    citations=["Materials Project", "pymatgen"]
+                    citations=["Materials Project", "pymatgen"],
+                    duration_ms=duration_ms
                 )
             
             result = {
@@ -726,6 +778,8 @@ class BatteryAIFunctionsMixin:
             
             result["viability_assessment"] = assessment
             
+            duration_ms = (time.time() - start_time) * 1000
+            
             return success_result(
                 handler="electrochemistry",
                 function="analyze_anode_viability",
@@ -738,17 +792,20 @@ class BatteryAIFunctionsMixin:
                 },
                 citations=["Materials Project", "pymatgen"],
                 confidence=Confidence.HIGH if is_stable else Confidence.MEDIUM,
-                notes=["Comprehensive analysis of composition as battery anode"]
+                notes=["Comprehensive analysis of composition as battery anode"],
+                duration_ms=duration_ms
             )
             
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error analyzing anode viability: {e}", exc_info=True)
             return error_result(
                 handler="electrochemistry",
                 function="analyze_anode_viability",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
     
 
@@ -790,9 +847,13 @@ class BatteryAIFunctionsMixin:
         Args:
             room_temp: If True, filter out phases with E_hull > 0.03 eV/atom (hard to form at RT)
         """
+        start_time = time.time()
+        
         result = utils.analyze_lithiation_mechanism_detailed(
             self.mpr, host_composition, working_ion, max_x, room_temp
         )
+        
+        duration_ms = (time.time() - start_time) * 1000
         
         if not result.get("success"):
             return error_result(
@@ -800,7 +861,8 @@ class BatteryAIFunctionsMixin:
                 function="analyze_lithiation_mechanism",
                 error=result.get("error", "Lithiation mechanism analysis failed"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"]
+                citations=["Materials Project", "pymatgen"],
+                duration_ms=duration_ms
             )
         
         data = {k: v for k, v in result.items() if k not in ["success", "citations"]}
@@ -810,7 +872,8 @@ class BatteryAIFunctionsMixin:
             data=data,
             citations=["Materials Project", "pymatgen"],
             confidence=Confidence.HIGH,
-            notes=["Lithiation mechanism computed from convex hull analysis"]
+            notes=["Lithiation mechanism computed from convex hull analysis"],
+            duration_ms=duration_ms
         )
 
     @ai_function(
@@ -830,6 +893,8 @@ class BatteryAIFunctionsMixin:
         """
         Estimate ion hopping barrier in electrode materials using structure-based heuristics.
         """
+        start_time = time.time()
+        
         try:
             # Normalize inputs
             ion_sym = ion.strip().capitalize()
@@ -840,6 +905,8 @@ class BatteryAIFunctionsMixin:
             
             # Get typical barrier ranges and confidence based on structure + known priors
             barrier_info = _estimate_barrier_from_structure(host, ion_sym, struct_type)
+            
+            duration_ms = (time.time() - start_time) * 1000
             
             return success_result(
                 handler="electrochemistry",
@@ -859,15 +926,18 @@ class BatteryAIFunctionsMixin:
                     "Heuristic estimate based on material class and structure dimensionality",
                     "Actual barriers depend on crystallographic pathway, site occupancy, lattice strain, and defect concentration",
                     "Use DFT+NEB or impedance spectroscopy for accuracy"
-                ]
+                ],
+                duration_ms=duration_ms
             )
         except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
             _log.error(f"Error estimating ion hopping barrier for {host_material}/{ion}: {e}", exc_info=True)
             return error_result(
                 handler="electrochemistry",
                 function="estimate_ion_hopping_barrier",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=[]
+                citations=[],
+                duration_ms=duration_ms
             )
 

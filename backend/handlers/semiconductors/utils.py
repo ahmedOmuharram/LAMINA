@@ -11,7 +11,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 from pymatgen.core import Structure, Element
-from ..base.converters import to_angstrom as _to_Angstrom
+from ..shared import to_angstrom as _to_Angstrom
 
 _log = logging.getLogger(__name__)
 
