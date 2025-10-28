@@ -17,9 +17,9 @@ Organization:
     - api.py: API query parameter constants
 
 Usage:
-    from handlers.constants import FARADAY_CONSTANT, METALLIC_RADII_PM
-    from handlers.constants import PhaseCategory, PHASE_CLASSIFICATION
-    from handlers.constants.atomic import FCC_LATTICE_PARAMS_A
+    from handlers.base.constants import FARADAY_CONSTANT, METALLIC_RADII_PM
+    from handlers.base.constants import PhaseCategory, PHASE_CLASSIFICATION
+    from handlers.base.constants.atomic import FCC_LATTICE_PARAMS_A
 """
 
 # Physical constants

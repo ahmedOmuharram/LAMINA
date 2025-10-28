@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 import time
 
-from ..base import BaseHandler
+from ..base.base import BaseHandler
 from .ai_functions import SearchAIFunctionsMixin
 
 _log = logging.getLogger(__name__)

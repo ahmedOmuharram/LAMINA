@@ -9,7 +9,7 @@ from typing import Optional, Dict, Set
 from pathlib import Path
 from pycalphad import Database
 
-from ...constants import EXCLUDE_PHASE_PATTERNS, PHASE_NAME_MAP, ELEMENT_ALIASES
+from ...base.constants import EXCLUDE_PHASE_PATTERNS, PHASE_NAME_MAP, ELEMENT_ALIASES
 
 _log = logging.getLogger(__name__)
 

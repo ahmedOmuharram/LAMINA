@@ -12,7 +12,7 @@ from typing_extensions import Annotated
 from kani import AIParam
 
 from . import utils
-from ..constants import KNOWN_DIFFUSION_BARRIERS, STRUCTURE_DIFFUSION_DEFAULTS
+from ..base.constants import KNOWN_DIFFUSION_BARRIERS, STRUCTURE_DIFFUSION_DEFAULTS
 
 _log = logging.getLogger(__name__)
 

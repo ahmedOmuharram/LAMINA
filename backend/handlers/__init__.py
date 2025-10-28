@@ -11,7 +11,8 @@ This package contains organized handlers for different aspects of materials scie
 - solutes/: Lattice parameter effects of substitutional solutes in fcc matrices
 """
 
-from .base import BaseHandler, InvalidRangeError, RANGE_KEYS
+from .base.base import BaseHandler, InvalidRangeError
+from .base.constants import RANGE_KEYS
 from .materials import (
     MaterialDetailsHandler, 
     MaterialSearchHandler,

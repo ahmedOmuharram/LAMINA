@@ -14,18 +14,17 @@ The fact-checker uses three layers:
 """
 
 import logging
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import numpy as np
 from pycalphad import Database
 
 from .equilibrium_utils import (
     calculate_equilibrium_at_point,
-    extract_phase_fractions_from_equilibrium,
-    get_phase_fraction
+    extract_phase_fractions_from_equilibrium
 )
 from .database_utils import map_phase_name
-from ...constants import PhaseCategory, PHASE_CLASSIFICATION
+from ...base.constants import PhaseCategory, PHASE_CLASSIFICATION
 
 _log = logging.getLogger(__name__)
 
@@ -635,26 +634,3 @@ class AlloyFactChecker:
         ])
         
         return "\n".join(lines)
-
-
-# ============================================================================
-# CONVENIENCE FUNCTIONS
-# ============================================================================
-
-def atpct_to_molefrac(composition_atpct: Dict[str, float]) -> Dict[str, float]:
-    """
-    Convert atomic percent to mole fractions.
-    
-    For substitutional alloys, at% ≈ mol%, so this just normalizes to sum=1.
-    
-    Args:
-        composition_atpct: e.g., {"AL": 88, "MG": 8, "ZN": 4}
-        
-    Returns:
-        Normalized mole fractions: {"AL": 0.88, "MG": 0.08, "ZN": 0.04}
-    """
-    total = sum(composition_atpct.values())
-    if total == 0:
-        return composition_atpct
-    return {el: val / total for el, val in composition_atpct.items()}
-

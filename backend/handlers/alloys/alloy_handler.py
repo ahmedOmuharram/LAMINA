@@ -1,12 +1,9 @@
 from __future__ import annotations
 import logging
-from typing import Any, Dict, Optional, Annotated, Tuple, List
-from pathlib import Path
-
+from typing import Any, Dict, Optional, Annotated, Tuple
 from kani import ai_function, AIParam
-from ..base import BaseHandler
-from ..constants import (
-    KJMOL_PER_EV_PER_ATOM,
+from ..base.base import BaseHandler
+from ..base.constants import (
     ADS_OVER_COH_111,
     ADS_OVER_COH_100,
     ADS_OVER_COH_110,
@@ -15,11 +12,9 @@ from ..constants import (
     DIFF_OVER_ADS_110,
     COHESIVE_ENERGY_FALLBACK,
 )
+from ..base.converters import kjmol_to_ev as _kjmol_to_ev
 
 _log = logging.getLogger(__name__)
-
-def _kjmol_to_ev(x_kjmol: float) -> float:
-    return float(x_kjmol) / KJMOL_PER_EV_PER_ATOM
 
 def _get_cohesive_energy(symbol: str) -> tuple[Optional[float], str]:
     """

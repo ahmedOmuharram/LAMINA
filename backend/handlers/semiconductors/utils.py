@@ -11,6 +11,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 from pymatgen.core import Structure, Element
+from ..base.converters import to_angstrom as _to_Angstrom
 
 _log = logging.getLogger(__name__)
 
@@ -839,12 +840,6 @@ except Exception:
 
 
 # ---- Basic data helpers ------------------------------------------------------
-
-def _to_Angstrom(val: Optional[float]) -> Optional[float]:
-    """Convert pm-ish values to Å. If > 4.5, assume pm and /100."""
-    if val is None:
-        return None
-    return val / 100.0 if val > 4.5 else val
 
 def _covalent_radius_A(sym: str) -> Optional[float]:
     """Get covalent radius in Å; supports mendeleev (pm) and pymatgen (Å)."""

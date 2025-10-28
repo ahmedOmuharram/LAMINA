@@ -9,11 +9,11 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import pycalphad.variables as v
-from ...base import BaseHandler
+from ...base.base import BaseHandler
 
 # Import from utility modules
-from .database_utils import is_excluded_phase, upper_symbol, compose_alias_map, pick_tdb_path, get_db_elements, map_phase_name
-from .consts import weight_to_mole_fraction
+from .database_utils import is_excluded_phase, upper_symbol, compose_alias_map, pick_tdb_path, map_phase_name
+from ...base.converters import weight_to_mole_fraction
 from .plotting import PlottingMixin
 from .analysis import AnalysisMixin
 from .ai_functions import AIFunctionsMixin

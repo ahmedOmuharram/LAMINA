@@ -15,14 +15,15 @@ from pymatgen.core import Element, Composition
 
 _log = logging.getLogger(__name__)
 
-# Import physical constants from centralized location
-from ..constants import (
+# Import physical constants and converters from centralized location
+from ..base.constants import (
     MU_0,
     BOHR_MAGNETON,
     AVOGADRO,
     MU_B_TO_EMU,
     MUB_PER_BOHR3_TO_KA_PER_M,
 )
+from ..base.converters import muB_per_bohr3_to_kA_per_m
 
 
 def select_representative_entry(candidates, requested_formula: str):
@@ -254,22 +255,6 @@ def estimate_saturation_magnetization_T(
     Bs_T = MU_0 * Ms_A_per_m
     
     return float(Bs_T)
-
-
-def muB_per_bohr3_to_kA_per_m(val_muB_per_bohr3: float) -> float:
-    """
-    Convert MP's magnetization_per_volume (μB / bohr^3) to kA/m (kiloampere per meter).
-    
-    This is the CORRECT way to compare magnetization across different materials,
-    as it normalizes to a consistent volume unit.
-    
-    Args:
-        val_muB_per_bohr3: Magnetization per volume in μB/bohr³ (from Materials Project)
-        
-    Returns:
-        Magnetization in kA/m
-    """
-    return float(val_muB_per_bohr3 * MUB_PER_BOHR3_TO_KA_PER_M)
 
 
 def estimate_material_properties(

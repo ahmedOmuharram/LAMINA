@@ -13,8 +13,8 @@ from .database_utils import (
     compose_alias_map,
     pick_tdb_path
 )
-from .consts import weight_to_mole_fraction
-from ...constants import ELEMENT_ALIASES
+from ...base.converters import weight_to_mole_fraction
+from ...base.constants import ELEMENT_ALIASES
 from .plotting import PlottingMixin
 from .analysis import AnalysisMixin
 from .ai_functions import AIFunctionsMixin

@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any, Dict, List, Mapping
 
-from ..base import BaseHandler
+from ..base.base import BaseHandler
 from .ai_functions import MaterialsAIFunctionsMixin
 
 _log = logging.getLogger(__name__)

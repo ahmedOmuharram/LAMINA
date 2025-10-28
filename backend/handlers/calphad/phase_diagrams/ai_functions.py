@@ -1458,7 +1458,6 @@ class AIFunctionsMixin:
         try:
             import json
             import numpy as np
-            from .fact_checker import atpct_to_molefrac
             
             # Validate claim type and required parameters
             claim_type_lower = claim_type.lower()

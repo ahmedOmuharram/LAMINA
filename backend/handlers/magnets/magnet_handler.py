@@ -12,7 +12,7 @@ import logging
 from typing import Dict, Any
 from mp_api.client import MPRester
 
-from ..base import BaseHandler
+from ..base.base import BaseHandler
 from .ai_functions import MagnetAIFunctionsMixin
 
 _log = logging.getLogger(__name__)
