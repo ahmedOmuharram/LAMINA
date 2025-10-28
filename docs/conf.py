@@ -34,6 +34,7 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.viewcode',
     'sphinx.ext.githubpages',
+    'sphinx.ext.mathjax',  # Required for LaTeX math rendering
     'myst_parser',
     'sphinx_design',
     'sphinx_copybutton',
