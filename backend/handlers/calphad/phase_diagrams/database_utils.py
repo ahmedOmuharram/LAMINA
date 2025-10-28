@@ -9,25 +9,9 @@ from typing import Optional, Dict, Set
 from pathlib import Path
 from pycalphad import Database
 
-from .consts import STATIC_ALIASES
+from ...constants import EXCLUDE_PHASE_PATTERNS, PHASE_NAME_MAP, ELEMENT_ALIASES
 
 _log = logging.getLogger(__name__)
-
-# Exclude clearly non-equilibrium / cluster / GP phases by default
-EXCLUDE_PHASE_PATTERNS = (
-    r'^GP_', r'_GP', r'^CL_', r'_DP$', r'^B_PRIME', r'^PRE_', r'^THETA_PRIME$',
-    r'^TH_DP', r'^U1_PHASE$', r'^U2_PHASE$',
-    r'^FCCAL$', r'^FCCMG$', r'^FCCSI$',  # Helper phases for thermodynamic calculations only
-)
-
-# Phase name mapping for better readability
-PHASE_NAME_MAP = {
-    'CSI': 'SiC',
-    'C_SIC': 'SiC',
-    'AL4C3': 'Al4C3',
-    'AL3NI': 'Al3Ni',
-    'AL3NI2': 'Al3Ni2',
-}
 
 
 def is_excluded_phase(name: str) -> bool:
@@ -99,7 +83,7 @@ def compose_alias_map(db: Database) -> Dict[str, str]:
         Dictionary mapping aliases to standard element symbols
     """
     elems = get_db_elements(db)
-    aliases = {k: v for k, v in STATIC_ALIASES.items() if v in elems or v == "VA"}
+    aliases = {k: v for k, v in ELEMENT_ALIASES.items() if v in elems or v == "VA"}
     
     # Also map bare symbols in any case
     for el in elems:

@@ -47,39 +47,8 @@ _log = logging.getLogger(__name__)
 
 
 # --- Hardcoded reference data with citations in comments ---
-# Lattice parameters in Å at ~300 K for common fcc matrices.
-# You can extend this dict as needed.
-FCC_LATTICE_PARAMS_A = {
-    # Al: ~4.046 Å at ~300 K [5]
-    "AL": 4.046,
-    # Ni: ~3.499 Å at ~300 K (for future generalization; typical experimental a_Ni≈3.52 Å at RT,
-    # small spread depending on source; choose one reference and stay consistent)
-    "NI": 3.52,
-    # Cu: ~3.597 Å at ~300 K (fcc Cu lattice parameter near 3.595-3.61 Å at RT)
-    "CU": 3.60,
-    # Add more matrices here if you want to support other bases.
-}
-
-# Metallic radii (12-fold/close-packed "metallic radius") in pm.
-# These are standard tabulated metallic radii consistent with:
-#   r_Al ~143 pm, r_Mg ~160 pm, r_Cu ~128 pm, r_Zn ~134 pm. [5][6]
-METALLIC_RADII_PM = {
-    "AL": 143.0,
-    "MG": 160.0,
-    "CU": 128.0,
-    "ZN": 134.0,
-    "NI": 124.0,
-    "FE": 126.0,
-    "CO": 125.0,
-    "CR": 128.0,
-    "MN": 127.0,
-    "SI": 117.0,
-    "TI": 147.0,
-    "V": 134.0,
-    "ZR": 160.0,
-    "NB": 146.0,
-    # Add more elements here if you want later.
-}
+# Import constants from centralized location
+from ..constants import FCC_LATTICE_PARAMS_A, METALLIC_RADII_PM
 
 
 def _fcc_radius_from_lattice(a_angstrom: float) -> float:

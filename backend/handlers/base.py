@@ -7,28 +7,13 @@ import logging
 import re
 from typing import Any, Dict, List, Mapping, Optional
 from mp_api.client import MPRester
-import os
+from .constants import RANGE_KEYS
 
 _log = logging.getLogger(__name__)
-
 
 class InvalidRangeError(Exception):
     """Raised when a range parameter has only one bound or is otherwise invalid."""
     pass
-
-
-# Which query params are treated as ranges (min,max)
-RANGE_KEYS = [
-    "band_gap", "density", "e_electronic", "e_ionic", "e_total", "efermi",
-    "elastic_anisotropy", "energy_above_hull", "equilibrium_reaction_energy",
-    "formation_energy", "g_reuss", "g_voigt", "g_vrh", "k_reuss", "k_voigt",
-    "k_vrh", "n", "nelements", "num_sites", "num_magnetic_sites",
-    "num_unique_magnetic_sites", "piezoelectric_modulus", "poisson_ratio",
-    "shape_factor", "surface_energy_anisotropy", "total_energy",
-    "total_magnetization", "total_magnetization_normalized_formula_units",
-    "total_magnetization_normalized_vol", "uncorrected_energy", "volume",
-    "weighted_surface_energy", "weighted_work_function",
-]
 
 
 class BaseHandler:
@@ -63,32 +48,6 @@ class BaseHandler:
         except Exception:
             # Be defensive; never raise during pagination
             return list(items)[:per_page]
-    
-    def _is_singleton_range_value(self, value: Any) -> bool:
-        """True iff 'value' looks like a one-bound range."""
-        if value is None:
-            return False
-
-        if isinstance(value, (list, tuple)):
-            return len(value) == 1 and str(value[0]).strip() != ""
-
-        text = str(value).strip()
-        if not text:
-            return False
-
-        # Try JSON-like list/tuple
-        if (text.startswith("[") and text.endswith("]")) or (text.startswith("(") and text.endswith(")")):
-            try:
-                decoded = json.loads(text.replace("(", "[").replace(")", "]"))
-                return isinstance(decoded, list) and len(decoded) == 1 and str(decoded[0]).strip() != ""
-            except Exception:
-                # fall through
-                pass
-
-        # Comma variants like "2.0", "2.0,", ",2.0"
-        parts = [p.strip() for p in text.split(",")]
-        non_empty = [p for p in parts if p]
-        return len(non_empty) == 1
     
     def _parse_csv_list(self, value: Any) -> Optional[List[str]]:
         """Parse CSV list values."""

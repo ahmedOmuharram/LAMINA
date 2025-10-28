@@ -13,7 +13,8 @@ from .database_utils import (
     compose_alias_map,
     pick_tdb_path
 )
-from .consts import _ATOMIC_MASS, STATIC_ALIASES
+from .consts import weight_to_mole_fraction
+from ...constants import ELEMENT_ALIASES
 from .plotting import PlottingMixin
 from .analysis import AnalysisMixin
 from .ai_functions import AIFunctionsMixin
@@ -38,8 +39,9 @@ __all__ = [
     'compose_alias_map',
     'pick_tdb_path',
     # Constants
-    '_ATOMIC_MASS',
-    'STATIC_ALIASES',
+    'ELEMENT_ALIASES',
+    # Utility functions
+    'weight_to_mole_fraction',
     # Backward compatibility
     '_is_excluded_phase',
     '_upper_symbol',

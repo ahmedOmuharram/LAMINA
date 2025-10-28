@@ -5,21 +5,16 @@ from pathlib import Path
 
 from kani import ai_function, AIParam
 from ..base import BaseHandler
-
-KJMOL_PER_EV_PER_ATOM = 96.4853321233  # 1 eV/atom = 96.485... kJ/mol
-
-# Heuristic anchors (literature/“rules of thumb”):
-#   E_ads ≈ 0.20–0.30 * E_coh(host)   (broad metal-on-metal scaling)
-#   E_diff ≈ f_mech * E_ads, where f_mech ≈ 0.12 (hopping) or 0.22–0.30 (exchange)
-# We’ll pick facet-specific midpoints and still return a wide uncertainty band later.
-ADS_OVER_COH_111 = 0.22  # close-packed surfaces bind a bit more weakly on average
-ADS_OVER_COH_100 = 0.26  # (100) often stronger site competition + exchange tendency
-ADS_OVER_COH_110 = 0.28  # open surfaces ~stronger corrugation
-
-# Facet-dependent diffusion/adsorption fractions (representative midpoints)
-DIFF_OVER_ADS_111 = 0.12  # hopping-dominated
-DIFF_OVER_ADS_100 = 0.24  # exchange-dominated for many metals on fcc(100)
-DIFF_OVER_ADS_110 = 0.28  # often even “rougher”/higher
+from ..constants import (
+    KJMOL_PER_EV_PER_ATOM,
+    ADS_OVER_COH_111,
+    ADS_OVER_COH_100,
+    ADS_OVER_COH_110,
+    DIFF_OVER_ADS_111,
+    DIFF_OVER_ADS_100,
+    DIFF_OVER_ADS_110,
+    COHESIVE_ENERGY_FALLBACK,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -55,20 +50,7 @@ def _get_cohesive_energy(symbol: str) -> tuple[Optional[float], str]:
     except Exception:
         pass
 
-    COHESIVE_FALLBACK = {
-        # Typical cohesive energies (eV/atom) near 0 K (solid → atoms):
-        "Al": 3.39,
-        "Au": 3.81,
-        "Cu": 3.49,
-        "Ag": 2.95,
-        "Ni": 4.44,
-        "Pt": 5.84,
-        "Pd": 3.89,
-        "Fe": 4.28,
-        "Ti": 4.85,
-        "Mg": 1.51,
-    }
-    val = COHESIVE_FALLBACK.get(symbol)
+    val = COHESIVE_ENERGY_FALLBACK.get(symbol)
     return (val, "fallback_table") if val is not None else (None, "missing")
 
 def _normalize_surface(surface_miller: Optional[str]) -> Tuple[str, float, str, float]:

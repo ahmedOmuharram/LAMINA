@@ -15,19 +15,14 @@ from pymatgen.core import Element, Composition
 
 _log = logging.getLogger(__name__)
 
-# Physical constants
-MU_0 = 4e-7 * np.pi  # Vacuum permeability (H/m)
-BOHR_MAGNETON = 9.274e-24  # A⋅m²
-AVOGADRO = 6.02214076e23  # 1/mol
-MU_B_TO_EMU = 9.274e-21  # emu per μB
-
-# Conversion factor for Materials Project's magnetization_per_volume
-# MP reports in μB / bohr³
-# 1 μB = 9.274e-24 A·m²
-# 1 bohr = 0.529177 Å = 0.529177e-10 m
-# 1 bohr³ ≈ 1.4818e-31 m³
-# => 1 (μB / bohr³) ≈ 6.2584e7 A/m ≈ 6.2584e4 kA/m
-MUB_PER_BOHR3_TO_KA_PER_M = 6.258412893e4  # kA/m per (μB/bohr³)
+# Import physical constants from centralized location
+from ..constants import (
+    MU_0,
+    BOHR_MAGNETON,
+    AVOGADRO,
+    MU_B_TO_EMU,
+    MUB_PER_BOHR3_TO_KA_PER_M,
+)
 
 
 def select_representative_entry(candidates, requested_formula: str):

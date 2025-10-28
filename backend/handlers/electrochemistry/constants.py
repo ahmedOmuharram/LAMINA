@@ -1,15 +1,16 @@
 """
-Constants for electrochemistry calculations.
+Constants for electrochemistry calculations - now imports from centralized constants.
+
+This file is kept for backward compatibility but imports from handlers.constants.
 """
 
-# Faraday constant in C/mol
-FARADAY_CONSTANT = 96485.3321233100184
-
-# Check PyMatGen availability
 import logging
+
+from ..constants import FARADAY_CONSTANT
 
 _log = logging.getLogger(__name__)
 
+# Check PyMatGen availability
 try:
     from pymatgen.apps.battery.insertion_battery import InsertionElectrode
     from pymatgen.core import Composition, Element
