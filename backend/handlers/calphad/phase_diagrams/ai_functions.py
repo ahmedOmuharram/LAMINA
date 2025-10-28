@@ -1833,7 +1833,7 @@ class AIFunctionsMixin:
         try:
             from .fact_checker import (
                 AlloyFactChecker, TwoPhaseChecker, ThreePhaseChecker, 
-                PhaseFractionChecker, PhaseCategory, atpct_to_molefrac, interpret_microstructure
+                PhaseFractionChecker, atpct_to_molefrac, interpret_microstructure
             )
             from .solidification_utils import (
                 simulate_as_cast_microstructure_simple,
