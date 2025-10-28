@@ -166,14 +166,15 @@ The phase diagram is computed by minimizing the total Gibbs free energy at each 
 
 .. math::
 
-   G^{total} = \\sum_{\\phi} f^{\\phi} G^{\\phi}(T, X^{\\phi})
+   G^{total} = \sum_{\phi} f^{\phi} G^{\phi}(T, X^{\phi})
 
-where :math:`f^{\\phi}` is the phase fraction and :math:`G^{\\phi}` is the molar Gibbs energy of phase :math:`\\phi`.
+where :math:`f^{\phi}` is the phase fraction and :math:`G^{\phi}` is the molar Gibbs energy of phase :math:`\phi`.
 
 At equilibrium:
-- Chemical potentials are equal across all phases: :math:`\\mu_i^{\\alpha} = \\mu_i^{\\beta}` for all components i
-- Phase fractions satisfy: :math:`\\sum_{\\phi} f^{\\phi} = 1`
-- Mass balance: :math:`X_i = \\sum_{\\phi} f^{\\phi} X_i^{\\phi}`
+
+- Chemical potentials are equal across all phases: :math:`\mu_i^{\alpha} = \mu_i^{\beta}` for all components i
+- Phase fractions satisfy: :math:`\sum_{\phi} f^{\phi} = 1`
+- Mass balance: :math:`X_i = \sum_{\phi} f^{\phi} X_i^{\phi}`
 
 **Example:**
 
@@ -386,23 +387,23 @@ At each temperature point T, the equilibrium phase fractions are computed by min
 
 .. math::
 
-   \\min_{f^{\\phi}, X_i^{\\phi}} G^{total} = \\sum_{\\phi} f^{\\phi} \\sum_i X_i^{\\phi} \\mu_i^{\\phi}(T, X^{\\phi})
+   \min_{f^{\phi}, X_i^{\phi}} G^{total} = \sum_{\phi} f^{\phi} \sum_i X_i^{\phi} \mu_i^{\phi}(T, X^{\phi})
 
 Subject to:
 
 .. math::
 
-   \\sum_{\\phi} f^{\\phi} = 1 \\quad \\text{(phase fraction constraint)}
+   \sum_{\phi} f^{\phi} = 1 \quad \text{(phase fraction constraint)}
 
 .. math::
 
-   \\sum_{\\phi} f^{\\phi} X_i^{\\phi} = X_i^{global} \\quad \\text{(mass balance for each element i)}
+   \sum_{\phi} f^{\phi} X_i^{\phi} = X_i^{global} \quad \text{(mass balance for each element i)}
 
 .. math::
 
-   \\mu_i^{\\alpha} = \\mu_i^{\\beta} \\quad \\forall \\alpha, \\beta \\quad \\text{(chemical equilibrium)}
+   \mu_i^{\alpha} = \mu_i^{\beta} \quad \forall \alpha, \beta \quad \text{(chemical equilibrium)}
 
-The stacked area plot shows :math:`f^{\\phi}(T)` for each phase φ.
+The stacked area plot shows :math:`f^{\phi}(T)` for each phase φ.
 
 **Example:**
 
@@ -613,7 +614,7 @@ Calculate thermodynamic equilibrium phase fractions at a specific temperature an
    - If ``composition_type='weight'``:
      
      - Converts weight% to atomic% using atomic masses
-     - Formula: :math:`X_i^{at} = \\frac{w_i/M_i}{\\sum_j w_j/M_j}`
+     - Formula: :math:`X_i^{at} = \frac{w_i/M_i}{\sum_j w_j/M_j}`
      - where :math:`w_i` is weight fraction, :math:`M_i` is atomic mass
    
    - Normalizes to sum to 1.0 (mole fractions)
@@ -659,13 +660,13 @@ Calculate thermodynamic equilibrium phase fractions at a specific temperature an
      
      .. math::
      
-        \\min G^{total} = \\sum_{\\phi} f^{\\phi} G^{\\phi}(T, P, X^{\\phi})
+        \min G^{total} = \sum_{\phi} f^{\phi} G^{\phi}(T, P, X^{\phi})
      
      Subject to:
      
-     - :math:`\\sum_{\\phi} f^{\\phi} = 1` (phase fractions sum to 1)
-     - :math:`\\sum_{\\phi} f^{\\phi} X_i^{\\phi} = X_i^{global}` (mass balance)
-     - :math:`\\mu_i^{\\alpha} = \\mu_i^{\\beta}` ∀ i, α, β (chemical equilibrium)
+     - :math:`\sum_{\phi} f^{\phi} = 1` (phase fractions sum to 1)
+     - :math:`\sum_{\phi} f^{\phi} X_i^{\phi} = X_i^{global}` (mass balance)
+     - :math:`\mu_i^{\alpha} = \mu_i^{\beta}` ∀ i, α, β (chemical equilibrium)
 
 2. **Phase Fraction Extraction:**
    
@@ -761,13 +762,14 @@ The Gibbs free energy of phase φ at temperature T is:
 
 .. math::
 
-   G^{\\phi}(T, P, X^{\\phi}) = \\sum_i X_i^{\\phi} G_i^0(T) + RT \\sum_i X_i^{\\phi} \\ln(X_i^{\\phi}) + G^{ex}(T, X^{\\phi})
+   G^{\phi}(T, P, X^{\phi}) = \sum_i X_i^{\phi} G_i^0(T) + RT \sum_i X_i^{\phi} \ln(X_i^{\phi}) + G^{ex}(T, X^{\phi})
 
 where:
-- :math:`G_i^0(T)` is the reference state Gibbs energy of component i
-- :math:`RT \\sum_i X_i^{\\phi} \\ln(X_i^{\\phi})` is the ideal mixing term
-- :math:`G^{ex}(T, X^{\\phi})` is the excess Gibbs energy (from TDB parameters)
 
+- :math:`G_i^0(T)` is the reference state Gibbs energy of component i
+- :math:`RT \sum_i X_i^{\phi} \ln(X_i^{\phi})` is the ideal mixing term
+- :math:`G^{ex}(T, X^{\phi})` is the excess Gibbs energy (from TDB parameters)
+       
 The equilibrium solver minimizes the total Gibbs energy subject to mass balance and chemical equilibrium constraints.
 
 **Example:**
