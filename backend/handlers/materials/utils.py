@@ -4,22 +4,50 @@ Utility functions for materials property analysis.
 import logging
 from typing import Dict, Any, List, Optional
 import numpy as np
+import math
 
 from ..shared import success_result, error_result, ErrorType, Confidence
+from ..shared.api_utils import format_field_error
 
 _log = logging.getLogger(__name__)
 
 
-def get_elastic_properties(mpr, material_id: str) -> Dict[str, Any]:
+def _safe_ratio(K, G, eps=1e-12):
+    """
+    Compute Poisson ratio from bulk modulus K and shear modulus G.
+    Avoids division by zero and handles None values.
+    
+    Args:
+        K: Bulk modulus (GPa)
+        G: Shear modulus (GPa)
+        
+    Returns:
+        Poisson ratio or None if calculation not possible
+    """
+    # avoid division by ~zero
+    if K is None or G is None:
+        return None
+    denom = 2.0 * (3.0*K + G)
+    if not (math.isfinite(K) and math.isfinite(G) and math.isfinite(denom)):
+        return None
+    if abs(denom) < eps:
+        return None
+    return (3.0*K - 2.0*G) / denom
+
+
+def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[str, Any]:
     """
     Get elastic/mechanical properties for a material.
     
     Args:
         mpr: MPRester client instance
         material_id: Material ID
+        eps: Epsilon value for numerical stability in division checks (default: 1e-12)
         
     Returns:
         Dictionary with elastic properties including bulk modulus, shear modulus, etc.
+        Includes derived properties (Poisson ratio, Young's modulus, Pugh ratio),
+        mechanical stability assessment, and optional tensor-based recomputation.
     """
     try:
         docs = mpr.materials.summary.search(
@@ -91,28 +119,159 @@ def get_elastic_properties(mpr, material_id: str) -> Dict[str, Any]:
                 }
         else:
             data["shear_modulus"] = None
+        
+        # Sanity checks: extract K and G for validation
+        K = data.get("bulk_modulus", {}).get("k_vrh") if isinstance(data.get("bulk_modulus"), dict) else None
+        G = data.get("shear_modulus", {}).get("g_vrh") if isinstance(data.get("shear_modulus"), dict) else None
+        
+        # Compute Poisson ratio from K and G
+        nu = _safe_ratio(K, G, eps)
+        
+        # Compute Young's modulus and Pugh ratio
+        E = None
+        pugh = None
+        if K is not None and G is not None and (3.0*K + G) != 0:
+            E = 9.0*K*G/(3.0*K + G)
+            pugh = (K/G) if G != 0 else None
+        
+        # Validate and flag issues
+        flags = []
+        if K is not None and K <= 0:
+            flags.append("non_positive_bulk_modulus")
+        if G is not None and G <= 0:
+            flags.append("non_positive_shear_modulus")
+        if nu is not None and not (-1.0 < nu < 0.5):
+            flags.append("poisson_out_of_bounds")
+        if E is not None and E <= 0:
+            flags.append("non_positive_youngs_modulus")
+        if pugh is not None and pugh < 0:
+            flags.append("negative_pugh_ratio")
+        
+        # Suppress nonsense derived values when G <= 0
+        if G is not None and G <= 0:
+            data["derived"] = {
+                "poisson_from_KG": None,
+                "youngs_from_KG": None,
+                "pugh_K_over_G": None
+            }
+            flags.append("derived_suppressed_due_to_non_positive_shear_modulus")
+        else:
+            # Add derived properties
+            data["derived"] = {
+                "poisson_from_KG": nu,
+                "youngs_from_KG": E,
+                "pugh_K_over_G": pugh
+            }
+        
+        # 2) ELASTICITY: fetch tensor & Born stability from the dedicated endpoint
+        et_doc = None
+        used_pymatgen = False
+        born_stable = None
+        
+        try:
+            # Try with explicit fields (may vary by server version)
+            et_docs = mpr.materials.elasticity.search(
+                material_ids=material_id,
+                fields=["material_id", "elastic_tensor", "K_VRH", "G_VRH", "warnings"]
+            )
+        except Exception as e:
+            # Fallback: no field filtering (avoids "invalid fields" errors)
+            _log.debug(f"Elasticity search with fields failed for {material_id}, trying without fields: {e}")
+            try:
+                et_docs = mpr.materials.elasticity.search(material_ids=material_id)
+            except Exception as e2:
+                _log.warning(f"Elasticity search failed for {material_id}: {e2}")
+                et_docs = []
+        
+        if et_docs:
+            et_doc = et_docs[0]
             
+            # Pull VRH from elasticity doc if present (useful cross-check)
+            K_vrh_el = getattr(et_doc, "K_VRH", None)
+            G_vrh_el = getattr(et_doc, "G_VRH", None)
+            if K_vrh_el is not None or G_vrh_el is not None:
+                data.setdefault("vrh_from_tensor", {})
+                if K_vrh_el is not None:
+                    data["vrh_from_tensor"]["k_vrh"] = float(K_vrh_el)
+                if G_vrh_el is not None:
+                    data["vrh_from_tensor"]["g_vrh"] = float(G_vrh_el)
+            
+            # Recompute VRH + Born stability from the full elastic tensor if available
+            elastic_tensor = getattr(et_doc, "elastic_tensor", None)
+            if elastic_tensor is not None:
+                try:
+                    from pymatgen.analysis.elasticity.elastic import ElasticTensor
+                    ET = ElasticTensor(elastic_tensor).voigt_symmetrized
+                    data.setdefault("vrh_from_tensor", {})
+                    data["vrh_from_tensor"].update({
+                        "k_vrh": float(ET.k_vrh),
+                        "g_vrh": float(ET.g_vrh),
+                        "is_born_stable": bool(ET.is_stable())
+                    })
+                    born_stable = bool(ET.is_stable())
+                    used_pymatgen = True
+                    
+                    # Add Born stability details
+                    data["born_details"] = {
+                        "is_born_stable": bool(ET.is_stable())
+                    }
+                except Exception as tensor_err:
+                    _log.warning(f"Could not recompute VRH from elastic tensor for {material_id}: {tensor_err}")
+            
+            # Surface warnings if the API provides them
+            et_warnings = getattr(et_doc, "warnings", None)
+            if et_warnings:
+                if isinstance(et_warnings, (list, tuple)):
+                    data["elasticity_warnings"] = list(et_warnings)
+                else:
+                    data["elasticity_warnings"] = [et_warnings]
+        
+        # Prefer Born stability verdict if available, otherwise use heuristic
+        likely_stable = (K is not None and K > 0 and G is not None and G > 0 and nu is not None and -1.0 < nu < 0.5)
+        if born_stable is not None:
+            likely_stable = born_stable
+        
+        # Add mechanical stability assessment
+        data["mechanical_stability"] = {
+            "likely_stable": likely_stable,
+            "flags": flags or None,
+        }
+
+        # Add compact quality summary
+        data["data_quality"] = (
+            "elastic_tensor_unstable" if "non_positive_shear_modulus" in flags
+            else "ok"
+        )
+        
         if hasattr(doc, 'universal_anisotropy') and doc.universal_anisotropy is not None:
             data["universal_anisotropy"] = float(doc.universal_anisotropy)
         
         if hasattr(doc, 'homogeneous_poisson') and doc.homogeneous_poisson is not None:
             data["poisson_ratio"] = float(doc.homogeneous_poisson)
         
+        citations = ["Materials Project"]
+        if used_pymatgen or et_doc:
+            citations.append("pymatgen")
+        
+        # Lower confidence if flags are present
+        conf = Confidence.HIGH if not flags else Confidence.MEDIUM
+        
         return success_result(
             handler="materials",
             function="get_elastic_properties",
             data=data,
-            citations=["Materials Project"],
-            confidence=Confidence.HIGH
+            citations=citations,
+            confidence=conf
         )
         
     except Exception as e:
         _log.error(f"Error getting elastic properties for {material_id}: {e}", exc_info=True)
+        formatted_error = format_field_error(e)
         return error_result(
             handler="materials",
             function="get_elastic_properties",
-            error=str(e),
-            error_type=ErrorType.COMPUTATION_ERROR,
+            error=formatted_error,
+            error_type=ErrorType.INVALID_INPUT if "invalid fields" in str(e).lower() or "invalid field" in str(e).lower() else ErrorType.COMPUTATION_ERROR,
             citations=["Materials Project"]
         )
 
@@ -278,11 +437,12 @@ def find_closest_alloy_compositions(
         
     except Exception as e:
         _log.error(f"Error finding alloy compositions: {e}", exc_info=True)
+        formatted_error = format_field_error(e)
         return error_result(
             handler="materials",
             function="find_closest_alloy_compositions",
-            error=str(e),
-            error_type=ErrorType.COMPUTATION_ERROR,
+            error=formatted_error,
+            error_type=ErrorType.INVALID_INPUT if "invalid fields" in str(e).lower() or "invalid field" in str(e).lower() else ErrorType.COMPUTATION_ERROR,
             citations=["Materials Project"]
         )
 
@@ -771,11 +931,12 @@ def analyze_doping_effect(
         
     except Exception as e:
         _log.error(f"Error analyzing doping effect: {e}", exc_info=True)
+        formatted_error = format_field_error(e)
         return error_result(
             handler="materials",
             function="analyze_doping_effect",
-            error=str(e),
-            error_type=ErrorType.COMPUTATION_ERROR,
+            error=formatted_error,
+            error_type=ErrorType.INVALID_INPUT if "invalid fields" in str(e).lower() or "invalid field" in str(e).lower() else ErrorType.COMPUTATION_ERROR,
             citations=["Materials Project"]
         )
 

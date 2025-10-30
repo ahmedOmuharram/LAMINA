@@ -500,7 +500,7 @@ get_elastic_properties
 
 **Description:**
 
-Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ratio, etc.) for a specific material. Extracts moduli in both Voigt, Reuss, and VRH (Voigt-Reuss-Hill average) forms.
+Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio) for a specific material. Extracts moduli in both Voigt, Reuss, and VRH (Voigt-Reuss-Hill average) forms. **Automatically validates data quality** and flags unphysical values (e.g., negative moduli). Computes **derived properties** from moduli and provides **mechanical stability assessment**. When elastic tensor is available, recomputes VRH values using pymatgen and provides **Born stability verdict**.
 
 **When to Use:**
 
@@ -508,10 +508,14 @@ Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ra
 - Comparing elastic behavior between materials
 - Understanding anisotropy and compliance
 - Designing materials for structural applications
+- Validating elastic data quality (detects problematic entries like negative moduli)
+- Assessing mechanical stability from Born criteria
 
 **How It Fetches Data:**
 
-1. **API Query:**
+The function uses **two separate API endpoints** to fetch elastic properties:
+
+1. **Summary Endpoint (Basic Properties):**
    
    Calls ``mpr.materials.summary.search()`` with specific elastic-related fields:
    
@@ -532,12 +536,95 @@ Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ra
    - Handles both dictionary format (from API) and object format (from pymatgen)
    - Extracts VRH average (recommended value), Voigt bound (upper), Reuss bound (lower)
 
-3. **Moduli Interpretation:**
+3. **Derived Properties Computation:**
    
-   - **Voigt bound**: Upper bound assuming uniform strain (iso-strain)
-   - **Reuss bound**: Lower bound assuming uniform stress (iso-stress)
-   - **VRH average**: ``(Voigt + Reuss) / 2`` - recommended for polycrystalline aggregates
-   - All values in GPa
+   Computes additional mechanical properties from bulk modulus (K) and shear modulus (G):
+   
+   .. code-block:: python
+   
+      # Poisson ratio: ν = (3K - 2G) / (2(3K + G))
+      # Young's modulus: E = 9KG / (3K + G)
+      # Pugh ratio: K/G (brittleness indicator)
+      
+      nu = _safe_ratio(K, G)  # Handles division by zero
+      E = 9.0 * K * G / (3.0 * K + G) if (3.0 * K + G) != 0 else None
+      pugh = K / G if G != 0 else None
+   
+   **Important**: If G ≤ 0, all derived values are **suppressed** (set to ``None``) to prevent reporting unphysical values (e.g., Poisson ratio > 0.5, negative Young's modulus). A flag ``derived_suppressed_due_to_non_positive_shear_modulus`` is added.
+
+4. **Data Quality Validation:**
+   
+   Performs sanity checks and flags issues:
+   
+   .. code-block:: python
+   
+      flags = []
+      if K <= 0:
+          flags.append("non_positive_bulk_modulus")
+      if G <= 0:
+          flags.append("non_positive_shear_modulus")
+      if nu is not None and not (-1.0 < nu < 0.5):
+          flags.append("poisson_out_of_bounds")
+      if E <= 0:
+          flags.append("non_positive_youngs_modulus")
+      if pugh < 0:
+          flags.append("negative_pugh_ratio")
+
+5. **Elasticity Endpoint (Tensor Data & Born Stability):**
+   
+   Makes a **second API call** to fetch full elastic tensor data:
+   
+   .. code-block:: python
+   
+      # Try with explicit fields first
+      et_docs = mpr.materials.elasticity.search(
+          material_ids=material_id,
+          fields=["material_id", "elastic_tensor", "K_VRH", "G_VRH", "warnings"]
+      )
+      # Fallback: if fields fail, try without field filtering
+      except:
+          et_docs = mpr.materials.elasticity.search(material_ids=material_id)
+   
+   If elasticity data is available:
+   
+   - Extracts ``K_VRH`` and ``G_VRH`` from elasticity doc (cross-check with summary values)
+   - If full ``elastic_tensor`` is present, recomputes VRH and Born stability using pymatgen:
+   
+   .. code-block:: python
+   
+      from pymatgen.analysis.elasticity.elastic import ElasticTensor
+      ET = ElasticTensor(et.elastic_tensor).voigt_symmetrized
+      data["vrh_from_tensor"] = {
+          "k_vrh": float(ET.k_vrh),
+          "g_vrh": float(ET.g_vrh),
+          "is_born_stable": bool(ET.is_stable())  # Born stability criterion
+      }
+      data["born_details"] = {
+          "is_born_stable": bool(ET.is_stable())
+      }
+      
+      # Born stability overrides heuristic if available
+      likely_stable = born_stable if born_stable is not None else heuristic
+   
+   - Captures warnings from Materials Project about problematic elastic tensors:
+   
+   .. code-block:: python
+   
+      if et_doc.warnings:
+          data["elasticity_warnings"] = list(et_doc.warnings)
+   
+   **Note**: The elasticity endpoint call is **optional** and gracefully handles cases where elasticity data is not available (e.g., no elastic tensor computed for the material).
+
+6. **Data Quality Summary:**
+   
+   Adds a compact quality indicator for downstream logic:
+   
+   .. code-block:: python
+   
+      data["data_quality"] = (
+          "elastic_tensor_unstable" if "non_positive_shear_modulus" in flags
+          else "ok"
+      )
 
 **Parameters:**
 
@@ -557,7 +644,7 @@ Dictionary containing:
            "material_id": str,
            "formula": str,
            "composition": Dict[str, float],
-           "is_stable": bool,
+           "is_stable": bool,  # Thermodynamic stability (on convex hull)
            "energy_above_hull": float,
            "bulk_modulus": {
                "k_vrh": float,
@@ -571,12 +658,67 @@ Dictionary containing:
                "g_reuss": float,
                "unit": str
            },
-           "universal_anisotropy": float,
-           "poisson_ratio": float
+           "universal_anisotropy": float,  # Present if available
+           "poisson_ratio": float,  # From MP homogeneous_poisson (if available)
+           "derived": {
+               "poisson_from_KG": float or None,  # Computed from K and G; None if G <= 0
+               "youngs_from_KG": float or None,    # Young's modulus in GPa; None if G <= 0
+               "pugh_K_over_G": float or None      # Pugh ratio (brittleness); None if G <= 0
+           },
+           "mechanical_stability": {
+               "likely_stable": bool,  # True if passes all checks or Born stable
+               "flags": List[str] or None  # Validation issues if any
+           },
+           "data_quality": str,  # "ok" or "elastic_tensor_unstable"
+           "vrh_from_tensor": {  # Present if elasticity endpoint data available
+               "k_vrh": float,
+               "g_vrh": float,
+               "is_born_stable": bool
+           },
+           "born_details": {  # Present if elastic tensor recomputed
+               "is_born_stable": bool
+           },
+           "elasticity_warnings": List[str]  # Present if warnings exist from MP
        },
-       "confidence": float,
-       "citations": List[str]
+       "confidence": str,  # "HIGH" if no flags, "MEDIUM" if flags present
+       "citations": List[str]  # ["Materials Project"] or ["Materials Project", "pymatgen"] (if tensor used)
    }
+
+**Mechanical Stability Assessment:**
+
+The function provides two levels of stability assessment:
+
+1. **Heuristic Validation** (always performed):
+   
+   - Checks that K > 0, G > 0
+   - Validates Poisson ratio: -1.0 < ν < 0.5
+   - Validates Young's modulus: E > 0
+   - Validates Pugh ratio: K/G ≥ 0
+   
+   Sets ``likely_stable = True`` only if all checks pass.
+
+2. **Born Stability** (when elasticity endpoint data available):
+   
+   - Fetches elastic tensor from dedicated ``materials.elasticity`` endpoint (separate from summary endpoint)
+   - Computes Born stability criterion from full elastic tensor using pymatgen
+   - Checks that all elastic eigenvalues are positive (mechanical stability requirement)
+   - **Overrides heuristic** if tensor recomputation succeeds
+   - More rigorous than heuristic (catches tensor-level instabilities)
+   - Returns ``born_details.is_born_stable`` boolean verdict
+
+**Confidence Levels:**
+
+- **HIGH**: No validation flags present (data appears physically reasonable)
+- **MEDIUM**: Validation flags present (e.g., negative moduli, out-of-bounds Poisson ratio)
+
+**Common Validation Flags:**
+
+- ``non_positive_bulk_modulus``: K ≤ 0 (unphysical, indicates calculation issues)
+- ``non_positive_shear_modulus``: G ≤ 0 (unphysical, e.g., Au mp-81 with -5.74 GPa)
+- ``poisson_out_of_bounds``: ν not in (-1.0, 0.5) range
+- ``non_positive_youngs_modulus``: E ≤ 0 (derived from invalid moduli)
+- ``negative_pugh_ratio``: K/G < 0 (indicates brittle/ductile classification impossible)
+- ``derived_suppressed_due_to_non_positive_shear_modulus``: When G ≤ 0, all derived properties (Poisson ratio, Young's modulus, Pugh ratio) are set to ``None`` to avoid reporting unphysical values
 
 **Example:**
 
@@ -1263,6 +1405,64 @@ Literature (Sun 2016, Aykol 2018) shows most experimentally known metastable mat
   - A = 0 → isotropic
   - A > 1 → anisotropic (directionally dependent)
 
+- **Young's modulus (E)**: Stiffness in uniaxial tension/compression
+  
+  - E = 9KG / (3K + G) (derived from K and G)
+  - High E → stiff (tungsten: ~411 GPa)
+  - Low E → compliant (rubber: ~0.01 GPa)
+
+- **Pugh ratio (K/G)**: Brittleness indicator
+  
+  - K/G > 1.75 → ductile (metals)
+  - K/G < 1.75 → brittle (ceramics)
+  - Negative K/G → unphysical (indicates data quality issues)
+
+**Elastic Data Quality Validation:**
+
+The ``get_elastic_properties()`` function automatically validates data quality and flags unphysical values:
+
+- **Negative moduli**: Some MP entries (e.g., Au mp-81 with G_VRH = -5.74 GPa) have negative shear moduli due to:
+  
+  - Poor convergence (k-mesh, cutoff, strain size)
+  - Residual stress in relaxed structure
+  - Missing physics (e.g., SOC for Au)
+  
+  These are flagged as ``non_positive_shear_modulus`` or ``non_positive_bulk_modulus``.
+
+- **Derived values suppression**: When G ≤ 0, the function **suppresses** (sets to ``None``) all derived properties:
+  
+  - ``derived.poisson_from_KG`` → ``None``
+  - ``derived.youngs_from_KG`` → ``None``
+  - ``derived.pugh_K_over_G`` → ``None``
+  
+  This prevents reporting unphysical values (e.g., Poisson ratio > 0.5, negative Young's modulus) that could mislead downstream consumers. A flag ``derived_suppressed_due_to_non_positive_shear_modulus`` is added to indicate this occurred.
+
+- **Out-of-bounds Poisson ratio**: Valid range is (-1.0, 0.5). Values outside indicate:
+  
+  - Data quality issues
+  - Unstable elastic tensor
+  - Calculation problems
+  
+  Flagged as ``poisson_out_of_bounds``.
+
+- **Born stability**: Fetches elastic tensor from dedicated ``materials.elasticity`` endpoint (separate from summary endpoint). When available, checks Born mechanical stability criterion:
+  
+  - All elastic eigenvalues must be positive
+  - More rigorous than heuristic validation
+  - Overrides heuristic assessment if tensor recomputation succeeds
+  - Results in ``born_details.is_born_stable`` boolean verdict
+
+- **Elasticity warnings**: Some entries include warnings from MP about problematic tensors (captured in ``elasticity_warnings`` field).
+
+- **Data quality summary**: Provides compact ``data_quality`` field:
+  
+  - ``"ok"``: No validation issues
+  - ``"elastic_tensor_unstable"``: Non-positive shear modulus detected
+  
+  Useful for downstream logic branching (e.g., skip analysis if unstable).
+
+- **Confidence adjustment**: Results with validation flags receive ``MEDIUM`` confidence instead of ``HIGH``, alerting users to potential data quality issues.
+
 **VRH Bounds (Mixture Models):**
 
 - **Voigt bound**: Assumes iso-strain (uniform strain, upper bound)
@@ -1318,3 +1518,11 @@ Literature (Sun 2016, Aykol 2018) shows most experimentally known metastable mat
 - **Magnetic ordering** in some materials sensitive to exchange-correlation functional
 - **Phonon/thermal properties** not included (static 0 K calculations)
 - **Surface energies** are Wulff-construction weighted averages (not single facets)
+- **Elastic properties**:
+  
+  - Some entries have **negative moduli** (data quality flags automatically detected)
+  - **Unconverged calculations** (k-mesh, cutoff) can produce unphysical tensors
+  - **Missing physics** (e.g., spin-orbit coupling for heavy elements like Au) can cause instability
+  - **Born stability** fetched from dedicated ``materials.elasticity`` endpoint and checked when tensor available (more rigorous than heuristic)
+  - When G ≤ 0, **derived properties are suppressed** (set to ``None``) to avoid unphysical values
+  - Always check ``mechanical_stability.flags``, ``data_quality``, and ``confidence`` level for data quality assessment

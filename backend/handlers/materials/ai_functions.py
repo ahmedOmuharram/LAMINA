@@ -358,12 +358,12 @@ class MaterialsAIFunctionsMixin:
         self._track_tool_output("mp_get_material_details", result)
         return result
 
-    @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, etc.) for a material.", auto_truncate=128000)
+    @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio) for a material. Includes mechanical stability validation, derived properties computed from moduli, and optional tensor-based recomputation with Born stability when elastic tensor is available.", auto_truncate=128000)
     async def get_elastic_properties(
         self,
         material_id: Annotated[str, AIParam(desc="Material ID (e.g., 'mp-81' for Ag, 'mp-30' for Cu).")]
     ) -> Dict[str, Any]:
-        """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, etc."""
+        """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio, mechanical stability assessment, and derived properties. Automatically validates data quality and flags unphysical values (e.g., negative moduli). When elastic tensor is available, recomputes VRH values and provides Born stability verdict."""
         start_time = time.time()
         
         util_result = get_elastic_properties(self.mpr, material_id)
