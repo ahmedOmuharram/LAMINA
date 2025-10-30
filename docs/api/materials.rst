@@ -550,21 +550,13 @@ The function uses **two separate API endpoints** to fetch elastic properties:
 
 4. **Data Quality Validation:**
    
-   Performs sanity checks and flags issues:
+   Performs sanity checks using the following criteria:
    
-   .. code-block:: python
-   
-      flags = []
-      if K <= 0:  # :math:`K \leq 0`
-          flags.append("non_positive_bulk_modulus")
-      if G <= 0:  # :math:`G \leq 0`
-          flags.append("non_positive_shear_modulus")
-      if nu is not None and not (-1.0 < nu < 0.5):  # :math:`-1.0 < \nu < 0.5`
-          flags.append("poisson_out_of_bounds")
-      if E <= 0:  # :math:`E \leq 0`
-          flags.append("non_positive_youngs_modulus")
-      if pugh < 0:  # :math:`K/G < 0`
-          flags.append("negative_pugh_ratio")
+   - :math:`K \leq 0` → ``non_positive_bulk_modulus``
+   - :math:`G \leq 0` → ``non_positive_shear_modulus``
+   - :math:`-1.0 < \nu < 0.5` violated → ``poisson_out_of_bounds``
+   - :math:`E \leq 0` → ``non_positive_youngs_modulus``
+   - :math:`K/G < 0` → ``negative_pugh_ratio``
 
 5. **Elasticity Endpoint (Tensor Data & Born Stability):**
    
@@ -657,9 +649,9 @@ Dictionary containing:
            "universal_anisotropy": float,  # Present if available
            "poisson_ratio": float,  # From MP homogeneous_poisson (if available)
            "derived": {
-               "poisson_from_KG": float or None,  # Computed from K and G; None if :math:`G \leq 0`
-               "youngs_from_KG": float or None,    # Young's modulus in GPa; None if :math:`G \leq 0`
-               "pugh_K_over_G": float or None      # Pugh ratio (brittleness); None if :math:`G \leq 0`
+               "poisson_from_KG": float or None,  # Computed from K and G; None if G ≤ 0
+               "youngs_from_KG": float or None,    # Young's modulus in GPa; None if G ≤ 0
+               "pugh_K_over_G": float or None      # Pugh ratio (brittleness); None if G ≤ 0
            },
            "mechanical_stability": {
                "likely_stable": bool,  # True if passes all checks or Born stable
@@ -777,7 +769,8 @@ Find materials with closest matching alloy compositions (e.g., Ag-Cu alloys near
       if is_stable:
           search_kwargs["energy_above_hull"] = (0, 1e-3)  # Essentially 0
       else:
-          search_kwargs["energy_above_hull"] = (0, ehull_max)  # e.g., :math:`0-0.20` eV/atom
+          # Energy window: 0 to ehull_max (e.g., 0-0.20 eV/atom)
+          search_kwargs["energy_above_hull"] = (0, ehull_max)
       
       # Initial search
       docs = mpr.materials.summary.search(**search_kwargs)
@@ -877,7 +870,7 @@ Dictionary containing:
 
 .. code-block:: python
 
-   # Find Ag-Cu alloys closest to :math:`\approx 12.5\%` Cu (87.5% Ag)
+   # Find Ag-Cu alloys closest to ~12.5% Cu (87.5% Ag)
    result = await handler.find_closest_alloy_compositions(
        elements=['Ag', 'Cu'],
        target_composition={'Ag': 0.875, 'Cu': 0.125},
