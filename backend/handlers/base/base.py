@@ -213,7 +213,8 @@ class BaseHandler:
         if fields is not None:
             field_mapping = {
                 "formula": "formula_pretty",
-                "magnetic_ordering": "ordering"
+                "magnetic_ordering": "ordering",
+                "refractive_index": "n",
             }
             mapped_fields = [field_mapping.get(f, f) for f in fields]
             raw_kwargs["fields"] = mapped_fields

@@ -301,20 +301,22 @@ mp_get_by_id
    async def mp_get_by_id(
        self,
        material_ids: List[str],
+       fields: Optional[List[str]] = None,
        page: int = 1,
        per_page: int = 10
    ) -> Dict[str, Any]
 
 **Description:**
 
-Get materials by their Materials Project IDs. Returns basic material information (IDs, formulas, elements, chemical systems). Use ``mp_get_material_details()`` for comprehensive property data.
+Get materials by their Materials Project IDs. By default, returns basic material information (IDs, formulas, elements, chemical systems). Custom fields can be specified via the ``fields`` parameter to retrieve specific properties. Use ``mp_get_material_details()`` for comprehensive property data with all available fields.
 
 **When to Use:**
 
 - Retrieving basic material information when you already have the Materials Project ID
 - Quick lookups of material IDs to verify existence
 - Getting IDs, formulas, and elements for known materials
-- Use ``mp_get_material_details()`` for comprehensive property data
+- Retrieving specific fields by providing the ``fields`` parameter
+- Use ``mp_get_material_details()`` for comprehensive property data with all fields
 
 **How It Fetches Data:**
 
@@ -327,9 +329,10 @@ Get materials by their Materials Project IDs. Returns basic material information
 
 2. **Field Selection:**
    
-   - Returns only basic fields: ``["material_id", "formula_pretty", "elements", "chemsys"]``
-   - Uses ``mp_get_material_details()`` internally with limited fields
-   - Designed for quick ID lookups, not comprehensive property access
+   - Default fields: ``["material_id", "formula_pretty", "elements", "chemsys"]``
+   - Custom fields can be specified via ``fields`` parameter
+   - Uses ``mp_get_material_details()`` internally
+   - If ``fields`` parameter is provided, uses those fields instead of defaults
 
 3. **API Query:**
    
@@ -338,7 +341,7 @@ Get materials by their Materials Project IDs. Returns basic material information
       # In mp_get_by_id():
       search_kwargs = {
           "material_ids": "mp-149,mp-150,mp-151",  # CSV string
-          "fields": ["material_id", "formula_pretty", "elements", "chemsys"]
+          "fields": fields if fields else ["material_id", "formula_pretty", "elements", "chemsys"]  # Default or custom
       }
       docs = mpr.materials.summary.search(**search_kwargs)
 
@@ -349,6 +352,7 @@ Get materials by their Materials Project IDs. Returns basic material information
 **Parameters:**
 
 - ``material_ids`` (List[str], required): List of material IDs (e.g., ``['mp-149', 'mp-30', 'mp-81']``)
+- ``fields`` (List[str], optional): Specific data fields to return in response (see Fields section for full list of available returned properties). If not provided, returns basic fields: ``['material_id', 'formula_pretty', 'elements', 'chemsys']``
 - ``page`` (int, optional): Page number. Default: 1
 - ``per_page`` (int, optional): Items per page. Default: 10
 
@@ -363,6 +367,12 @@ Dictionary with same structure as ``mp_search_by_composition``, containing basic
    # Get basic info for materials by ID
    result = await handler.mp_get_by_id(
        material_ids=['mp-149', 'mp-30']
+   )
+   
+   # Get specific fields for materials by ID
+   result = await handler.mp_get_by_id(
+       material_ids=['mp-149', 'mp-30'],
+       fields=['material_id', 'formula_pretty', 'band_gap', 'energy_above_hull']
    )
 
 .. _mp_get_material_details:
