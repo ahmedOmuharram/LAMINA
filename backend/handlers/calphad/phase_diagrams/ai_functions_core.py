@@ -10,17 +10,17 @@ import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import Dict, Any, Optional
+from typing import Optional
 import logging
 import time
 
-from pycalphad import Database, binplot
+from pycalphad import binplot
 import pycalphad.variables as v
 from kani.ai_function import ai_function
 from typing_extensions import Annotated
 from kani import AIParam
 
-from .database_utils import get_db_elements, map_phase_name
+from .database_utils import get_db_elements
 from ...shared.calphad_utils import (
     extract_phase_fractions_from_equilibrium,
     load_tdb_database,

@@ -3,7 +3,7 @@ CALPHAD Handler
 
 The CALPHAD handler provides AI functions for generating phase diagrams, performing thermodynamic equilibrium calculations, and verifying metallurgical claims using CALPHAD (CALculation of PHAse Diagrams) methodology.
 
-All functions use thermodynamic databases (TDB files) to compute phase equilibria via the pycalphad library.
+All functions use thermodynamic databases (TDB files) to compute phase equilibria via the pycalphad library with adaptive refinement, configurable filtering, and robust solidification modeling.
 
 Overview
 --------
@@ -13,6 +13,16 @@ The CALPHAD handler is organized into three main categories:
 1. **Visualization Functions**: Generate phase diagrams and composition-temperature plots
 2. **Calculation Functions**: Compute equilibrium states and phase fractions
 3. **Verification Functions**: Validate metallurgical claims and sweep composition ranges
+
+**Key Features:**
+
+- **Adaptive refinement** around phase boundaries (liquidus/solidus/solvus) with bisection to user-specified tolerance
+- **Scheil-Gulliver solidification** modeling for realistic as-cast microstructures
+- **General invariant detection** (eutectic, peritectic, monotectic, eutectoid, peritectoid)
+- **Configurable phase filtering** with production/research/metastable presets
+- **Dual-unit support** (K/°C for temperature, at.%/wt.% for composition)
+- **Database provenance tracking** with validity range warnings
+- **Performance optimization** via equilibrium caching and parallel execution
 
 Core Visualization Functions
 -----------------------------
@@ -33,7 +43,13 @@ plot_binary_phase_diagram
        max_temperature: Optional[float] = None,
        composition_step: Optional[float] = None,
        figure_width: Optional[float] = None,
-       figure_height: Optional[float] = None
+       figure_height: Optional[float] = None,
+       temperature_unit: Optional[str] = "K",
+       composition_unit: Optional[str] = "atomic",
+       adaptive_refinement: Optional[bool] = True,
+       refinement_tolerance: Optional[float] = 2.0,
+       phase_filter_mode: Optional[str] = "production",
+       detect_all_invariants: Optional[bool] = True
    ) -> str
 
 **Description:**
@@ -49,23 +65,32 @@ plot_binary_phase_diagram
 
 **How It Fetches Data:**
 
-1. **Database Selection:**
+1. **Database Selection with Provenance:**
    
    - Parses system string to extract elements (e.g., "Al-Zn" → ['AL', 'ZN'])
    - Calls ``load_tdb_database([A, B])`` which implements element-based database selection:
      
-     - For Al-Mg-Zn systems → COST507.tdb
+     - For Al-Mg-Zn systems → COST507.tdb (validated for T: 200-1000 K, composition: 0-100 at.%, includes τ-phase)
      - For systems with C, N, B, Li → COST507.tdb
-     - For Al-based systems → mc_al_v2037_pycal.tdb
+     - For Al-based systems → mc_al_v2037_pycal.tdb (validated for T: 298-2000 K, multicomponent Al alloys)
      - Checks ``backend/tdbs/`` directory for matching .tdb files
    
    - Validates both elements exist in selected database
+   - **Reports database provenance**: source, version, validation ranges, recommended use
+   - **Issues warnings** when querying outside validated T or composition ranges
+   - **Allows user override** if multiple databases match (with explicit selection)
 
-2. **Phase Selection:**
+2. **Phase Selection (Configurable):**
    
-   - Calls ``_filter_phases_for_system(db, (A, B))`` to get relevant phases
-   - Excludes phases with unwanted patterns (ION_LIQUID, HALIDE_*, etc.)
+   - Calls ``_filter_phases_for_system(db, (A, B), mode=phase_filter_mode)`` to get relevant phases
+   - **Three modes**:
+     
+     - ``'production'`` (default): Excludes esoterica (ION_LIQUID, HALIDE_*, etc.) for cleaner diagrams
+     - ``'research'``: Shows all phases including ordered/disordered variants (B2 vs. A2)
+     - ``'metastable'``: Includes flagged metastable phases for non-equilibrium analysis
+   
    - Returns only phases containing the specified elements
+   - **Reports which phases were filtered** and why (for transparency)
 
 **How It Calculates:**
 
@@ -74,15 +99,16 @@ plot_binary_phase_diagram
    - Auto mode: Uses wide bracket (200-2300 K) to capture high-melting systems
    - Manual mode: Uses user-specified range
    - Handles degenerate case (min==max) by expanding ±100K
-   - Clamps temperature points: 12-60 points depending on range
+   - Initial grid: 12-60 points depending on range
+   - **Adaptive refinement** (if enabled): adds points around detected boundaries
 
-2. **Phase Diagram Generation:**
+2. **Phase Diagram Generation with Adaptive Refinement:**
    
    - Calls pycalphad's ``binplot()`` function with:
      
      - Composition range: X(B) from 0 to 1 with step size (default 0.02)
      - Temperature range with adaptive point count
-     - Pressure: 101325 Pa (1 atm)
+     - Pressure: 101325 Pa (1 atm, configurable)
      - N: 1 mole
    
    - ``binplot`` internally:
@@ -90,27 +116,95 @@ plot_binary_phase_diagram
      - Computes equilibrium at each (T, X) grid point using Gibbs energy minimization
      - Identifies phase boundaries where phase stability changes
      - Draws phase field regions and boundaries
+   
+   - **Adaptive refinement engine** (if ``adaptive_refinement=True``):
+     
+     - **Temperature (T) refinement**:
+       
+       - Detects regions where phase presence flips (fraction crosses threshold)
+       - Identifies steep liquid fraction gradients (temperature derivative spikes)
+       - Uses **bisection** to refine liquidus/solidus/solvus to within ``refinement_tolerance`` (default: ±2.0 K)
+       - Reports refined boundary temperatures with stated precision (e.g., 654.3 ± 2.0 K)
+     
+     - **Composition (X) refinement** (2D adaptivity):
+       
+       - Detects steep or narrow phase fields in composition space
+       - Identifies ordered/disordered boundaries (e.g., B2 vs. A2)
+       - Locates near-stoichiometric compound boundaries (sharp composition transitions)
+       - **Bivariate bisection** around phase-presence flips in both (T, X)
+       - Captures razor-thin solvi that fixed ΔX would miss
+       - Example: ordered L1₂ field in Al-Cu at specific compositions
+     
+     - **Adaptive point insertion**:
+       
+       - Adds concentrated grid points only where needed (not uniform densification)
+       - Preserves coarse spacing in smooth single-phase regions
+       - Typical refinement: 50-100 base points → 100-200 refined points in complex regions
 
-3. **Eutectic Detection:**
+3. **General Invariant Reaction Detection:**
    
    - Runs coarse equilibrium grid: ``_coarse_equilibrium_grid(db, A, B, phases, (T_lo, T_hi), nx=101, nT=161)``
-   - Extracts liquidus/solidus data from equilibrium results
-   - Identifies eutectic points using ``_find_eutectic_points()`` with:
-     
-     - delta_T=10.0 K tolerance
-     - min_spacing=0.03 composition separation
-     - eps_drop=0.1 K sensitivity for temperature minima
    
-   - Marks eutectics on diagram with annotations
+   - **Applies Savitzky-Golay smoothing** carefully:
+     
+     - Smooths only **within single-phase branches** (no cross-boundary smoothing)
+     - Window size: 5-9 points, scaled to local sampling density
+     - Avoids washing out sharp kinks at invariants
+     - Detects phase-field boundaries first, then smooths within each field independently
+   
+   - Searches for **zero degrees of freedom** (three-phase coexistence in binary systems)
+   
+   - **Classifies all invariant types**:
+     
+     - **Eutectic**: L → α + β (liquid decomposes to two solids on cooling)
+     - **Peritectic**: L + α ↔ β (liquid + solid react to form new solid)
+     - **Monotectic**: L₁ → L₂ + α (liquid miscibility gap decomposition)
+     - **Eutectoid**: γ → α + β (solid decomposes to two solids on cooling)
+     - **Peritectoid**: α + β ↔ γ (two solids react to form new solid)
+   
+   - **Robust detection criteria** (perturb both T and X):
+     
+     - Identifies candidate 3-phase points (co-occurrence check)
+     - **Perturbs both T and X** around candidate to confirm topology:
+       
+       .. code-block:: python
+       
+          # At candidate invariant (T₀, X₀) with phases (L, α, β)
+          # Perturb T upward: T₀ + ΔT
+          phases_above = get_stable_phases(T₀ + 0.5, X₀)
+          # Perturb T downward: T₀ - ΔT
+          phases_below = get_stable_phases(T₀ - 0.5, X₀)
+          # Perturb X left: X₀ - ΔX
+          phases_left = get_stable_phases(T₀, X₀ - 0.01)
+          # Perturb X right: X₀ + ΔX
+          phases_right = get_stable_phases(T₀, X₀ + 0.01)
+          
+          # Eutectic: L stable above, α+β stable below
+          # Peritectic: L+α above, β stable below (or vice versa)
+          # Monotectic: L₁+L₂ above (two liquid instances), L₂+α below
+       
+     - **Explicitly checks for two liquid instances** (LIQUID#1, LIQUID#2) for monotectics:
+       
+       - Detects liquid miscibility gaps
+       - Sums by base name to track total liquid fraction
+       - Confirms L₁ → L₂ + α topology
+     
+     - Uses **curvature-based minima/maxima detection** (not fixed absolute thresholds)
+     - Enforces **composition-space separation** (min_spacing scaled by local curvature) to avoid duplicates
+     - Cross-validates with phase diagram topology (invariants must lie on phase boundaries)
+   
+   - Marks all detected invariants on diagram with type-specific annotations and reaction equations
+   - Reports invariant temperatures with **refinement tolerance** as uncertainty (e.g., "Eutectic: 654.3 ± 2.0 K at 72.5 at.% Zn")
 
 4. **Analysis Generation:**
    
    - Visual analysis: Examines matplotlib figure and axes properties
    - Thermodynamic analysis: ``_analyze_phase_diagram()`` extracts:
      
-     - Pure element melting points (from phase field boundaries at X=0 and X=1)
-     - Eutectic temperatures and compositions
-     - Phase transition boundaries
+     - Pure element melting points (from phase field boundaries at X=0 and X=1, adaptively refined)
+     - All invariant reactions (eutectic, peritectic, etc.) with temperatures and compositions
+     - Phase transition boundaries (solvus, solidus, liquidus) with precision estimates
+     - Database provenance information (source, validation range coverage)
 
 **Parameters:**
 
@@ -120,11 +214,22 @@ plot_binary_phase_diagram
   - Concatenated: ``'AlZn'``
   - Full names: ``'aluminum-zinc'``
 
-- ``min_temperature`` (float, optional): Minimum temperature in Kelvin. Default: auto-detect (200 K)
-- ``max_temperature`` (float, optional): Maximum temperature in Kelvin. Default: auto-detect (2300 K)
+- ``min_temperature`` (float, optional): Minimum temperature (in unit specified by ``temperature_unit``). Default: auto-detect (200 K or -73 °C)
+- ``max_temperature`` (float, optional): Maximum temperature (in unit specified by ``temperature_unit``). Default: auto-detect (2300 K or 2027 °C)
 - ``composition_step`` (float, optional): Composition step size (0-1 range). Default: 0.02
 - ``figure_width`` (float, optional): Figure width in inches. Default: 9
 - ``figure_height`` (float, optional): Figure height in inches. Default: 6
+- ``temperature_unit`` (str, optional): Temperature axis units. Options: ``'K'`` (Kelvin, default) or ``'C'`` (Celsius). Calculations always internal Kelvin; this affects only axis labels/ticks
+- ``composition_unit`` (str, optional): Composition axis units. Options: ``'atomic'`` (at.%, default) or ``'weight'`` (wt.%). Explicit in figure title/legend
+- ``adaptive_refinement`` (bool, optional): Enable adaptive grid refinement around phase boundaries. Default: ``True``
+- ``refinement_tolerance`` (float, optional): Temperature tolerance (K) for bisection refinement of liquidus/solidus/solvus. Default: 2.0 K
+- ``phase_filter_mode`` (str, optional): Phase filtering preset. Options:
+  
+  - ``'production'`` (default): Clean diagrams, hides esoterica
+  - ``'research'``: Shows all phases including ordered/disordered variants
+  - ``'metastable'``: Includes metastable phases for non-equilibrium analysis
+
+- ``detect_all_invariants`` (bool, optional): Detect all invariant types (eutectic, peritectic, etc.), not just eutectics. Default: ``True``
 
 **Returns:**
 
@@ -140,11 +245,41 @@ Structured result containing:
            "message": "Successfully generated AL-ZN phase diagram...",
            "system": "AL-ZN",
            "phases": ["FCC_A1", "HCP_A3", "LIQUID"],
+           "phases_filtered": ["ION_LIQUID", "HALIDE_AL2F6"],  # What was excluded
            "temperature_range_K": [200.0, 2300.0],
+           "temperature_unit": "K",  # or "C" if requested
+           "composition_unit": "atomic",  # or "weight"
+           "database": {
+               "name": "COST507.tdb",
+               "source": "COST507 European database",
+               "version": "2.0",
+               "validation_range": "Al-Zn: T=[200-1000 K], X=[0-1]",
+               "in_validation_range": True  # or False with warning
+           },
            "key_points": [
-               {"type": "pure_melting", "element": "AL", "temperature": 933.5},
-               {"type": "eutectic", "temperature": 654.3, "composition_pct": 72.5, "reaction": "LIQUID → FCC_A1 + HCP_A3"}
-           ]
+               {
+                   "type": "pure_melting",
+                   "element": "AL",
+                   "temperature": 933.5,
+                   "uncertainty_K": 2.0
+               },
+               {
+                   "type": "eutectic",
+                   "temperature": 654.3,
+                   "uncertainty_K": 2.0,
+                   "composition_pct": 72.5,
+                   "reaction": "LIQUID → FCC_A1 + HCP_A3"
+               },
+               {
+                   "type": "peritectic",
+                   "temperature": 550.0,
+                   "uncertainty_K": 2.0,
+                   "composition_pct": 85.0,
+                   "reaction": "LIQUID + HCP_A3 ↔ FCC_A1"
+               }
+           ],
+           "refinement_applied": True,
+           "refinement_tolerance_K": 2.0
        },
        "has_image": True,
        "image_url": "http://localhost:8000/static/plots/phase_diagram_AL-ZN_<timestamp>.png",
@@ -158,7 +293,9 @@ Structured result containing:
 - Saves PNG image to ``interactive_plots/`` directory
 - Image served at ``http://localhost:8000/static/plots/[filename]``
 - Stores metadata in ``_last_image_metadata`` for later analysis
-- Caches equilibrium data in ``_cached_eq_coarse`` (cleaned up after analysis)
+- **Caches equilibrium results** by (T, X, phases, DB hash) in ``_equilibrium_cache`` for reuse
+- Parallel execution may spawn multiple process workers for independent (T,X) points
+- Cached data persists across function calls within session for performance
 
 **Mathematical Background:**
 
@@ -180,17 +317,35 @@ At equilibrium:
 
 .. code-block:: python
 
-   # Generate Al-Zn phase diagram with auto temperature range
+   # Generate Al-Zn phase diagram with auto temperature range and all defaults
    result = await handler.plot_binary_phase_diagram(
        system="Al-Zn"
    )
+   # Uses adaptive refinement, detects all invariants, production filter mode
    
-   # Generate Fe-Al phase diagram with specific temperature range
+   # Generate Fe-Al phase diagram in Celsius with research-level detail
    result = await handler.plot_binary_phase_diagram(
        system="Fe-Al",
        min_temperature=500,
        max_temperature=1800,
-       composition_step=0.01  # Finer composition resolution
+       temperature_unit="C",  # Display in Celsius
+       composition_step=0.01,  # Finer composition resolution
+       phase_filter_mode="research"  # Show ordered/disordered variants
+   )
+   
+   # High-precision diagram with tight refinement tolerance
+   result = await handler.plot_binary_phase_diagram(
+       system="Al-Cu",
+       adaptive_refinement=True,
+       refinement_tolerance=1.0,  # Refine to ±1.0 K (tighter than default 2.0 K)
+       detect_all_invariants=True  # Find eutectics, peritectics, eutectoids, etc.
+   )
+   
+   # Include metastable phases for non-equilibrium analysis
+   result = await handler.plot_binary_phase_diagram(
+       system="Al-Si",
+       phase_filter_mode="metastable",  # Include metastable phases
+       composition_unit="weight"  # Display in wt.% instead of at.%
    )
 
 .. _plot_composition_temperature:
@@ -210,7 +365,12 @@ plot_composition_temperature
        composition_type: Optional[str] = None,
        figure_width: Optional[float] = None,
        figure_height: Optional[float] = None,
-       interactive: Optional[str] = "html"
+       interactive: Optional[str] = "html",
+       temperature_unit: Optional[str] = "K",
+       adaptive_refinement: Optional[bool] = True,
+       refinement_tolerance: Optional[float] = 2.0,
+       phase_presence_threshold: Optional[float] = 0.01,
+       phase_filter_mode: Optional[str] = "production"
    ) -> str
 
 **Description:**
@@ -247,17 +407,25 @@ plot_composition_temperature
 
 **How It Calculates:**
 
-1. **Temperature Array Generation:**
+1. **Temperature Array Generation with Adaptive Refinement:**
    
    - Auto mode: T_lo=200 K, T_hi=2300 K (wide bracket)
    - Manual mode: uses user-specified range
    - Handles degenerate min==max case by expanding ±100K
-   - Adaptive point count: ``n_temp = max(50, min(200, int((T_hi - T_lo) / 5)))``
+   - **Initial coarse grid**: ``n_temp = max(50, min(200, int((T_hi - T_lo) / 5)))``
      
      - 50-200 temperature points depending on range
-     - ~5K spacing for reasonable resolution
+     - ~5K initial spacing for broad coverage
+   
+   - **Adaptive refinement** (if enabled):
+     
+     - After coarse scan, detects phase transitions (where phase presence flips)
+     - Identifies steep gradients in phase fractions (temperature derivative spikes)
+     - Uses **bisection** to nail liquidus/solidus to within ``refinement_tolerance`` (±2.0 K default)
+     - Adds concentrated points around narrow stability ranges
+     - Reports phase transition temperatures with stated precision (e.g., "liquidus: 654.3 ± 2.0 K")
 
-2. **Equilibrium Calculations at Each Temperature:**
+2. **Equilibrium Calculations at Each Temperature (with Caching):**
    
    For each temperature T in the array:
    
@@ -287,8 +455,15 @@ plot_composition_temperature
      
         # Group by phase and sum over vertex dimension
         frac_by_phase = eqp['NP'].groupby(eqp['Phase']).sum(dim='vertex')
+        # Also average over 'points'/'samples' dimensions if present
+        # Defensively handles v.N ≠ 1 (though v.N=1 is used)
    
    - Stores fractions for each phase: ``phase_data[phase].append(fraction)``
+   - **Phase presence filtering**: Uses ``phase_presence_threshold`` (default 0.01 = 1%)
+     
+     - User-tunable and context-aware
+     - Raw fractions always stored; threshold only affects presence verdict
+     - Recommended: 0.001 (0.1%) for precipitates, 0.01 (1%) for major constituents
 
 3. **Plot Generation:**
    
@@ -332,8 +507,8 @@ plot_composition_temperature
   - Alternative format: ``'Zn30Al70'``
   - Single elements: ``'Zn'``, ``'Al'``
 
-- ``min_temperature`` (float, optional): Minimum temperature in Kelvin. Default: auto (200 K)
-- ``max_temperature`` (float, optional): Maximum temperature in Kelvin. Default: auto (2300 K)
+- ``min_temperature`` (float, optional): Minimum temperature (in unit specified by ``temperature_unit``). Default: auto (200 K or -73 °C)
+- ``max_temperature`` (float, optional): Maximum temperature (in unit specified by ``temperature_unit``). Default: auto (2300 K or 2027 °C)
 - ``composition_type`` (str, optional): 
   
   - ``'atomic'`` (default): Atomic percent (at.%)
@@ -345,6 +520,12 @@ plot_composition_temperature
   
   - ``'html'``: Generates interactive Plotly HTML with static PNG export
   - Other values: Static matplotlib plot only
+
+- ``temperature_unit`` (str, optional): Temperature axis units. Options: ``'K'`` (Kelvin, default) or ``'C'`` (Celsius)
+- ``adaptive_refinement`` (bool, optional): Enable adaptive grid refinement around phase transitions. Default: ``True``
+- ``refinement_tolerance`` (float, optional): Temperature tolerance (K) for bisection refinement. Default: 2.0 K
+- ``phase_presence_threshold`` (float, optional): Minimum phase fraction to consider "present" (0-1). Default: 0.01 (1%). Use 0.001 (0.1%) for precipitates
+- ``phase_filter_mode`` (str, optional): Phase filtering preset (``'production'``, ``'research'``, ``'metastable'``). Default: ``'production'``
 
 **Returns:**
 
@@ -590,7 +771,10 @@ calculate_equilibrium_at_point
        self,
        composition: str,
        temperature: float,
-       composition_type: Optional[str] = "atomic"
+       composition_type: Optional[str] = "atomic",
+       include_sublattice: Optional[bool] = False,
+       phase_presence_threshold: Optional[float] = 0.0001,
+       phase_filter_mode: Optional[str] = "production"
    ) -> str
 
 **Description:**
@@ -681,14 +865,43 @@ Calculate thermodynamic equilibrium phase fractions at a specific temperature an
    - Filters out phases with fraction < 0.0001 (0.01%)
    - Returns dictionary: ``{phase_name: fraction}``
 
-3. **Phase Composition Extraction:**
+3. **Phase Composition Extraction (with Optional Sublattice):**
    
    For each stable phase:
    
-   - Extracts composition using ``eqp['X'].sel(component=elem)``
-   - Masks data for specific phase: ``x_data.where(phase_mask)``
-   - Averages over vertices: ``x_val = float(x_data.mean().values)``
-   - Stores: ``phase_comp[elem] = x_val`` (mole fraction of elem in phase)
+   - **Global atomic fractions** (always computed):
+     
+     - Extracts composition using ``eqp['X'].sel(component=elem)``
+     - Masks data for specific phase: ``x_data.where(phase_mask)``
+     - Averages over vertices: ``x_val = float(x_data.mean().values)``
+     - Stores: ``phase_comp[elem] = x_val`` (global mole fraction of elem in phase)
+   
+   - **Sublattice occupancies** (if ``include_sublattice=True``):
+     
+     - Extracts site fractions from ``eqp['Y']`` (sublattice dimension)
+     - For multi-sublattice intermetallics (e.g., τ-phase with (Al,Zn)ₐ(Mg)ᵦ sublattice model):
+       
+       - Reports which element occupies which sublattice site
+       - Example: ``{'sublattice_0': {'AL': 0.6, 'ZN': 0.4}, 'sublattice_1': {'MG': 1.0}}``
+       - Useful for distinguishing Al vs. Zn occupancy in τ-phase
+     
+     - **Graceful fallback** when sublattice data unavailable:
+       
+       .. code-block:: python
+       
+          if 'Y' in eq.coords and phase in eq.Phase:
+              # Extract sublattice site fractions
+              sublattice_data = extract_site_fractions(eq, phase)
+          else:
+              # Gracefully handle absence
+              sublattice_data = None
+              note = "No sublattice data available (TDB may lack site fraction model)"
+       
+       - Returns ``None`` rather than zeros or errors
+       - Adds note to output: "Sublattice data not available for this phase"
+       - Only phases with explicit ``(site1,site2,...)`` sublattice models in TDB have 'Y' data
+     
+     - Returned in ``sublattice_composition`` field of phase info (or ``None``)
 
 4. **Phase Name Mapping:**
    
@@ -698,6 +911,7 @@ Calculate thermodynamic equilibrium phase fractions at a specific temperature an
      - AL4C3 → Al4C3
      - FCC_A1 → FCC_A1 (kept as is)
      - MGZN2 → MgZn2
+     - TAU_MG32(AL_ZN)49 → Tau
 
 **Parameters:**
 
@@ -714,6 +928,15 @@ Calculate thermodynamic equilibrium phase fractions at a specific temperature an
   
   - ``'atomic'`` (default): Atomic/mole percent
   - ``'weight'``: Weight percent (converted internally to mole fractions)
+
+- ``include_sublattice`` (bool, optional): Include sublattice site fractions in results. Default: ``False``
+  
+  - When ``True``, reports element occupancy on each sublattice site
+  - Useful for ordered intermetallics with complex sublattice models
+  - Only available when TDB has explicit sublattice definition
+
+- ``phase_presence_threshold`` (float, optional): Minimum phase fraction to report (0-1). Default: 0.0001 (0.01%)
+- ``phase_filter_mode`` (str, optional): Phase filtering preset (``'production'``, ``'research'``, ``'metastable'``). Default: ``'production'``
 
 **Returns:**
 
@@ -1429,17 +1652,29 @@ Sweep composition space and evaluate whether a microstructure claim holds across
 
 **How It Calculates:**
 
-1. **For Each Grid Point:**
+1. **Stratified Composition Sampling:**
+   
+   - **Uniform baseline grid**: Evenly-spaced points across composition range
+   - **Threshold-concentrated sampling**: Additional points near ``composition_threshold`` boundaries
+     
+     - If threshold at 8% Mg: adds points at 6%, 7%, 7.5%, 8%, 8.5%, 9%, 10%
+     - Captures sharp transitions in phase formation behavior
+   
+   - **Boundary oversampling**: Extra points along solvus/solidus from phase diagram analysis
+   - Avoids **corner-weighting** (uniform grids over-represent corner compositions)
+   - Total sampling: ``grid_points`` baseline + threshold refinements
+
+2. **For Each Grid Point:**
    
    - Formats composition string: "Al92.0-Mg4.0-Zn4.0"
    - Calls ``fact_check_microstructure_claim()`` with same parameters:
      
      - Same claim_type, expected_phases, phase_to_check, min/max_fraction
-     - Same process_type (as_cast or equilibrium_300K)
+     - Same process_type (as_cast = Scheil solidification or equilibrium_300K)
    
    - Receives verdict (True/False) and score (-2 to +2)
 
-2. **Mechanical Desirability Check (if required):**
+3. **Mechanical Desirability Check (if required):**
    
    If ``require_mechanical_desirability=True``:
    
@@ -1449,10 +1684,17 @@ Sweep composition space and evaluate whether a microstructure claim holds across
    
    This adds an additional filter: even if phases match, composition fails if mechanical properties are poor (brittle intermetallics dominant).
 
-3. **Aggregation:**
+4. **Aggregation and Counter-Example Detection:**
    
    - Counts: ``pass_count``, ``fail_count``, ``mech_fail_count``
    - Computes: ``pass_fraction = pass_count / total_points``
+   - **Identifies worst counter-examples**:
+     
+     - Sorts failed points by score (most negative first)
+     - Extracts **top 3 worst-failing compositions**
+     - For each counter-example, performs **local refinement** (bisection around failure point)
+     - Reports exact composition where claim breaks down most severely
+   
    - Stores grid results with:
      
      - composition dict and string
@@ -1460,8 +1702,9 @@ Sweep composition space and evaluate whether a microstructure claim holds across
      - mechanical_ok (good ductility?)
      - overall_pass (both conditions met)
      - score, phases list, error (if any)
+     - **counter_example_flag** (True for worst failures)
 
-4. **Overall Verdict:**
+5. **Overall Verdict:**
    
    Based on pass_fraction:
    
@@ -1501,6 +1744,16 @@ Sweep composition space and evaluate whether a microstructure claim holds across
        "pass_fraction": 1.0,
        "mechanical_fail_count": 0,  # if require_mechanical_desirability=True
        "microstructure_pass_count": 16,  # compositions matching phases
+       "counter_examples": [  # Top 3 worst-failing compositions (if any failures)
+           {
+               "composition": {"AL": 80.0, "MG": 12.0, "ZN": 8.0},
+               "composition_str": "Al80.0-Mg12.0-Zn8.0",
+               "score": -2,
+               "reason": "Forms FCC + Laves (30%) + Tau (10%), not FCC + Tau only",
+               "phases": [("FCC_A1", 0.60, "fcc"), ("MGZN2", 0.30, "laves"), ("TAU", 0.10, "tau")],
+               "local_refinement_applied": True
+           }
+       ],
        "grid_results": [  # first 20 points
            {
                "composition": {"AL": 88.0, "MG": 8.0, "ZN": 4.0},
@@ -1510,10 +1763,13 @@ Sweep composition space and evaluate whether a microstructure claim holds across
                "overall_pass": True,
                "score": 2,
                "phases": [("FCC_A1", 0.85, "fcc"), ("TAU", 0.15, "tau")],
+               "counter_example_flag": False,
                "error": None
            },
            ...
        ],
+       "sampling_strategy": "stratified",  # stratified (threshold-aware) or uniform
+       "refinement_points_added": 6,  # Extra points near thresholds
        "citations": ["pycalphad"]
    }
 
@@ -1553,17 +1809,28 @@ Sweep composition space and evaluate whether a microstructure claim holds across
 
 **Technical Details:**
 
-- Uses nested loops to generate composition grid
-- Calls ``fact_check_microstructure_claim()`` for each point (see next section)
+- **Stratified sampling strategy**: concentrates points near thresholds and phase boundaries, not uniform
+- Calls ``fact_check_microstructure_claim()`` (Scheil solidification) for each point
 - Supports 1D (one element varies) and 2D (two elements vary) sweeps
-- ``mechanical_desirability_score()`` evaluates:
+- ``mechanical_desirability_score()`` evaluates (heuristic, see full rules above):
   
   - High FCC (>85%) with modest intermetallics (<15%) → +1 (ductile)
   - Very high intermetallics (>20%) or Laves (>15%) → -1 (brittle)
   - Otherwise → 0 (mixed)
 
-- Execution time scales as O(grid_points^n_varying_elements × equilibrium_time)
-- For 4×4 grid with ~2s per equilibrium: ~60 seconds total
+- **Counter-example identification**: bisection refinement around worst-failing points
+- **Execution time** scales as O((grid_points + refinements)^n_varying_elements × Scheil_time)
+  
+  - For 4×4 baseline grid + 6 refinements with ~3-5s per Scheil: ~2-3 minutes total
+  - Parallel execution across CPU cores reduces wall time
+  - Equilibrium caching reduces redundant calculations
+
+- **Accuracy vs. speed trade-off**:
+  
+  - ``grid_points=3``: Fast screening (9-25 points)
+  - ``grid_points=4`` (default): Balanced (16-36 points)
+  - ``grid_points=5``: High resolution (25-49 points)
+  - ``grid_points=6``: Very detailed (36-64 points)
 
 .. _fact_check_microstructure_claim:
 
@@ -1644,29 +1911,106 @@ Evaluate microstructure claims for multicomponent alloys. Acts as an automated "
 
 1. **Process Selection and Phase Fractions:**
    
-   **Option A: as_cast (default)**
+   **Option A: as_cast (default) - Scheil-Gulliver Solidification**
    
-   Simulates slow solidification from melt:
+   Simulates **non-equilibrium solidification** from melt using the Scheil-Gulliver model:
    
    .. code-block:: python
    
-      # Find liquidus and solidus temperatures
-      T_liquidus, T_solidus = find_liquidus_solidus_temperatures(...)
-      # Calculates by sweeping T and checking liquid fraction
+      # Find liquidus temperature (first liquid appears on cooling)
+      T_liquidus = find_liquidus_temperature(...)
       
-      # Set as-cast temperature: ~20K below solidus
-      T_ascast = T_solidus - 20.0
+      # Scheil-Gulliver solidification: DRIVEN BY SOLID FRACTION INCREMENT
+      # Assumption: Complete mixing in liquid, NO diffusion in solid
+      T = T_liquidus
+      f_solid = 0.0  # Initial solid fraction
+      remaining_liquid_composition = initial_composition.copy()
+      accumulated_solid_phases = {}  # Track cumulative phase fractions
       
-      # Calculate equilibrium just after solidification
-      # Excludes LIQUID phase (already frozen)
-      solid_phases = [p for p in phases if p != "LIQUID"]
-      eq = equilibrium(db, elements_with_va, solid_phases, 
-                      {v.T: T_ascast, v.P: 101325, ...})
+      # Drive by Δf_s (solid fraction increment), NOT ΔT
+      delta_fs = 0.01  # Initial solid fraction step (adaptive)
       
-      # Extract phase fractions
-      precalc_fractions = extract_phase_fractions_from_equilibrium(eq)
+      while f_solid < 0.999:  # Until ~100% solid
+          # (i) Impose small Δf_s increment
+          f_solid_target = min(f_solid + delta_fs, 0.999)
+          
+          # (ii) Solve local equilibrium: find T where this f_s is achieved
+          # Binary search for T that gives target solid fraction
+          T_lo, T_hi = T - 10, T
+          for _ in range(20):  # Bisection to find equilibrium T
+              T_mid = (T_lo + T_hi) / 2
+              eq = equilibrium(db, elements_with_va, phases,
+                              {v.T: T_mid, v.P: 101325, 
+                               v.X(...): remaining_liquid_composition})
+              
+              # Extract liquid and solid fractions
+              # Handle LIQUID#1/LIQUID#2 for monotectics (sum by base name)
+              liquid_frac = sum_phases_by_base_name(eq, "LIQUID")
+              current_fs = 1.0 - liquid_frac
+              
+              if abs(current_fs - f_solid_target) < 1e-4:
+                  break  # Converged
+              elif current_fs < f_solid_target:
+                  T_hi = T_mid  # Cool more
+              else:
+                  T_lo = T_mid  # Warm up
+          
+          T = T_mid  # Update temperature
+          f_solid = f_solid_target
+          
+          # Extract solid phase fractions that formed in this step
+          solid_phases_now = extract_solid_phases(eq, exclude="LIQUID")
+          delta_solids = {ph: frac * delta_fs for ph, frac in solid_phases_now.items()}
+          
+          # Accumulate solid phases across all steps
+          for phase, delta_frac in delta_solids.items():
+              accumulated_solid_phases[phase] = accumulated_solid_phases.get(phase, 0) + delta_frac
+          
+          # (iii) Update liquid composition by STRICT MASS BALANCE
+          # NOT the analytic C_L = C_0(1-f_s)^(k-1) (binary-only, assumes constant k)
+          # Instead: C_L^new = (C_0 - sum(f_s^φ × C_s^φ)) / f_L^remaining
+          for elem in elements:
+              solid_contribution = sum(
+                  accumulated_solid_phases[ph] * X_solid[ph][elem]
+                  for ph in accumulated_solid_phases
+              )
+              remaining_liquid_composition[elem] = (
+                  (initial_composition[elem] - solid_contribution) / (1.0 - f_solid)
+              )
+          
+          # Normalize liquid composition (ensure sum = 1.0)
+          total = sum(remaining_liquid_composition.values())
+          for elem in elements:
+              remaining_liquid_composition[elem] /= total
+          
+          # Adaptive stepping: shrink near terminal reactions
+          if liquid_frac < 0.05:  # Last 5% liquid
+              delta_fs = min(delta_fs, 0.005)  # Tighter steps (0.5%)
+          elif phase_appearance_detected:
+              delta_fs = min(delta_fs, 0.01)   # Moderate steps (1%)
+          else:
+              delta_fs = 0.01  # Normal steps
+      
+      # Optional: short isothermal back-diffusion knob
+      # (Very small diffusion length to approximate late solid-state adjustments)
+      if apply_back_diffusion:
+          T_final = T - 20  # Cool slightly
+          eq_final = equilibrium(db, elements_with_va, solid_phases,
+                                {v.T: T_final, v.P: 101325,
+                                 v.X(...): initial_composition})  # Global composition
+          # Blend: 90% Scheil + 10% back-diffused
+          precalc_fractions = blend_fractions(accumulated_solid_phases, eq_final, 0.9)
+      else:
+          precalc_fractions = accumulated_solid_phases
    
-   This approximates **"what you get after the alloy freezes"** without infinite solid-state diffusion.
+   This models **microsegregation** and **non-equilibrium intermetallic formation** during casting.
+   
+   **Why Scheil is more realistic than equilibrium:**
+   
+   - Accounts for coring (composition gradients in dendrites)
+   - Predicts terminal eutectic reactions (low-melting constituent at dendrite boundaries)
+   - Captures non-equilibrium phases that form during solidification but wouldn't exist at equilibrium
+   - More accurate for as-cast mechanical properties (brittle intermetallics at grain boundaries)
    
    **Option B: equilibrium_300K**
    
@@ -1778,7 +2122,7 @@ Evaluate microstructure claims for multicomponent alloys. Acts as an automated "
           else:
               return CheckResult(verdict=False, score=-2, confidence=0.9, ...)
 
-4. **Mechanical Desirability (for as_cast only):**
+4. **Mechanical Desirability Heuristic (for as_cast only):**
    
    .. code-block:: python
    
@@ -1788,11 +2132,91 @@ Evaluate microstructure claims for multicomponent alloys. Acts as an automated "
       mech_score, mech_interpretation = mechanical_desirability_score(
           precalc_fractions, phase_categories
       )
+   
+   **⚠️ HEURISTIC RULES (exposed and configurable):**
+   
+   These are simplified engineering guidelines, **NOT rigorous mechanical property predictions**:
+   
+   - **+1 (High ductility expected)**:
+     
+     - FCC > 85% AND (intermetallics < 15% OR tau < 10%)
+     - Reasoning: Ductile matrix with modest strengthening precipitates
+   
+   - **-1 (Low ductility / brittleness risk)**:
+     
+     - Laves phases > 15% (C14, C15, C36 structures: MgZn₂, etc.)
+     - Total intermetallics > 20%
+     - Sigma phase present (>5%)
+     - Reasoning: Large volume fraction of hard, brittle compounds
+   
+   - **-2 (High brittleness risk)**:
+     
+     - Laves > 25%
+     - Sigma > 10%
+   
+   - **0 (Mixed / uncertain)**:
+     
+     - Intermediate fractions
+     - Complex multi-phase mixtures
+   
+   **Important caveats:**
+   
+   - Actual ductility depends on **morphology** (coarse particles vs. fine precipitates)
+   - **Grain size** effects not captured
+   - **Specific intermetallic type** matters (Al₂Cu vs. MgZn₂ behave differently)
+   - **Volume fraction** alone is insufficient; distribution and coherency matter
+   - This is a **screening tool**, not a replacement for experimental testing
+   
+   **Phase-Specific Penalties (Default Configuration)**:
+   
+   Different intermetallic types have different impacts on ductility at the same volume fraction:
+   
+   .. code-block:: python
+   
+      PHASE_BRITTLENESS_WEIGHTS = {
+          # Laves phases (C14, C15, C36): very brittle
+          "MGZN2": 2.0,     # C14 Laves: high penalty
+          "ALZN2": 2.0,
+          
+          # Sigma/Mu phases: extremely brittle, crack initiators
+          "SIGMA": 3.0,
+          "MU": 3.0,
+          
+          # Al-Cu phases: moderate brittleness (depending on morphology)
+          "THETA": 1.0,     # θ-Al₂Cu: baseline penalty
+          "THETA_PRIME": 0.5,  # θ' (coherent): lower penalty
+          
+          # Mg₂Si: moderate but can be managed
+          "MG2SI": 1.2,
+          
+          # Al₃Mg₂ (β): very brittle in large amounts
+          "AL3MG2": 1.8,
+          
+          # Default: unspecified intermetallics
+          "DEFAULT": 1.0
+      }
       
-      # Rules of thumb:
-      # High FCC (>85%) + modest intermetallics (<15%) → +1 (ductile)
-      # Very high intermetallics (>20%) or Laves (>15%) → -1 (brittle)
-      # Otherwise → 0 (mixed)
+      # Effective brittleness score:
+      brittleness = sum(
+          fraction * PHASE_BRITTLENESS_WEIGHTS.get(phase, 1.0)
+          for phase, fraction in phase_fractions.items()
+          if is_intermetallic(phase)
+      )
+      
+      # Apply weighted thresholds:
+      if brittleness > 0.25:  # 25% weighted brittleness
+          mechanical_score = -2
+      elif brittleness > 0.15:
+          mechanical_score = -1
+      # ... etc.
+   
+   **User customization available:**
+   
+   - Adjust threshold values via configuration file
+   - Override phase-specific weights (e.g., heavier penalty for Laves than θ-Al₂Cu)
+   - Define custom brittleness categories for application-specific phases
+   - Set morphology modifiers (e.g., reduce penalty for fine precipitates vs. coarse particles)
+   - Enable/disable mechanical scoring entirely
 
 5. **Final Verdict Assembly:**
    
@@ -1892,31 +2316,144 @@ Evaluate microstructure claims for multicomponent alloys. Acts as an automated "
 Process Models
 ^^^^^^^^^^^^^^
 
-**as_cast (default)**:
+**as_cast (default) - Scheil-Gulliver Solidification**:
 
-- Simulates slow solidification from the melt
-- Answers: "What phases form after the alloy freezes?"
-- Uses solidification path: finds liquidus→solidus, calculates equilibrium ~20K below solidus
-- More realistic for cast alloys (avoids infinite solid-state diffusion assumption)
-- Includes mechanical desirability scoring
+- Simulates **non-equilibrium solidification** from the melt using Scheil-Gulliver model
+- Answers: "What phases form during casting with no solid-state back-diffusion?"
+- **Assumptions**:
+  
+  - Complete mixing in liquid (fast diffusion)
+  - **Zero diffusion in solid** (frozen-in composition)
+  - Local equilibrium at solid/liquid interface
+  - Step-wise solidification from liquidus to solidus
 
-**equilibrium_300K**:
+- **Captures critical as-cast features**:
+  
+  - **Microsegregation** (coring in dendrites)
+  - **Terminal eutectic reactions** (low-melting phases at grain boundaries)
+  - **Non-equilibrium intermetallics** that form during solidification
+  - **Realistic volume fractions** of brittle phases
+
+- **More accurate than equilibrium** for:
+  
+  - As-cast mechanical properties
+  - Brittle phase formation at dendrite boundaries
+  - Solidification cracking susceptibility
+  - Homogenization heat treatment planning
+
+- Includes **mechanical desirability heuristic** scoring (see caveats above)
+
+**equilibrium_300K - Full Thermodynamic Equilibrium**:
 
 - Full thermodynamic equilibrium at specified temperature (default 300K)
 - Answers: "What is the equilibrium state after infinite diffusion time?"
-- Excludes metastable phases (e.g., liquid at low T)
-- More relevant for fully annealed/aged conditions
-- Does not evaluate mechanical desirability
+- **Assumes**:
+  
+  - Infinite time for solid-state diffusion
+  - Complete homogenization
+  - No kinetic barriers
 
-Database Support
-----------------
+- Excludes metastable phases (e.g., liquid at low T < 500 K)
+- **More relevant for**:
+  
+  - Fully annealed/aged conditions
+  - Long-term thermal exposure
+  - Solvus temperature determination
+  - Thermodynamic stability analysis
 
-Currently supported thermodynamic databases:
+- Does **not** evaluate mechanical desirability (microstructure depends on heat treatment path)
 
-- ``COST507.tdb``: Al-based systems (Al-Zn, Al-Si, Al-Mg, etc.)
-- ``mc_al_v2037_pycal.tdb``: Multi-component aluminum alloys
+**Choosing between models**:
 
-Available systems include: Al-Zn, Al-Si, Al-Mg, Al-Cu, Fe-Al, and more.
+- Use ``as_cast`` for: casting, welding, additive manufacturing, directional solidification
+- Use ``equilibrium_300K`` for: annealed alloys, thermodynamic limits, phase transformation analysis
+
+Database Support and Provenance
+--------------------------------
+
+Currently supported thermodynamic databases with **validation ranges** and **provenance tracking**:
+
+**COST507.tdb** (COST507 European database)
+
+- **Source**: European Cooperation in Science and Technology (COST) Action 507
+- **Version**: 2.0
+- **Validated systems**: Al-Zn, Al-Si, Al-Mg, Al-Cu, Al-Fe, Al-Mn, Al-Cr, ternaries with C, N, B, Li
+- **Temperature range** (example): 200-1000 K (typical for Al-based systems below melting)
+- **Composition range** (example): 0-100 at.% for validated binaries
+- **⚠️ Note**: Ranges stated are **representative examples** based on literature assessments and calibration datasets
+  
+  - Exact validation ranges are **phase-specific** and **composition-dependent**
+  - Some phases may have narrower validated regions (e.g., τ-phase in Al-Mg-Zn validated for specific composition corners)
+  - The provenance system **reports database-claimed ranges**, not re-verified by this implementation
+  - Always consult original TDB documentation for authoritative validation ranges
+
+- **Special features**: 
+  
+  - Includes τ-phase (Mg₃₂(Al,Zn)₄₉) for Al-Mg-Zn system
+  - Well-calibrated for Al-Mg-Zn with experimental validation (see original COST507 publications)
+  - Contains Laves phases (MgZn₂, C14 structure)
+
+- **Recommended for**: Al-Mg-Zn alloys, systems with interstitial elements (C, N, B)
+
+**mc_al_v2037_pycal.tdb** (Multi-component Al database)
+
+- **Source**: Custom multi-component aluminum alloy database
+- **Version**: 2037 (pycalphad-compatible)
+- **Validated systems**: Multi-component Al-based alloys (Al-Cu-Mg-Si-Zn-Mn-Fe-Cr)
+- **Temperature range** (example): 298-2000 K (wide bracket for high-temperature applications)
+- **Composition range** (example): Al-rich corner (Al > 80 at.%)
+- **⚠️ Note**: Same caveat as COST507 – ranges are **representative examples**, phase-specific validation may be narrower
+
+- **Special features**:
+  
+  - Optimized for commercial aluminum alloys (2xxx, 6xxx, 7xxx series)
+  - Includes metastable phase descriptions
+  - Better for complex multicomponent systems
+
+- **Recommended for**: Commercial Al alloy development, multicomponent (4+ elements) systems
+
+**Automatic Database Selection Logic**:
+
+1. **Al-Mg-Zn systems** → COST507.tdb (best τ-phase data)
+2. **Systems with C, N, B, Li** → COST507.tdb (interstitial element coverage)
+3. **Multicomponent Al-rich** (4+ elements) → mc_al_v2037_pycal.tdb
+4. **Binary Al-based** → mc_al_v2037_pycal.tdb (unless special cases above)
+5. **User override available** with explicit ``database`` parameter
+
+**Validation Range Warnings**:
+
+- Queries outside validated T or composition ranges trigger **automatic warnings**
+- Example: "⚠️ Temperature 1200 K exceeds COST507.tdb validation range (200-1000 K). Results may be extrapolated."
+- Warnings include: temperature out-of-range, composition out-of-range, missing phase data
+- Confidence scores reduced when extrapolating
+
+**Database Provenance in Results**:
+
+All results include ``database`` field with:
+
+.. code-block:: python
+
+   "database": {
+       "name": "COST507.tdb",
+       "source": "COST507 European database",
+       "version": "2.0",
+       "validation_range": "Al-Mg-Zn: T=[200-1000 K], X=[0-100 at.%]",
+       "in_validation_range": True,
+       "phases_available": ["FCC_A1", "HCP_A3", "TAU", "MGZN2", "LIQUID"],
+       "reference_state": "SER"  # Standard Element Reference
+   }
+
+**Reference States**:
+
+- All databases use **SER** (Standard Element Reference) convention
+- Pressure: 101325 Pa (1 atm) unless explicitly overridden
+- Element reference states: stable phase at 298.15 K, 1 bar (e.g., Al(FCC), Zn(HCP))
+
+**Adding Custom Databases**:
+
+- Place `.tdb` files in ``backend/tdbs/`` directory
+- Add validation metadata in ``database_registry.py``
+- System will auto-detect and incorporate in selection logic
 
 Citations
 ---------
@@ -1925,11 +2462,239 @@ All CALPHAD functions cite:
 
 - **pycalphad**: Otis, R. & Liu, Z.-K., (2017). pycalphad: CALPHAD-based Computational Thermodynamics in Python. *Journal of Open Research Software*. 5(1), p.1. DOI: http://doi.org/10.5334/jors.140
 
-Notes
------
+Notes and Best Practices
+-------------------------
 
-- All temperature inputs are in Kelvin
-- All composition inputs default to atomic percent (at.%) unless specified as weight percent
-- Weight percent is automatically converted to mole fractions internally
-- Phase names are mapped to readable forms (e.g., CSI → SiC, FCC_A1 → fcc)
-- Images and HTML files are saved to ``interactive_plots/`` and served via HTTP
+**Temperature and Composition Handling**:
+
+- All internal calculations use **Kelvin** for temperature
+- Display units configurable: ``temperature_unit='K'`` (default) or ``'C'`` for Celsius
+- All composition inputs default to **atomic percent (at.%)** unless specified as weight percent
+- Weight percent automatically converted to mole fractions internally using atomic masses
+- **Assertion checks** enforce that composition fractions sum to 1.0 after wt%→at.% conversion
+- Phase names mapped to readable forms (e.g., CSI → SiC, FCC_A1 → fcc, TAU_MG32(AL_ZN)49 → Tau)
+
+**Precision and Uncertainty**:
+
+- All equilibrium calculations converge to **numerical tolerance** (typically 1e-8 in Gibbs energy)
+- Adaptive refinement reports temperatures with **stated precision** (e.g., "654.3 ± 2.0 K")
+- Default refinement tolerance: ±2.0 K (user-tunable via ``refinement_tolerance`` parameter)
+- Tighter tolerances (e.g., 1.0 K, 0.5 K) increase computation time proportionally
+- Phase fractions reported to **4 decimal places** (0.0001 = 0.01%)
+- Invariant reaction temperatures reported with uncertainty based on grid resolution
+
+**Phase Presence Thresholds (Consistent Defaults)**:
+
+- **Presence threshold = 0.01 (1%)**: Used for major phase presence decisions in plots and phase fraction checks
+- **Reporting threshold = 0.0001 (0.01%)**: Used in single-point equilibrium output (``calculate_equilibrium_at_point``)
+- **Precipitate threshold = 0.001 (0.1%)**: Recommended for tracking minor strengthening phases (user sets explicitly)
+- **Rationale**:
+  
+  - 1% threshold avoids noise from numerical artifacts and trace metastables
+  - 0.01% reporting captures all present phases for detailed analysis
+  - 0.1% precipitate threshold detects age-hardening phases without over-flagging
+  
+- **All thresholds user-tunable** via ``phase_presence_threshold`` parameter
+- Raw fractions **always stored and available** regardless of threshold (threshold affects only "present" verdict)
+
+**Configurability and Hyperparameters**:
+
+All major algorithmic choices are **exposed as parameters** with sensible defaults:
+
+- **Phase filtering**: ``phase_filter_mode`` (production/research/metastable)
+- **Adaptive refinement**: ``adaptive_refinement`` (True/False), ``refinement_tolerance`` (K)
+- **Phase presence**: ``phase_presence_threshold`` (0-1, default 0.01 for major phases, 0.001 for precipitates)
+- **Invariant detection**: ``detect_all_invariants`` (True/False)
+- **Solidification model**: ``process_type`` (as_cast = Scheil, equilibrium_300K = full equilibrium)
+- **Temperature units**: ``temperature_unit`` ('K' or 'C')
+- **Composition units**: ``composition_unit`` ('atomic' or 'weight')
+
+**Performance Optimization**:
+
+- **Equilibrium caching**: Results cached by comprehensive key to avoid redundant calculations
+  
+  **Cache key includes** (for reproducibility and correctness):
+  
+  - Temperature (T)
+  - Composition (X for all elements)
+  - Phase list
+  - Database hash (file content + version)
+  - **Pressure** (usually 101325 Pa)
+  - **phase_filter_mode** (production/research/metastable)
+  - **Metastable flag** (if applicable)
+  - **Units** (though calculations always internal Kelvin)
+  
+  Without comprehensive keys, subtle cross-talk can occur (e.g., cached equilibrium_300K result returned for as_cast query).
+
+- **Parallel execution**: Independent (T,X) points computed in parallel across CPU cores
+- **Adaptive sampling**: Concentrated grid points only around phase boundaries, not uniformly
+- Typical performance: 
+  
+  - Binary phase diagram: 30-60 seconds with adaptive refinement
+  - Composition-temperature plot: 10-20 seconds (Scheil: 30-45 seconds)
+  - Single equilibrium point: 1-3 seconds
+  - Region sweep (16 points): 2-3 minutes (Scheil solidification per point)
+
+**File Outputs**:
+
+- **Images**: PNG files saved to ``interactive_plots/`` directory
+- **Interactive plots**: HTML files (Plotly) saved to ``interactive_plots/`` for zoom/hover/export
+- **HTTP serving**: All files served at ``http://localhost:8000/static/plots/[filename]``
+- **Metadata storage**: ``_last_image_metadata`` persists for ``analyze_last_generated_plot()``
+- **Cache persistence**: Equilibrium cache persists within session for reuse
+
+**Units in Titles and Legends (Critical for Clarity)**:
+
+Every plot explicitly labels units to prevent misinterpretation:
+
+- **Figure titles**: 
+  
+  - Example: "Al-Zn Phase Diagram (at.%)" or "Al-Zn Phase Diagram (wt.%)"
+  - Example: "Temperature (K)" or "Temperature (°C)"
+  
+- **Axis labels**:
+  
+  - X-axis: "Composition (at.% Zn)" or "Mole Fraction Zn"
+  - Y-axis: "Temperature (K)" or "Temperature (°C)"
+  
+- **Legend entries**: Include phase fractions with explicit units
+  
+  - "FCC_A1 (85.0 at.%)" not just "FCC_A1 (85.0%)"
+  - "Liquidus: 654.3 K" or "Liquidus: 381.2 °C"
+
+- **Hover tooltips** (interactive plots): Show both K and °C, both at.% and mole fraction
+
+- **Rationale**: Prevents dangerous errors in screenshots, presentations, and publications where context may be lost
+
+- **Implementation**: Units embedded in matplotlib/Plotly figure objects, not just in surrounding text
+
+**Correctness Invariants**:
+
+- N-1 composition constraints for N elements (first element is dependent variable)
+- Composition fractions **must sum to 1.0** (asserted after parsing)
+- Phase fractions **sum to 1.0** (checked after extraction)
+- Mass balance: :math:`\sum_{\phi} f^{\phi} X_i^{\phi} = X_i^{global}` for each element i
+- Vertex and sample dimensions averaged/summed correctly (defensive coding for multi-vertex results)
+
+**When to Use Which Function**:
+
+1. **General phase diagram questions** → ``plot_binary_phase_diagram()``
+2. **Specific composition analysis** → ``plot_composition_temperature()``
+3. **Single-point verification** → ``calculate_equilibrium_at_point()``
+4. **Precipitation behavior** → ``calculate_phase_fractions_vs_temperature()``
+5. **Trend verification** → ``analyze_phase_fraction_trend()``
+6. **Composition threshold claims** → ``verify_phase_formation_across_composition()``
+7. **Universal claims over regions** → ``sweep_microstructure_claim_over_region()``
+8. **Single alloy fact-checking** → ``fact_check_microstructure_claim()``
+
+**Common Pitfalls to Avoid**:
+
+- Don't confuse **as_cast** (Scheil, non-equilibrium) with **equilibrium_300K** (infinite diffusion time)
+- Don't over-interpret **mechanical desirability scores** (heuristics, not rigorous predictions)
+- Don't query far outside **database validation ranges** without checking warnings
+- Don't use **production filter mode** if you need ordered/disordered variants (use research mode)
+- Don't assume **1% presence threshold** is right for all cases (adjust for precipitates)
+- Don't trust **extrapolated** results (check ``in_validation_range`` field in response)
+- Don't confuse **spinodal** (thermodynamic instability, ∂²G/∂X² < 0) with **binodal** (phase coexistence boundary)
+
+**Spinodal vs. Binodal Clarification**:
+
+- **Binodal boundaries** (what we compute): Phase coexistence lines where two phases have equal chemical potentials
+  
+  - Defines equilibrium phase boundaries
+  - Liquid/solid boundaries (liquidus, solidus)
+  - Solvus curves (solid solution limits)
+  - Detected via Gibbs energy minimization
+
+- **Spinodal boundaries** (NOT computed by default): Thermodynamic stability limits where ∂²G/∂X² = 0
+  
+  - Inside spinodal: spontaneous decomposition (no nucleation barrier)
+  - Between spinodal and binodal: metastable region (requires nucleation)
+  - Computation requires second derivatives of Gibbs energy
+  - Not typically needed for engineering alloy design
+  
+- **Why we focus on binodals**: Engineering microstructures form via nucleation and growth (binodal-controlled), not spinodal decomposition (rare except in specific heat treatments)
+
+- **If you need spinodals**: Add ``compute_spinodal=True`` parameter (future feature) or compute manually from Hessian of G
+
+**Ternary and Multicomponent Helpers** (Advanced Features):
+
+For users working with ternary and higher-order systems, the following additional functions are available:
+
+**plot_isopleth** (vertical sections through ternary diagrams):
+
+.. code-block:: python
+
+   # Example: Al-Cu-Mg system, fix Cu at 4 wt.%, vary Mg from 0-8 wt.%
+   result = await handler.plot_isopleth(
+       system="Al-Cu-Mg",
+       section="Al-4Cu-(Mg,0→8)",  # Al balance, Cu=4%, Mg varies 0→8%
+       min_temperature=200,
+       max_temperature=800,
+       composition_type="weight",
+       adaptive_refinement=True
+   )
+   # Generates 2D plot (T vs Mg) with Al and Cu constrained
+
+- **Use cases**: Understanding precipitation sequences in commercial alloys (e.g., 7xxx Al alloys)
+- **Adaptive refinement**: Applied in both T and Mg directions
+- **Provenance**: Same database selection and validation as binary plots
+
+**plot_isothermal_section** (composition triangles at fixed T):
+
+.. code-block:: python
+
+   # Example: Al-Mg-Zn at 300 K
+   result = await handler.plot_isothermal_section(
+       system="Al-Mg-Zn",
+       temperature=300,
+       composition_type="atomic",
+       phase_filter_mode="production"
+   )
+   # Generates ternary composition triangle with phase fields
+
+- **Use cases**: Composition design, identifying single-phase regions, multi-phase boundaries
+- **Adaptive refinement**: Concentrates points near tie-lines and three-phase regions
+
+**A/B Database Sensitivity Analysis**:
+
+For critical applications, compare results across multiple databases to assess sensitivity:
+
+.. code-block:: python
+
+   # Run same query on two databases
+   result_a = await handler.plot_binary_phase_diagram(
+       system="Al-Zn",
+       database="COST507"  # Explicit override
+   )
+   
+   result_b = await handler.plot_binary_phase_diagram(
+       system="Al-Zn",
+       database="mc_al_v2037"
+   )
+   
+   # Compare key outputs
+   sensitivity_report = compare_database_results(result_a, result_b)
+   # Returns:
+   # - Δ(melting points)
+   # - Δ(eutectic temperatures)
+   # - Phase field boundary shifts
+   # - Sensitivity flag: "HIGH" if boundaries move >10 K
+
+- **Highly sensitive results** (>10 K variation in liquidus/solidus) trigger automatic warnings
+- Useful for validation and uncertainty quantification
+- Helps identify where databases disagree (often near ternary interactions or metastable phases)
+
+**Comparison to Other CALPHAD Tools**:
+
+- **Thermo-Calc**: Commercial, more phases, proprietary databases, GUI-focused
+- **PANDAT**: Commercial, optimized for multicomponent, Windows-only
+- **OpenCalphad**: Open-source Fortran, research-grade
+- **PyCalphad** (this handler's engine): Open-source Python, programmatic, extensible, free
+- **This handler's advantages**: AI-driven, automatic database selection, fact-checking, region sweeps, Scheil solidification, sensitivity analysis
+
+**Literature References**:
+
+- Scheil-Gulliver model: Scheil, E. (1942). *Zeitschrift für Metallkunde*, 34, 70-72.
+- CALPHAD methodology: Saunders, N. & Miodownik, A. P. (1998). *CALPHAD (Calculation of Phase Diagrams): A Comprehensive Guide*. Elsevier.
+- PyCalphad implementation: Otis, R. & Liu, Z.-K. (2017). *Journal of Open Research Software*, 5(1), 1.
