@@ -113,32 +113,32 @@ Dictionary containing:
 .. code-block:: python
 
    {
-       "success": True,
-       "handler": "materials",
-       "function": "mp_get_by_id",
+       "success": bool,
+       "handler": str,
+       "function": str,
        "data": {
-           "total_count": 150,
-           "page": 1,
-           "per_page": 10,
-           "total_pages": 15,
+           "total_count": int,
+           "page": int,
+           "per_page": int,
+           "total_pages": int,
            "data": [
                {
-                   "material_id": "mp-12345",
-                   "formula_pretty": "LiFeO2",
-                   "formula_anonymous": "ABC2",
-                   "chemsys": "Fe-Li-O",
-                   "elements": ["Fe", "Li", "O"],
-                   "num_elements": 3,
-                   "nsites": 4,
-                   "volume": 67.5,
-                   "density": 4.23
+                   "material_id": str,
+                   "formula_pretty": str,
+                   "formula_anonymous": str,
+                   "chemsys": str,
+                   "elements": List[str],
+                   "num_elements": int,
+                   "nsites": int,
+                   "volume": float,
+                   "density": float
                },
                ...
            ]
        },
-       "confidence": 0.95,
-       "citations": ["Materials Project"],
-       "duration_ms": 234.5
+       "confidence": float,
+       "citations": List[str],
+       "duration_ms": float
    }
 
 **Side Effects:**
@@ -184,7 +184,7 @@ mp_get_by_characteristic
        elements: Optional[List[str]] = None,
        is_stable: Optional[bool] = None,
        k_vrh: Optional[List[float]] = None,
-       # ... many more parameters
+        # ... many more parameters (see :ref:`Parameters <parameters_section>` section for complete list)
        page: int = 1,
        per_page: int = 10
    ) -> Dict[str, Any]
@@ -204,7 +204,8 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
 
 1. **Parameter Processing:**
    
-   - Accepts 50+ optional parameters covering all material properties
+   - Accepts 50+ optional **search parameters** (function inputs) covering all material properties
+   - **Note**: Parameters are used for filtering/searching; **fields** (see Fields section) are the returned data properties
    - Range parameters use ``[min, max]`` format (both values required)
    - Boolean flags for categorical properties (``is_metal``, ``is_stable``, etc.)
    - All parameters are optional; at least one must be provided
@@ -229,9 +230,9 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
                   # Validation error: both min and max required
                   errors.append(f"{key} must be [min, max] with both values")
 
-3. **Field Selection:**
+3. **Field Selection (Returned Data):**
    
-   - Default fields: ``["material_id", "formula_pretty", "elements", "chemsys"]``
+   - Default returned fields: ``["material_id", "formula_pretty", "elements", "chemsys"]``
    - Automatically includes ``material_id`` if not present
    - Custom fields can be specified via API parameters (not exposed in AI function)
 
@@ -254,47 +255,9 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
    
    Same as ``mp_get_by_id``: convert docs → paginate → compute total count → return envelope
 
-**Parameters (Key Categories):**
+**Parameters:**
 
-**Electronic Properties:**
-
-- ``band_gap`` (List[float]): Min,max band gap in eV (e.g., ``[1.2, 3.0]``)
-- ``efermi`` (List[float]): Min,max Fermi energy in eV
-- ``is_gap_direct`` (bool): Whether material has direct band gap
-- ``is_metal`` (bool): Whether material is a metal
-
-**Mechanical Properties:**
-
-- ``k_vrh`` (List[float]): Min,max Voigt-Reuss-Hill bulk modulus in GPa
-- ``g_vrh`` (List[float]): Min,max Voigt-Reuss-Hill shear modulus in GPa
-- ``poisson_ratio`` (List[float]): Min,max Poisson's ratio
-- ``elastic_anisotropy`` (List[float]): Min,max elastic anisotropy
-
-**Magnetic Properties:**
-
-- ``total_magnetization`` (List[float]): Min,max magnetization in μ_B/atom
-- ``magnetic_ordering`` (str): Magnetic ordering type. API expects pymatgen ``Ordering`` enum values: ``'FM'`` (ferromagnetic), ``'AFM'`` (antiferromagnetic), ``'FiM'`` (ferrimagnetic), ``'NM'`` (non-magnetic), ``'PM'`` (paramagnetic). Handler accepts both human-readable strings and enum values.
-- ``num_magnetic_sites`` (List[int]): Min,max number of magnetic sites
-
-**Thermodynamic Properties:**
-
-- ``formation_energy`` (List[float]): Min,max formation energy in eV/atom
-- ``energy_above_hull`` (List[float]): Min,max energy above hull in eV/atom
-- ``is_stable`` (bool): Whether material lies on convex energy hull (Ehull = 0)
-
-**Structural Properties:**
-
-- ``crystal_system`` (str): ``'Triclinic'``, ``'Monoclinic'``, ``'Orthorhombic'``, ``'Tetragonal'``, ``'Trigonal'``, ``'Hexagonal'``, ``'Cubic'``
-- ``spacegroup_number`` (int): International spacegroup number (1-230)
-- ``spacegroup_symbol`` (str): Hermann-Mauguin spacegroup symbol
-- ``density`` (List[float]): Min,max density in g/cm³
-- ``num_elements`` (List[int]): Min,max number of elements
-
-**Composition Filters:**
-
-- ``elements`` (List[str]): List of elements material must contain
-- ``exclude_elements`` (str): Comma-separated elements to exclude
-- ``possible_species`` (str): Possible species in material
+See the :ref:`Parameters <parameters_section>` section for a complete list of all available search parameters organized by category.
 
 **Returns:**
 
@@ -405,7 +368,7 @@ Fetch detailed information for one or more materials using their Materials Proje
 **Parameters:**
 
 - ``material_ids`` (List[str], required): List of material IDs (e.g., ``['mp-149', 'mp-30']``)
-- ``fields`` (List[str], optional): Specific fields to include (see Fields section for full list)
+- ``fields`` (List[str], optional): Specific data fields to return in response (see Fields section for full list of available returned properties)
 - ``all_fields`` (bool, optional): Return all available fields. Default: True
 - ``page`` (int, optional): Page number. Default: 1
 - ``per_page`` (int, optional): Items per page. Default: 10
@@ -500,32 +463,32 @@ Dictionary containing:
 .. code-block:: python
 
    {
-       "success": True,
-       "handler": "materials",
-       "function": "get_elastic_properties",
+       "success": bool,
+       "handler": str,
+       "function": str,
        "data": {
-           "material_id": "mp-81",
-           "formula": "Ag",
-           "composition": {"Ag": 1.0},
-           "is_stable": True,
-           "energy_above_hull": 0.0,
+           "material_id": str,
+           "formula": str,
+           "composition": Dict[str, float],
+           "is_stable": bool,
+           "energy_above_hull": float,
            "bulk_modulus": {
-               "k_vrh": 103.5,
-               "k_voigt": 104.2,
-               "k_reuss": 102.8,
-               "unit": "GPa"
+               "k_vrh": float,
+               "k_voigt": float,
+               "k_reuss": float,
+               "unit": str
            },
            "shear_modulus": {
-               "g_vrh": 28.4,
-               "g_voigt": 30.1,
-               "g_reuss": 26.7,
-               "unit": "GPa"
+               "g_vrh": float,
+               "g_voigt": float,
+               "g_reuss": float,
+               "unit": str
            },
-           "universal_anisotropy": 1.85,
-           "poisson_ratio": 0.37
+           "universal_anisotropy": float,
+           "poisson_ratio": float
        },
-       "confidence": 0.95,
-       "citations": ["Materials Project", "pymatgen"]
+       "confidence": float,
+       "citations": List[str]
    }
 
 **Example:**
@@ -855,6 +818,87 @@ Dictionary containing:
        dopant_concentration=0.125,
        property_name="bulk_modulus"
    )
+
+.. _parameters_section:
+
+Parameters
+----------
+
+Below are the available search parameters organized by category. Range parameters use ``[min, max]`` format with both values required:
+
+**Electronic Properties:**
+
+- ``band_gap`` (List[float]): Min,max band gap in eV (e.g., ``[1.2, 3.0]``)
+- ``efermi`` (List[float]): Min,max Fermi energy in eV
+- ``is_gap_direct`` (bool): Whether material has direct band gap
+- ``is_metal`` (bool): Whether material is a metal
+
+**Mechanical Properties:**
+
+- ``k_vrh`` (List[float]): Min,max Voigt-Reuss-Hill bulk modulus in GPa
+- ``k_voigt`` (List[float]): Min,max Voigt bulk modulus in GPa
+- ``k_reuss`` (List[float]): Min,max Reuss bulk modulus in GPa
+- ``g_vrh`` (List[float]): Min,max Voigt-Reuss-Hill shear modulus in GPa
+- ``g_voigt`` (List[float]): Min,max Voigt shear modulus in GPa
+- ``g_reuss`` (List[float]): Min,max Reuss shear modulus in GPa
+- ``poisson_ratio`` (List[float]): Min,max Poisson's ratio
+- ``elastic_anisotropy`` (List[float]): Min,max elastic anisotropy
+
+**Magnetic Properties:**
+
+- ``total_magnetization`` (List[float]): Min,max magnetization in μ_B/atom
+- ``total_magnetization_normalized_vol`` (List[float]): Min,max magnetization normalized to volume in μ_B/Å³
+- ``total_magnetization_normalized_formula_units`` (List[float]): Min,max magnetization normalized to formula units in μ_B/formula unit
+- ``magnetic_ordering`` (str): Magnetic ordering type. Accepts: ``'FM'`` (ferromagnetic), ``'AFM'`` (antiferromagnetic), ``'FiM'`` (ferrimagnetic), ``'NM'`` (non-magnetic), ``'PM'`` (paramagnetic), or human-readable strings
+- ``num_magnetic_sites`` (List[int]): Min,max number of magnetic sites
+- ``num_unique_magnetic_sites`` (List[int]): Min,max number of unique magnetic sites
+
+**Thermodynamic Properties:**
+
+- ``formation_energy`` (List[float]): Min,max formation energy in eV/atom
+- ``energy_above_hull`` (List[float]): Min,max energy above hull in eV/atom
+- ``equilibrium_reaction_energy`` (List[float]): Min,max equilibrium reaction energy in eV/atom
+- ``total_energy`` (List[float]): Min,max total energy in eV/atom
+- ``uncorrected_energy`` (List[float]): Min,max uncorrected energy in eV/atom
+- ``is_stable`` (bool): Whether material lies on convex energy hull (Ehull = 0)
+
+**Structural Properties:**
+
+- ``crystal_system`` (str): Crystal system. Options: ``'Triclinic'``, ``'Monoclinic'``, ``'Orthorhombic'``, ``'Tetragonal'``, ``'Trigonal'``, ``'Hexagonal'``, ``'Cubic'``
+- ``spacegroup_number`` (int): International spacegroup number (1-230)
+- ``spacegroup_symbol`` (str): Hermann-Mauguin spacegroup symbol
+- ``density`` (List[float]): Min,max density in g/cm³
+- ``volume`` (List[float]): Min,max unit cell volume in Å³
+- ``num_elements`` (List[int]): Min,max number of elements
+- ``num_sites`` (List[int]): Min,max number of sites
+
+**Dielectric Properties:**
+
+- ``e_total`` (List[float]): Min,max total dielectric constant
+- ``e_ionic`` (List[float]): Min,max ionic dielectric constant
+- ``e_electronic`` (List[float]): Min,max electronic dielectric constant
+- ``n`` (List[float]): Min,max refractive index
+- ``piezoelectric_modulus`` (List[float]): Min,max piezoelectric modulus in C/m²
+
+**Surface Properties:**
+
+- ``weighted_surface_energy`` (List[float]): Min,max weighted surface energy in J/m²
+- ``weighted_work_function`` (List[float]): Min,max weighted work function in eV
+- ``surface_energy_anisotropy`` (List[float]): Min,max surface energy anisotropy
+- ``surface_anisotropy`` (List[float]): Min,max surface anisotropy
+- ``shape_factor`` (List[float]): Min,max shape factor
+- ``has_reconstructed`` (bool): Whether entry has reconstructed surfaces
+
+**Composition Filters:**
+
+- ``elements`` (List[str]): List of elements material must contain (e.g., ``['Li', 'Fe', 'O']``)
+- ``exclude_elements`` (str): Comma-separated elements to exclude (e.g., ``'Li,Fe,O'``)
+- ``possible_species`` (str): Possible species in material (e.g., ``'Li,Fe,O'``)
+
+**Metadata Filters:**
+
+- ``theoretical`` (bool): Whether entry is theoretical (true) or experimental/experimentally observed (false)
+- ``has_props`` (str): Calculated properties available (list of HasProps or strings)
 
 Fields
 ------
