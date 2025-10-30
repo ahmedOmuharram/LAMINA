@@ -127,12 +127,14 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
         # Compute Poisson ratio from K and G
         nu = _safe_ratio(K, G, eps)
         
-        # Compute Young's modulus and Pugh ratio
+        # Compute Young's modulus and Pugh ratio (using eps for safety like Poisson ratio)
         E = None
         pugh = None
-        if K is not None and G is not None and (3.0*K + G) != 0:
-            E = 9.0*K*G/(3.0*K + G)
-            pugh = (K/G) if G != 0 else None
+        if K is not None and G is not None:
+            den = 3.0*K + G
+            if abs(den) > eps and abs(G) > eps:
+                E = 9.0*K*G/den
+                pugh = K/G
         
         # Validate and flag issues
         flags = []
@@ -202,18 +204,48 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
                 try:
                     from pymatgen.analysis.elasticity.elastic import ElasticTensor
                     ET = ElasticTensor(elastic_tensor).voigt_symmetrized
+                    
+                    # Convert from eV/Å³ to GPa (pymatgen returns moduli in eV/Å³)
+                    # Conversion factor: 1 eV/Å³ = 160.21766208 GPa
+                    CONVERSION_FACTOR = 160.21766208
+                    
+                    # Check Born stability (method availability may vary by pymatgen version)
+                    is_born_stable = None
+                    if hasattr(ET, 'is_stable') and callable(getattr(ET, 'is_stable', None)):
+                        try:
+                            is_born_stable = bool(ET.is_stable())
+                        except Exception:
+                            is_born_stable = None
+                    
                     data.setdefault("vrh_from_tensor", {})
+                    k_vrh_computed = float(ET.k_vrh) * CONVERSION_FACTOR  # Convert eV/Å³ to GPa
+                    g_vrh_computed = float(ET.g_vrh) * CONVERSION_FACTOR  # Convert eV/Å³ to GPa
+                    
+                    # Cross-check with summary values if available (flag if >10% difference)
+                    cross_check_note = None
+                    if K is not None and abs(k_vrh_computed - K) / max(abs(K), 1e-6) > 0.10:
+                        cross_check_note = f"Summary K_VRH ({K:.2f} GPa) differs from tensor recomputed ({k_vrh_computed:.2f} GPa) by >10%"
+                    if G is not None and abs(g_vrh_computed - G) / max(abs(G), 1e-6) > 0.10:
+                        if cross_check_note:
+                            cross_check_note += f"; Summary G_VRH ({G:.2f} GPa) differs from tensor recomputed ({g_vrh_computed:.2f} GPa) by >10%"
+                        else:
+                            cross_check_note = f"Summary G_VRH ({G:.2f} GPa) differs from tensor recomputed ({g_vrh_computed:.2f} GPa) by >10%"
+                    
                     data["vrh_from_tensor"].update({
-                        "k_vrh": float(ET.k_vrh),
-                        "g_vrh": float(ET.g_vrh),
-                        "is_born_stable": bool(ET.is_stable())
+                        "k_vrh": k_vrh_computed,
+                        "g_vrh": g_vrh_computed,
+                        "is_born_stable": is_born_stable,
+                        "unit": "GPa"
                     })
-                    born_stable = bool(ET.is_stable())
+                    if cross_check_note:
+                        data.setdefault("notes", []).append(cross_check_note)
+                    
+                    born_stable = is_born_stable
                     used_pymatgen = True
                     
                     # Add Born stability details
                     data["born_details"] = {
-                        "is_born_stable": bool(ET.is_stable())
+                        "is_born_stable": is_born_stable
                     }
                 except Exception as tensor_err:
                     _log.warning(f"Could not recompute VRH from elastic tensor for {material_id}: {tensor_err}")
@@ -227,7 +259,14 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
                     data["elasticity_warnings"] = [et_warnings]
         
         # Prefer Born stability verdict if available, otherwise use heuristic
-        likely_stable = (K is not None and K > 0 and G is not None and G > 0 and nu is not None and -1.0 < nu < 0.5)
+        # Heuristic requires: K > 0, G > 0, -1 < ν < 0.5, E > 0, and K/G ≥ 0
+        likely_stable = (
+            K is not None and K > 0 and
+            G is not None and G > 0 and
+            nu is not None and -1.0 < nu < 0.5 and
+            E is not None and E > 0 and
+            pugh is not None and pugh >= 0
+        )
         if born_stable is not None:
             likely_stable = born_stable
         
@@ -250,7 +289,7 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
             data["poisson_ratio"] = float(doc.homogeneous_poisson)
         
         citations = ["Materials Project"]
-        if used_pymatgen or et_doc:
+        if used_pymatgen:
             citations.append("pymatgen")
         
         # Lower confidence if flags are present
@@ -447,6 +486,32 @@ def find_closest_alloy_compositions(
         )
 
 
+def compare_material_properties_by_id(
+    mpr,
+    material_id1: str,
+    material_id2: str,
+    property_name: str = "bulk_modulus"
+) -> Dict[str, Any]:
+    """
+    Compare a specific property between two materials by their IDs.
+    
+    This is a convenience wrapper that fetches properties and calls
+    compare_material_properties().
+    
+    Args:
+        mpr: MPRester client instance
+        material_id1: First material ID
+        material_id2: Second material ID
+        property_name: Name of property to compare
+        
+    Returns:
+        Dictionary with comparison results
+    """
+    props1 = get_elastic_properties(mpr, material_id1)
+    props2 = get_elastic_properties(mpr, material_id2)
+    return compare_material_properties(props1, props2, property_name)
+
+
 def compare_material_properties(
     property1: Dict[str, Any],
     property2: Dict[str, Any],
@@ -637,7 +702,7 @@ def analyze_doping_effect(
         
         # Fallback: allow metastable entries if no stable ones found
         used_metastable = False
-        if not alloys.get("success") or not alloys.get("materials"):
+        if not alloys.get("success") or not alloys.get("data") or not alloys["data"].get("materials"):
             _log.info(f"No stable {host_element}-{dopant_element} alloys found, trying metastable entries (Ehull ≤ 0.20 eV/atom)")
             alloys = find_closest_alloy_compositions(
                 mpr,
@@ -668,7 +733,7 @@ def analyze_doping_effect(
             return _cached_dopant_props[0]
         
         # If no alloys found, compute VRH estimate from pure elements
-        if not alloys.get("success") or not alloys.get("materials"):
+        if not alloys.get("success") or not alloys.get("data") or not alloys["data"].get("materials"):
             _log.info(f"No {host_element}-{dopant_element} alloys found, computing VRH mixture estimate")
             
             dopant_props = get_pure_dopant_props()

@@ -15,7 +15,7 @@ from ..shared import success_result, error_result, ErrorType, Confidence
 from .utils import (
     get_elastic_properties,
     find_closest_alloy_compositions,
-    compare_material_properties,
+    compare_material_properties_by_id,
     analyze_doping_effect
 )
 
@@ -451,11 +451,7 @@ class MaterialsAIFunctionsMixin:
         """Compare a specific property between two materials and calculate percent change."""
         start_time = time.time()
         
-        # Get properties for both materials
-        props1 = get_elastic_properties(self.mpr, material_id1)
-        props2 = get_elastic_properties(self.mpr, material_id2)
-        
-        util_result = compare_material_properties(props1, props2, property_name)
+        util_result = compare_material_properties_by_id(self.mpr, material_id1, material_id2, property_name)
         
         duration_ms = (time.time() - start_time) * 1000
         
@@ -465,7 +461,7 @@ class MaterialsAIFunctionsMixin:
                 function="compare_material_properties",
                 error=util_result.get("error", "Failed to compare properties"),
                 error_type=ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"],
+                citations=util_result.get("citations", ["Materials Project", "pymatgen"]),
                 duration_ms=duration_ms
             )
         else:
@@ -474,8 +470,8 @@ class MaterialsAIFunctionsMixin:
                 handler="materials",
                 function="compare_material_properties",
                 data=data,
-                citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.HIGH,
+                citations=util_result.get("citations", ["Materials Project", "pymatgen"]),
+                confidence=util_result.get("confidence", Confidence.HIGH),
                 duration_ms=duration_ms
             )
         

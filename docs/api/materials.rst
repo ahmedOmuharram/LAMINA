@@ -576,19 +576,23 @@ The function uses **two separate API endpoints** to fetch elastic properties:
    If elasticity data is available:
    
    - Extracts ``K_VRH`` and ``G_VRH`` from elasticity doc (cross-check with summary values)
-   - If full ``elastic_tensor`` is present, recomputes VRH and Born stability using pymatgen:
+   - If full ``elastic_tensor`` is present, recomputes VRH (with unit conversion from eV/Å³ to GPa) and Born stability using pymatgen:
    
    .. code-block:: python
    
       from pymatgen.analysis.elasticity.elastic import ElasticTensor
       ET = ElasticTensor(et.elastic_tensor).voigt_symmetrized
+      # Convert from eV/Å³ to GPa (multiply by 160.21766208)
+      CONVERSION_FACTOR = 160.21766208
+      # Check Born stability (method availability may vary by pymatgen version)
+      is_born_stable = ET.is_stable() if hasattr(ET, 'is_stable') and callable(getattr(ET, 'is_stable', None)) else None
       data["vrh_from_tensor"] = {
-          "k_vrh": float(ET.k_vrh),
-          "g_vrh": float(ET.g_vrh),
-          "is_born_stable": bool(ET.is_stable())  # Born stability criterion
+          "k_vrh": float(ET.k_vrh) * CONVERSION_FACTOR,  # Convert eV/Å³ to GPa
+          "g_vrh": float(ET.g_vrh) * CONVERSION_FACTOR,  # Convert eV/Å³ to GPa
+          "is_born_stable": bool(is_born_stable) if is_born_stable is not None else None
       }
       data["born_details"] = {
-          "is_born_stable": bool(ET.is_stable())
+          "is_born_stable": bool(is_born_stable) if is_born_stable is not None else None
       }
       
       # Born stability overrides heuristic if available
@@ -616,7 +620,7 @@ The function uses **two separate API endpoints** to fetch elastic properties:
 
 **Parameters:**
 
-- ``material_id`` (str, required): Material ID (e.g., ``'mp-81'`` for Ag, ``'mp-30'`` for Cu)
+- ``material_id`` (str, required): Material ID (e.g., ``'mp-124'`` for Ag, ``'mp-30'`` for Cu, ``'mp-81'`` for Au)
 
 **Returns:**
 
@@ -714,7 +718,7 @@ The function provides two levels of stability assessment:
 
    # Get elastic properties for silver
    result = await handler.get_elastic_properties(
-       material_id="mp-81"
+       material_id="mp-124"  # Ag (silver)
    )
 
 .. _find_closest_alloy_compositions:
@@ -944,8 +948,8 @@ Dictionary with comparison including absolute difference, percent change, ratio,
 
    # Compare bulk modulus of Ag and Cu
    result = await handler.compare_material_properties(
-       material_id1="mp-81",  # Ag
-       material_id2="mp-30",  # Cu
+       material_id1="mp-124",  # Ag (silver)
+       material_id2="mp-30",   # Cu (copper)
        property_name="bulk_modulus"
    )
 
@@ -1170,16 +1174,14 @@ The Materials Project database provides extensive material properties. Below are
 
 **Electronic Properties:**
 
-- ``band_gap``: Band gap in eV (DFT-PBE, may underestimate experimental values)
-- ``cbm``: Conduction band minimum in eV
-- ``vbm``: Valence band maximum in eV
+- ``band_gap``: Band gap in eV (DFT-PBE, may underestimate experimental values; available in Summary)
+- ``cbm``: Conduction band minimum in eV (available in Summary)
+- ``vbm``: Valence band maximum in eV (available in Summary)
 - ``efermi``: Fermi energy in eV
 - ``is_gap_direct``: Boolean indicating direct vs indirect band gap
 - ``is_metal``: Boolean indicating metallic behavior
-- ``bandstructure``: Full band structure data
-- ``dos``: Density of states data
-- ``dos_energy_up``: Spin-up DOS
-- ``dos_energy_down``: Spin-down DOS
+
+  **Note**: Full ``bandstructure`` and ``dos`` data are retrieved from dedicated endpoints (e.g., ``get_bandstructure_by_material_id``, ``get_dos_by_material_id``) rather than as Summary fields. Use the electronic-structure helper functions for complete band structure and DOS data.
 
 **Magnetic Properties:**
 
@@ -1239,7 +1241,7 @@ The Materials Project database provides extensive material properties. Below are
 - ``theoretical``: Boolean indicating theoretical vs experimental
 - ``possible_species``: Possible species in material
 - ``has_props``: List of available calculated properties
-- ``database_ids``: External database IDs
+- ``database_IDs``: External database IDs
 
 Database and Methodology
 ------------------------
@@ -1284,7 +1286,7 @@ The Materials Project database contains DFT-calculated properties for over 200,0
 
 - All queries via **mp-api** Python client (Materials Project REST API v2)
 - Streaming/chunking with ``chunk_size`` and ``num_chunks`` parameters (not page/per_page)
-- Rate limiting: Burst throttle :math:`\approx 25` requests/second (requires API key authentication)
+- Rate limiting: MP enforces request-rate throttling (:math:`\approx 25` requests/second; subject to change)
 - Handler implements client-side pagination for consistency with other handlers
 
 Citations
@@ -1456,7 +1458,7 @@ The ``get_elastic_properties()`` function automatically validates data quality a
 - **all_fields=False**: Use when only IDs and formulas needed
 - **Caching**: Results not cached by handler; implement external caching if needed
 - **Batch queries**: Use ``mp_get_material_details()`` with multiple IDs (up to 100)
-- **Rate limits**: Free tier = 1000 req/day; authenticated = unlimited
+- **Rate limits**: MP enforces request-rate throttling (:math:`\approx 25` requests/second; subject to change)
 
 **DFT Accuracy Caveats:**
 
