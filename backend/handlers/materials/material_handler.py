@@ -18,7 +18,7 @@ _log = logging.getLogger(__name__)
 class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
     """Unified handler for material search and details endpoints."""
 
-    def handle_material_details(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+    def mp_get_material_details(self, params: Mapping[str, Any]) -> Dict[str, Any]:
         """Handle materials/summary/get_material_details_by_ids endpoint."""
         _log.info(f"GET materials/summary/get_material_details_by_ids with params: {params}")
 
@@ -52,7 +52,6 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
                     fields = [f.strip() for f in fields.split(",")]
                 if "material_id" not in fields:
                     fields.append("material_id")
-                # Map old field names to new API field names
                 field_mapping = {
                     "formula": "formula_pretty",
                     "magnetic_ordering": "ordering"
@@ -88,7 +87,7 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
 
             return success_result(
                 handler="materials",
-                function="handle_material_details",
+                function="mp_get_material_details",
                 data={
                     "total_count": total,
                     "page": page,
@@ -103,13 +102,13 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
             _log.error(f"Material details fetch failed: {e}", exc_info=True)
             return error_result(
                 handler="materials",
-                function="handle_material_details",
+                function="mp_get_material_details",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
                 citations=["Materials Project"]
             )
 
-    def handle_material_search(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+    def mp_search_by_composition(self, params: Mapping[str, Any]) -> Dict[str, Any]:
         """Handle materials/summary/get_material endpoint."""
         _log.info(f"GET materials/summary/get_material with params: {params}")
         
@@ -118,7 +117,7 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
             if "__errors__" in kwargs:
                 return error_result(
                     handler="materials",
-                    function="handle_material_search",
+                    function="mp_search_by_composition",
                     error="One or more range parameters are invalid: " + str(kwargs["__errors__"]),
                     error_type=ErrorType.INVALID_INPUT,
                     citations=["Materials Project"]
@@ -165,7 +164,7 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
                 citations=["Materials Project"]
             )
 
-    def handle_material_by_char(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+    def mp_get_by_characteristic(self, params: Mapping[str, Any]) -> Dict[str, Any]:
         """Handle materials/summary/get_material_by_char endpoint."""
         _log.info(f"GET materials/summary/get_material_by_char with params: {params}")
         
@@ -174,7 +173,7 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
             if "__errors__" in kwargs:
                 return error_result(
                     handler="materials",
-                    function="handle_material_by_char",
+                    function="mp_get_by_characteristic",
                     error="One or more range parameters are invalid: " + str(kwargs["__errors__"]),
                     error_type=ErrorType.INVALID_INPUT,
                     citations=["Materials Project"]
@@ -192,7 +191,7 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
             if not has_selector:
                 return error_result(
                     handler="materials",
-                    function="handle_material_by_char",
+                    function="mp_get_by_characteristic",
                     error="Provide at least one selector (e.g., formula/chemsys/elements/material_ids) or a numeric/range filter (e.g., band_gap).",
                     error_type=ErrorType.INVALID_INPUT,
                     citations=["Materials Project"]
@@ -210,7 +209,7 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
                 if existing_fields != "material_id":
                     kwargs["fields"] = [existing_fields, "material_id"]
 
-            _log.info(f"get_material_by_char -> summary.search kwargs: {kwargs}")
+            _log.info(f"mp_get_by_characteristic -> summary.search kwargs: {kwargs}")
 
             # Pagination: default page=1, per_page<=10
             page, per_page = self._get_pagination(params)

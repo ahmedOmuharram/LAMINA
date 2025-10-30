@@ -226,7 +226,7 @@ class BaseHandler:
                 errors.append({"param": "num_elements", "value": _params.get("num_elements"), "reason": str(e)})
             else:
                 if rng is not None:
-                    raw_kwargs["nelements"] = rng
+                    raw_kwargs["num_elements"] = rng
 
         if errors:
             return {"__errors__": errors}

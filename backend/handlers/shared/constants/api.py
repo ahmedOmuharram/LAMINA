@@ -17,7 +17,7 @@ RANGE_KEYS = [
     "band_gap", "density", "e_electronic", "e_ionic", "e_total", "efermi",
     "elastic_anisotropy", "energy_above_hull", "equilibrium_reaction_energy",
     "formation_energy", "g_reuss", "g_voigt", "g_vrh", "k_reuss", "k_voigt",
-    "k_vrh", "n", "nelements", "num_sites", "num_magnetic_sites",
+    "k_vrh", "n", "num_elements", "num_sites", "num_magnetic_sites",
     "num_unique_magnetic_sites", "piezoelectric_modulus", "poisson_ratio",
     "shape_factor", "surface_energy_anisotropy", "total_energy",
     "total_magnetization", "total_magnetization_normalized_formula_units",

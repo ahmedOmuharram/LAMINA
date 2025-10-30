@@ -18,29 +18,19 @@ The Materials handler provides comprehensive access to:
 6. **Property Comparison**: Compare properties between materials with percent change calculations
 7. **Doping Analysis**: Analyze effects of doping on material properties using database entries or mixture models
 
-**Key Features:**
-
-- **Unified API access** via Materials Project REST API (mp-api client)
-- **Automatic pagination** with configurable page size and offset
-- **Flexible field selection** for minimizing data transfer and focusing on specific properties
-- **Composition matching** with tolerance-based search for alloy discovery
-- **VRH mixture models** as fallback when database entries are unavailable
-- **Stability filtering** with energy above hull thresholds for metastable phases
-- **Comprehensive property coverage** from DFT calculations (electronic, magnetic, mechanical, dielectric)
-
 Core Search Functions
 ---------------------
 
-.. _get_material:
+.. _mp_get_by_id:
 
-get_material
+mp_get_by_id
 ^^^^^^^^^^^^
 
 **Function Definition:**
 
 .. code-block:: python
 
-   async def get_material(
+   async def mp_get_by_id(
        self,
        chemsys: Optional[str] = None,
        formula: Optional[str] = None,
@@ -70,7 +60,7 @@ Query materials by their chemical system, formula, or elements. This is the prim
 
 2. **API Query Construction:**
    
-   - Calls ``handle_material_search(params)`` which builds kwargs for ``mpr.materials.summary.search()``
+   - Calls ``mp_search_by_composition(params)`` which builds kwargs for ``mpr.materials.summary.search()``
    - Internally uses ``_build_summary_search_kwargs()`` to parse parameters
    - Constructs search criteria for Materials Project Summary endpoint
 
@@ -78,7 +68,7 @@ Query materials by their chemical system, formula, or elements. This is the prim
    
    .. code-block:: python
    
-      # In handle_material_search():
+      # In mp_search_by_composition():
       kwargs = {
           "chemsys": chemsys,  # e.g., "Li-Fe-O"
           "formula": formula,  # e.g., "Fe2O3"
@@ -125,7 +115,7 @@ Dictionary containing:
    {
        "success": True,
        "handler": "materials",
-       "function": "get_material",
+       "function": "mp_get_by_id",
        "data": {
            "total_count": 150,
            "page": 1,
@@ -138,7 +128,7 @@ Dictionary containing:
                    "formula_anonymous": "ABC2",
                    "chemsys": "Fe-Li-O",
                    "elements": ["Fe", "Li", "O"],
-                   "nelements": 3,
+                   "num_elements": 3,
                    "nsites": 4,
                    "volume": 67.5,
                    "density": 4.23
@@ -161,33 +151,33 @@ Dictionary containing:
 .. code-block:: python
 
    # Search for Li-Fe-O system materials
-   result = await handler.get_material(
+   result = await handler.mp_get_by_id(
        chemsys="Li-Fe-O",
        per_page=10
    )
    
    # Search for specific formula
-   result = await handler.get_material(
+   result = await handler.mp_get_by_id(
        formula="Fe2O3"
    )
    
    # Search for materials containing specific elements
-   result = await handler.get_material(
+   result = await handler.mp_get_by_id(
        element="Li,Fe,O",
        page=2,
        per_page=20
    )
 
-.. _get_material_by_char:
+.. _mp_get_by_characteristic:
 
-get_material_by_char
-^^^^^^^^^^^^^^^^^^^^
+mp_get_by_characteristic
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Function Definition:**
 
 .. code-block:: python
 
-   async def get_material_by_char(
+   async def mp_get_by_characteristic(
        self,
        band_gap: Optional[List[float]] = None,
        crystal_system: Optional[str] = None,
@@ -249,7 +239,7 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
    
    .. code-block:: python
    
-      # In handle_material_by_char():
+      # In mp_get_by_characteristic():
       kwargs = {
           "band_gap": (1.0, 3.0),  # Range tuple
           "is_metal": False,  # Boolean filter
@@ -262,7 +252,7 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
 
 5. **Result Processing:**
    
-   Same as ``get_material``: convert docs → paginate → compute total count → return envelope
+   Same as ``mp_get_by_id``: convert docs → paginate → compute total count → return envelope
 
 **Parameters (Key Categories):**
 
@@ -283,7 +273,7 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
 **Magnetic Properties:**
 
 - ``total_magnetization`` (List[float]): Min,max magnetization in μ_B/atom
-- ``magnetic_ordering`` (str): ``'paramagnetic'``, ``'ferromagnetic'``, ``'antiferromagnetic'``, ``'ferrimagnetic'``
+- ``magnetic_ordering`` (str): Magnetic ordering type. API expects pymatgen ``Ordering`` enum values: ``'FM'`` (ferromagnetic), ``'AFM'`` (antiferromagnetic), ``'FiM'`` (ferrimagnetic), ``'NM'`` (non-magnetic), ``'PM'`` (paramagnetic). Handler accepts both human-readable strings and enum values.
 - ``num_magnetic_sites`` (List[int]): Min,max number of magnetic sites
 
 **Thermodynamic Properties:**
@@ -298,7 +288,7 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
 - ``spacegroup_number`` (int): International spacegroup number (1-230)
 - ``spacegroup_symbol`` (str): Hermann-Mauguin spacegroup symbol
 - ``density`` (List[float]): Min,max density in g/cm³
-- ``nelements`` (List[int]): Min,max number of elements
+- ``num_elements`` (List[int]): Min,max number of elements
 
 **Composition Filters:**
 
@@ -308,14 +298,14 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
 
 **Returns:**
 
-Dictionary with same structure as ``get_material``, including filtered results and pagination metadata.
+Dictionary with same structure as ``mp_get_by_id``, including filtered results and pagination metadata.
 
 **Example:**
 
 .. code-block:: python
 
    # Find stable semiconductors with band gap 1-3 eV
-   result = await handler.get_material_by_char(
+   result = await handler.mp_get_by_characteristic(
        band_gap=[1.0, 3.0],
        is_metal=False,
        is_stable=True,
@@ -323,22 +313,28 @@ Dictionary with same structure as ``get_material``, including filtered results a
    )
    
    # Find high bulk modulus cubic materials
-   result = await handler.get_material_by_char(
+   result = await handler.mp_get_by_characteristic(
        k_vrh=[100, 500],
        crystal_system="Cubic",
        is_stable=True
    )
+   
+   # Find ferromagnetic materials
+   result = await handler.mp_get_by_characteristic(
+       magnetic_ordering="FM",  # Use enum value: FM, AFM, FiM, NM, PM
+       is_stable=True
+   )
 
-.. _get_material_details_by_ids:
+.. _mp_get_material_details:
 
-get_material_details_by_ids
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+mp_get_material_details
+^^^^^^^^^^^^^^^^^^^^^^^
 
 **Function Definition:**
 
 .. code-block:: python
 
-   async def get_material_details_by_ids(
+   async def mp_get_material_details(
        self,
        material_ids: List[str],
        fields: Optional[List[str]] = None,
@@ -371,7 +367,7 @@ Fetch detailed information for one or more materials using their Materials Proje
    
    .. code-block:: python
    
-      # In handle_material_details():
+      # In mp_get_material_details():
       if fields is not None:
           if isinstance(fields, str):
               fields = [f.strip() for f in fields.split(",")]
@@ -423,13 +419,13 @@ Dictionary containing full material documents with all requested fields.
 .. code-block:: python
 
    # Get all fields for specific materials
-   result = await handler.get_material_details_by_ids(
+   result = await handler.mp_get_material_details(
        material_ids=['mp-149', 'mp-30'],
        all_fields=True
    )
    
    # Get only specific fields
-   result = await handler.get_material_details_by_ids(
+   result = await handler.mp_get_material_details(
        material_ids=['mp-81'],
        fields=['material_id', 'formula_pretty', 'band_gap', 'energy_above_hull'],
        all_fields=False
@@ -872,7 +868,7 @@ The Materials Project database provides extensive material properties. Below are
 - ``formula_anonymous``: Anonymous formula showing stoichiometry (e.g., 'A2B3')
 - ``chemsys``: Chemical system (e.g., 'Fe-O')
 - ``elements``: List of element symbols
-- ``nelements``: Number of elements in composition
+- ``num_elements``: Number of elements in composition
 - ``composition``: Full composition dictionary
 - ``composition_reduced``: Reduced composition
 - ``nsites``: Number of sites in unit cell
@@ -880,7 +876,7 @@ The Materials Project database provides extensive material properties. Below are
 **Structural Properties:**
 
 - ``structure``: Full crystal structure (pymatgen Structure object)
-- ``volume``: Unit cell volume in Ų
+- ``volume``: Unit cell volume in Å³
 - ``density``: Density in g/cm³
 - ``density_atomic``: Atomic density
 - ``symmetry``: Symmetry information
@@ -916,7 +912,7 @@ The Materials Project database provides extensive material properties. Below are
 - ``is_magnetic``: Boolean indicating magnetic ordering
 - ``ordering``: Magnetic ordering type (paramagnetic, ferromagnetic, antiferromagnetic, ferrimagnetic)
 - ``total_magnetization``: Total magnetization in μ_B/atom
-- ``total_magnetization_normalized_vol``: Magnetization per volume in μ_B/bohr³
+- ``total_magnetization_normalized_vol``: Magnetization per volume in μ_B/Å³
 - ``total_magnetization_normalized_formula_units``: Magnetization per formula unit
 - ``num_magnetic_sites``: Number of magnetic sites
 - ``num_unique_magnetic_sites``: Number of unique magnetic sites
@@ -951,8 +947,7 @@ The Materials Project database provides extensive material properties. Below are
 
 **Surface Properties:**
 
-- ``weighted_surface_energy``: Weighted surface energy in eV/ų
-- ``weighted_surface_energy_EV_PER_ANG2``: Alternative units
+- ``weighted_surface_energy``: Weighted surface energy in J/m²
 - ``weighted_work_function``: Weighted work function in eV
 - ``surface_anisotropy``: Surface energy anisotropy
 - ``shape_factor``: Wulff shape factor
@@ -991,8 +986,8 @@ The Materials Project database contains DFT-calculated properties for over 200,0
 
 **Elastic Properties:**
 
-- Computed via **DFT perturbation theory** (DFPT)
-- Strain-stress method: apply small strains, compute stress tensor
+- Computed via **finite strain-stress method**
+- Apply small strains to structure, compute DFT stress tensor response
 - Fit elastic constants from stress-strain relationship
 - Voigt, Reuss, and VRH averages computed from elastic tensor
 
@@ -1008,14 +1003,15 @@ The Materials Project database contains DFT-calculated properties for over 200,0
 
 - PBE-GGA **systematically underestimates** band gaps (typically 30-50% error)
 - Metals and semimetals generally well-described
-- For accurate gaps, use hybrid functionals (HSE06) or GW corrections
-- Database includes hybrid-functional corrections for some materials
+- Band structures and DOS are GGA(PBE) or GGA+U; hybrid functionals (HSE06) or GW corrections are not standard in MP core database
+- For experimental validation, always compare with measured band gaps
 
 **API Access:**
 
 - All queries via **mp-api** Python client (Materials Project REST API v2)
-- Automatic pagination and field selection
-- Rate limiting: 1000 requests/day for free tier, unlimited for authenticated users
+- Streaming/chunking with ``chunk_size`` and ``num_chunks`` parameters (not page/per_page)
+- Rate limiting: Burst throttle ≈ 25 requests/second (requires API key authentication)
+- Handler implements client-side pagination for consistency with other handlers
 
 Citations
 ---------
@@ -1032,6 +1028,10 @@ Additional methodology references:
 
 - **Voigt-Reuss-Hill averaging**: Hill, R. (1952). The elastic behaviour of a crystalline aggregate. *Proceedings of the Physical Society A*, 65, 349.
 
+- **Metastable materials**: Sun, W. et al. (2016). The thermodynamic scale of inorganic crystalline metastability. *Science Advances*, 2(11), e1600225.
+
+- **Metastability and synthesis**: Aykol, M. et al. (2018). Thermodynamic limit for synthesis of metastable inorganic materials. *Science Advances*, 4(4), eaaq0148.
+
 Notes and Best Practices
 -------------------------
 
@@ -1042,15 +1042,18 @@ Notes and Best Practices
 - **Band gaps**: eV
 - **Magnetization**: Bohr magnetons (μ_B) per atom, formula unit, or volume
 - **Density**: g/cm³
-- **Volume**: ų (Ångström³)
+- **Volume**: Å³ (cubic Ångström)
 
 **Stability Interpretation:**
 
 - ``energy_above_hull = 0``: **Stable** - lies on convex hull
-- ``0 < Ehull ≤ 0.010 eV/atom``: **Marginally stable** - numerical tolerance
-- ``0.010 < Ehull ≤ 0.050 eV/atom``: **Metastable** - may exist kinetically
-- ``0.050 < Ehull ≤ 0.200 eV/atom``: **Metastable** - often synthesizable with non-equilibrium processing
-- ``Ehull > 0.200 eV/atom``: **Highly metastable** - unlikely to synthesize
+- ``0 < Ehull ≤ 0.010 eV/atom``: **Marginally stable** - numerical tolerance, effectively on hull
+- ``0.010 < Ehull ≤ 0.050 eV/atom``: **Metastable** - may be kinetically stable
+- ``0.050 < Ehull ≤ 0.100 eV/atom``: **Metastable** - most known synthesizable metastables fall in this range
+- ``0.100 < Ehull ≤ 0.200 eV/atom``: **Metastable** - approaching practical synthesis limits, non-equilibrium processing required
+- ``Ehull > 0.200 eV/atom``: **Highly metastable** - synthesis increasingly unlikely
+
+Literature (Sun 2016, Aykol 2018) shows most experimentally known metastable materials have Ehull ≤ 0.10 eV/atom; values above 0.20 eV/atom are rare and synthesis becomes impractical.
 
 **Elastic Moduli Interpretation:**
 
@@ -1085,6 +1088,8 @@ Notes and Best Practices
 
 **Composition Matching Best Practices:**
 
+**Note**: Composition tolerance and closest-match logic are **handler-side features**, not native MP API capabilities. The handler retrieves all materials in a chemical system and performs client-side filtering by composition.
+
 - Use **tolerance = 0.05** (±5 at.%) for general alloy searches
 - Tighten to **0.02** (±2 at.%) for precise composition requirements
 - Relax to **0.10** (±10 at.%) for exploratory searches
@@ -1118,7 +1123,7 @@ Notes and Best Practices
 - **Field selection**: Specify ``fields`` parameter to reduce data transfer
 - **all_fields=False**: Use when only IDs and formulas needed
 - **Caching**: Results not cached by handler; implement external caching if needed
-- **Batch queries**: Use ``get_material_details_by_ids()`` with multiple IDs (up to 100)
+- **Batch queries**: Use ``mp_get_material_details()`` with multiple IDs (up to 100)
 - **Rate limits**: Free tier = 1000 req/day; authenticated = unlimited
 
 **DFT Accuracy Caveats:**
@@ -1128,21 +1133,3 @@ Notes and Best Practices
 - **Magnetic ordering** in some materials sensitive to exchange-correlation functional
 - **Phonon/thermal properties** not included (static 0 K calculations)
 - **Surface energies** are Wulff-construction weighted averages (not single facets)
-
-**Recommended Workflows:**
-
-1. **Material Discovery:**
-   
-   ``get_material()`` → ``get_material_by_char()`` → ``get_material_details_by_ids()``
-
-2. **Alloy Design:**
-   
-   ``find_alloy_compositions()`` → ``analyze_doping_effect()`` → ``compare_material_properties()``
-
-3. **Mechanical Property Analysis:**
-   
-   ``get_material_by_char()`` (filter by K/G) → ``get_elastic_properties()`` → comparison
-
-4. **Semiconductor Search:**
-   
-   ``get_material_by_char()`` (band_gap + is_stable) → ``get_material_details_by_ids()`` (get DOS)

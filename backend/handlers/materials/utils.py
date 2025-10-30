@@ -417,7 +417,7 @@ def analyze_doping_effect(
         # Find pure host material
         host_docs = mpr.materials.summary.search(
             elements=[host_element],
-            num_elements=[1, 1],
+            num_elements=1,
             is_stable=True,
             fields=[
                 "material_id", "formula_pretty", "composition",

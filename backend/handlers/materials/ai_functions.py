@@ -26,7 +26,7 @@ class MaterialsAIFunctionsMixin:
     """Mixin class containing AI function methods for Materials handlers."""
     
     @ai_function(desc="Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly (e.g., Li-Fe-O, Fe2O3, Li).", auto_truncate=128000)
-    async def get_material(
+    async def mp_get_by_id(
         self,
         chemsys: Annotated[str, AIParam(desc="Chemical system(s) or comma-separated list (e.g., Li-Fe-O,Si-*). Use chemical symbols directly.")] = None,
         formula: Annotated[str, AIParam(desc="Formula(s), anonymized formula, or wildcard(s) (e.g., Li2FeO3,Fe2O3,Fe*O*). Use chemical symbols directly.")] = None,
@@ -47,14 +47,14 @@ class MaterialsAIFunctionsMixin:
         params["page"] = page
         params["per_page"] = per_page
         
-        util_result = self.handle_material_search(params)
+        util_result = self.mp_search_by_composition(params)
         
         duration_ms = (time.time() - start_time) * 1000
         
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
-                function="get_material",
+                function="mp_get_by_id",
                 error=util_result.get("error", "Material search failed"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
                 citations=["Materials Project"],
@@ -64,7 +64,7 @@ class MaterialsAIFunctionsMixin:
             data = {k: v for k, v in util_result.items() if k != "success"}
             result = success_result(
                 handler="materials",
-                function="get_material",
+                function="mp_get_by_id",
                 data=data,
                 citations=["Materials Project"],
                 confidence=Confidence.HIGH,
@@ -72,11 +72,11 @@ class MaterialsAIFunctionsMixin:
             )
         
         # Store the result for tooltip display
-        self._track_tool_output("get_material", result)
+        self._track_tool_output("mp_get_by_id", result)
         return result
 
     @ai_function(desc="Fetch a material id and formula by a characteristic of the material", auto_truncate=128000)
-    async def get_material_by_char(
+    async def mp_get_by_characteristic(
         self,
         band_gap: Annotated[List[float], AIParam(desc="Min,max range of band gap in eV (e.g., [1.2, 3.0]). Tuple of floats, and both values are required.")] = None,
         crystal_system: Annotated[str, AIParam(desc="Crystal system of material. Available options are 'Triclinic', 'Monoclinic', 'Orthorhombic', 'Tetragonal', 'Trigonal', 'Hexagonal' or 'Cubic'.")] = None,
@@ -90,14 +90,14 @@ class MaterialsAIFunctionsMixin:
         energy_above_hull: Annotated[List[float], AIParam(desc="Min,max energy above hull in eV/atom. Tuple of floats, and both values are required.")] = None,
         equilibrium_reaction_energy: Annotated[List[float], AIParam(desc="Min,max equilibrium reaction energy in eV/atom. Tuple of floats, and both values are required.")] = None,
         formation_energy: Annotated[List[float], AIParam(desc="Min,max formation energy in eV/atom. Tuple of floats, and both values are required.")] = None,
-        g_reuss: Annotated[List[float], AIParam(desc="Min,max Reuss grain boundary energy in eV/atom. Tuple of floats, and both values are required.")] = None,
-        g_voigt: Annotated[List[float], AIParam(desc="Min,max Voigt grain boundary energy in eV/atom. Tuple of floats, and both values are required.")] = None,
-        g_vrh: Annotated[List[float], AIParam(desc="Min,max Voigt-Reuss-Hill grain boundary energy in eV/atom. Tuple of floats, and both values are required.")] = None,
+        g_reuss: Annotated[List[float], AIParam(desc="Min,max Reuss shear modulus in GPa. Tuple of floats, and both values are required.")] = None,
+        g_voigt: Annotated[List[float], AIParam(desc="Min,max Voigt shear modulus in GPa. Tuple of floats, and both values are required.")] = None,
+        g_vrh: Annotated[List[float], AIParam(desc="Min,max Voigt-Reuss-Hill shear modulus in GPa. Tuple of floats, and both values are required.")] = None,
         k_reuss: Annotated[List[float], AIParam(desc="Min,max Reuss bulk modulus in GPa. Tuple of floats, and both values are required.")] = None,
         k_voigt: Annotated[List[float], AIParam(desc="Min,max Voigt bulk modulus in GPa. Tuple of floats, and both values are required.")] = None,
         k_vrh: Annotated[List[float], AIParam(desc="Min,max Voigt-Reuss-Hill bulk modulus in GPa. Tuple of floats, and both values are required.")] = None,
-        n: Annotated[List[int], AIParam(desc="Min,max number of atoms. Tuple of ints, and both values are required.")] = None,
-        nelements: Annotated[List[int], AIParam(desc="Min,max number of elements. Tuple of ints, and both values are required.")] = None,
+        n: Annotated[List[float], AIParam(desc="Min,max refractive index. Tuple of floats, and both values are required.")] = None,
+        num_elements: Annotated[List[int], AIParam(desc="Min,max number of elements. Tuple of ints, and both values are required.")] = None,
         num_sites: Annotated[List[int], AIParam(desc="Min,max number of sites. Tuple of ints, and both values are required.")] = None,
         num_magnetic_sites: Annotated[List[int], AIParam(desc="Min,max number of magnetic sites.")] = None,
         num_unique_magnetic_sites: Annotated[List[int], AIParam(desc="Min,max number of unique magnetic sites. Tuple of ints, and both values are required.")] = None,
@@ -108,10 +108,10 @@ class MaterialsAIFunctionsMixin:
         total_energy: Annotated[List[float], AIParam(desc="Min,max total energy in eV/atom.")] = None,
         total_magnetization: Annotated[List[float], AIParam(desc="Min,max total magnetization in Bohr magnetons/atom.")] = None,
         total_magnetization_normalized_formula_units: Annotated[List[float], AIParam(desc="Min,max total magnetization normalized to formula units in Bohr magnetons/formula unit.")] = None,
-        total_magnetization_normalized_vol: Annotated[List[float], AIParam(desc="Min,max total magnetization normalized to volume in Bohr magnetons/bohr^3.")] = None,
+        total_magnetization_normalized_vol: Annotated[List[float], AIParam(desc="Min,max total magnetization normalized to volume in μB/Å^3.")] = None,
         uncorrected_energy: Annotated[List[float], AIParam(desc="Min,max uncorrected energy in eV/atom. Tuple of floats, and both values are required.")] = None,
-        volume: Annotated[List[float], AIParam(desc="Min,max volume in bohr^3. Tuple of floats, and both values are required.")] = None,
-        weighted_surface_energy: Annotated[List[float], AIParam(desc="Min,max weighted surface energy in eV/ang^2. Tuple of floats, and both values are required.")] = None,
+        volume: Annotated[List[float], AIParam(desc="Min,max volume in Å^3. Tuple of floats, and both values are required.")] = None,
+        weighted_surface_energy: Annotated[List[float], AIParam(desc="Min,max weighted surface energy in J/m^2. Tuple of floats, and both values are required.")] = None,
         weighted_work_function: Annotated[List[float], AIParam(desc="Min,max weighted work function in eV. Tuple of floats, and both values are required.")] = None,
         surface_anisotropy: Annotated[List[float], AIParam(desc="Min,max surface anisotropy. Tuple of floats, and both values are required.")] = None,
         has_reconstructed: Annotated[bool, AIParam(desc="Whether the entry has reconstructed surfaces.")] = None,
@@ -125,8 +125,6 @@ class MaterialsAIFunctionsMixin:
         possible_species: Annotated[str, AIParam(desc="Possible species of material (e.g., Li,Fe,O).")] = None,
         has_props: Annotated[str, AIParam(desc="Calculated properties available (list of HasProps or strings).")] = None,
         theoretical: Annotated[bool, AIParam(desc="Whether the entry is theoretical (true) or experimental/experimentally observed (false).")] = None,
-        temperature: Annotated[float, AIParam(desc="Temperature in Kelvin (optional).")] = None,
-        pressure: Annotated[float, AIParam(desc="Pressure in GPa (optional).")] = None,
         page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
         per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
@@ -172,8 +170,8 @@ class MaterialsAIFunctionsMixin:
             params["k_vrh"] = k_vrh
         if n is not None:
             params["n"] = n
-        if nelements is not None:
-            params["nelements"] = nelements
+        if num_elements is not None:
+            params["num_elements"] = num_elements
         if num_sites is not None:
             params["num_sites"] = num_sites
         if num_magnetic_sites is not None:
@@ -228,21 +226,17 @@ class MaterialsAIFunctionsMixin:
             params["has_props"] = has_props
         if theoretical is not None:
             params["theoretical"] = theoretical
-        if temperature is not None:
-            params["temperature"] = temperature
-        if pressure is not None:
-            params["pressure"] = pressure
         params["page"] = page
         params["per_page"] = per_page
         
-        util_result = self.handle_material_by_char(params)
+        util_result = self.mp_get_by_characteristic(params)
         
         duration_ms = (time.time() - start_time) * 1000
         
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
-                function="get_material_by_char",
+                function="mp_get_by_characteristic",
                 error=util_result.get("error", "Material search by characteristics failed"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
                 citations=["Materials Project"],
@@ -252,7 +246,7 @@ class MaterialsAIFunctionsMixin:
             data = {k: v for k, v in util_result.items() if k != "success"}
             result = success_result(
                 handler="materials",
-                function="get_material_by_char",
+                function="mp_get_by_characteristic",
                 data=data,
                 citations=["Materials Project"],
                 confidence=Confidence.HIGH,
@@ -260,14 +254,14 @@ class MaterialsAIFunctionsMixin:
             )
         
         # Store the result for tooltip display
-        self._track_tool_output("get_material_by_char", result)
+        self._track_tool_output("mp_get_by_characteristic", result)
         return result
 
     @ai_function(desc="Fetch one or more materials by their material IDs and return detailed information about them.", auto_truncate=128000)
-    async def get_material_details_by_ids(
+    async def mp_get_material_details(
         self,
         material_ids: Annotated[List[str], AIParam(desc="List of material IDs, e.g., ['mp-149', 'mp-150', 'mp-151'].")],
-        fields: Annotated[List[str], AIParam(desc="List of fields to include. Values include 'builder_meta', 'nsites', 'elements', 'nelements', 'composition', 'composition_reduced', 'formula_pretty', 'formula_anonymous', 'chemsys', 'volume', 'density', 'density_atomic', 'symmetry', 'property_name', 'material_id', 'deprecated', 'deprecation_reasons', 'last_updated', 'origins', 'warnings', 'structure', 'task_ids', 'uncorrected_energy_per_atom', 'energy_per_atom', 'formation_energy_per_atom', 'energy_above_hull', 'is_stable', 'equilibrium_reaction_energy_per_atom', 'decomposes_to', 'xas', 'grain_boundaries', 'band_gap', 'cbm', 'vbm', 'efermi', 'is_gap_direct', 'is_metal', 'es_source_calc_id', 'bandstructure', 'dos', 'dos_energy_up', 'dos_energy_down', 'is_magnetic', 'ordering', 'total_magnetization', 'total_magnetization_normalized_vol', 'total_magnetization_normalized_formula_units', 'num_magnetic_sites', 'num_unique_magnetic_sites', 'types_of_magnetic_species', 'bulk_modulus', 'shear_modulus', 'universal_anisotropy', 'homogeneous_poisson', 'e_total', 'e_ionic', 'e_electronic', 'n', 'e_ij_max', 'weighted_surface_energy_EV_PER_ANG2', 'weighted_surface_energy', 'weighted_work_function', 'surface_anisotropy', 'shape_factor', 'has_reconstructed', 'possible_species', 'has_props', 'theoretical', 'database_Ids'")] = None,
+        fields: Annotated[List[str], AIParam(desc="List of fields to include. Values include 'builder_meta', 'nsites', 'elements', 'num_elements', 'composition', 'composition_reduced', 'formula_pretty', 'formula_anonymous', 'chemsys', 'volume', 'density', 'density_atomic', 'symmetry', 'property_name', 'material_id', 'deprecated', 'deprecation_reasons', 'last_updated', 'origins', 'warnings', 'structure', 'task_ids', 'uncorrected_energy_per_atom', 'energy_per_atom', 'formation_energy_per_atom', 'energy_above_hull', 'is_stable', 'equilibrium_reaction_energy_per_atom', 'decomposes_to', 'xas', 'grain_boundaries', 'band_gap', 'cbm', 'vbm', 'efermi', 'is_gap_direct', 'is_metal', 'es_source_calc_id', 'bandstructure', 'dos', 'dos_energy_up', 'dos_energy_down', 'is_magnetic', 'ordering', 'total_magnetization', 'total_magnetization_normalized_vol', 'total_magnetization_normalized_formula_units', 'num_magnetic_sites', 'num_unique_magnetic_sites', 'types_of_magnetic_species', 'bulk_modulus', 'shear_modulus', 'universal_anisotropy', 'homogeneous_poisson', 'e_total', 'e_ionic', 'e_electronic', 'n', 'e_ij_max', 'weighted_surface_energy', 'weighted_work_function', 'surface_anisotropy', 'shape_factor', 'has_reconstructed', 'possible_species', 'has_props', 'theoretical', 'database_IDs'")] = None,
         all_fields: Annotated[bool, AIParam(desc="Whether to return all document fields. Useful if the user wants to know about the material without explicitly asking for certain fields (default True).")] = True,
         page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
         per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
@@ -284,14 +278,14 @@ class MaterialsAIFunctionsMixin:
         if fields is not None:
             params["fields"] = fields
         
-        util_result = self.handle_material_details(params)
+        util_result = self.mp_get_material_details(params)
         
         duration_ms = (time.time() - start_time) * 1000
         
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
-                function="get_material_details_by_ids",
+                function="mp_get_material_details",
                 error=util_result.get("error", "Failed to fetch material details"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
                 citations=["Materials Project"],
@@ -301,7 +295,7 @@ class MaterialsAIFunctionsMixin:
             data = {k: v for k, v in util_result.items() if k != "success"}
             result = success_result(
                 handler="materials",
-                function="get_material_details_by_ids",
+                function="mp_get_material_details",
                 data=data,
                 citations=["Materials Project"],
                 confidence=Confidence.HIGH,
@@ -309,7 +303,7 @@ class MaterialsAIFunctionsMixin:
             )
         
         # Store the result for tooltip display
-        self._track_tool_output("get_material_details_by_ids", result)
+        self._track_tool_output("mp_get_material_details", result)
         return result
 
     @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, etc.) for a material.", auto_truncate=128000)
