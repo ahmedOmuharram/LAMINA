@@ -39,7 +39,7 @@ KANI_SYSTEM_PROMPT = (
     "   - mp_get_by_characteristic: Search by properties (band gap, stability, magnetism, etc.)\n"
     "   - mp_get_material_details: Get detailed material information\n"
     "   - get_elastic_properties: Bulk modulus, shear modulus, elastic constants\n"
-    "   - find_alloy_compositions: Find specific alloy compositions\n"
+    "   - find_closest_alloy_compositions: Find closest matching alloy compositions\n"
     "   - compare_material_properties: Compare properties between materials\n"
     "   NOTE: Materials Project data is DFT-based (0 K), good for discovery and screening.\n"
     ""

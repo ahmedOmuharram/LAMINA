@@ -15,7 +15,7 @@ The Materials handler provides comprehensive access to:
 3. **Property-Based Search**: Search materials by characteristics (band gap, crystal system, mechanical properties, etc.)
 4. **Detailed Material Information**: Retrieve comprehensive data for specific materials
 5. **Elastic and Mechanical Properties**: Access elastic moduli, Poisson's ratio, and anisotropy
-6. **Alloy Analysis**: Find and analyze alloy compositions with composition matching
+6. **Alloy Analysis**: Find and analyze closest matching alloy compositions with composition matching
 7. **Property Comparison**: Compare properties between materials with percent change calculations
 8. **Doping Analysis**: Analyze effects of doping on material properties using database entries or mixture models
 
@@ -587,16 +587,16 @@ Dictionary containing:
        material_id="mp-81"
    )
 
-.. _find_alloy_compositions:
+.. _find_closest_alloy_compositions:
 
-find_alloy_compositions
-^^^^^^^^^^^^^^^^^^^^^^^
+find_closest_alloy_compositions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Function Definition:**
 
 .. code-block:: python
 
-   async def find_alloy_compositions(
+   async def find_closest_alloy_compositions(
        self,
        elements: List[str],
        target_composition: Optional[Dict[str, float]] = None,
@@ -608,11 +608,11 @@ find_alloy_compositions
 
 **Description:**
 
-Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% Cu). Supports composition matching with tolerance and stability filtering.
+Find materials with closest matching alloy compositions (e.g., Ag-Cu alloys near ~12.5% Cu). Returns the closest match if no exact composition is found within tolerance. Supports composition matching with tolerance and stability filtering.
 
 **When to Use:**
 
-- Finding database entries for specific alloy compositions
+- Finding closest matching database entries for target alloy compositions
 - Searching for binary alloys near target compositions
 - Discovering stable vs. metastable alloy phases
 - Identifying closest matches when exact composition unavailable
@@ -624,7 +624,7 @@ Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% 
    - Sorts elements alphabetically: ``['Ag', 'Cu']`` → ``"Ag-Cu"``
    - Queries entire chemical system first, then filters by composition
 
-2. **Stability Filtering:**
+2. **Stability Filtering (with automatic fallback):**
    
    .. code-block:: python
    
@@ -640,6 +640,15 @@ Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% 
           search_kwargs["energy_above_hull"] = (0, 1e-3)  # Essentially 0
       else:
           search_kwargs["energy_above_hull"] = (0, ehull_max)  # e.g., 0-0.20 eV/atom
+      
+      # Initial search
+      docs = mpr.materials.summary.search(**search_kwargs)
+      
+      # Automatic fallback: if no stable materials found, try metastable
+      if not docs and is_stable:
+          search_kwargs["energy_above_hull"] = (0, ehull_max)
+          docs = mpr.materials.summary.search(**search_kwargs)
+          used_metastable_fallback = True
 
 3. **Composition Matching:**
    
@@ -664,7 +673,7 @@ Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% 
 
 4. **Closest Match Fallback:**
    
-   If no materials within tolerance:
+   If materials found but none within tolerance:
    
    .. code-block:: python
    
@@ -678,6 +687,14 @@ Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% 
       closest = min(all_candidates, key=composition_distance)
       closest["closest_match"] = True
       materials = [closest]
+
+**Two-Tier Fallback System:**
+
+This function implements two levels of fallback:
+
+1. **Stability Fallback** (Step 2): If ``is_stable=True`` but no stable materials exist in the system, automatically searches for metastable entries with ``Ehull ≤ ehull_max`` (default 0.20 eV/atom). The result includes ``used_metastable_fallback: True`` to indicate this occurred.
+
+2. **Composition Fallback** (Step 4): If materials exist but none match the target composition within tolerance, returns the single closest match by L1 distance. The result includes ``closest_match_used: True`` and composition deviation metrics.
 
 **Parameters:**
 
@@ -695,14 +712,51 @@ Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% 
 
 **Returns:**
 
-Dictionary containing list of matching alloys with composition info, energy above hull, and closest match indicator.
+Dictionary containing:
+
+.. code-block:: python
+
+   {
+       "success": bool,
+       "handler": "materials",
+       "function": "find_closest_alloy_compositions",
+       "data": {
+           "chemical_system": str,  # e.g., "Ag-Cu"
+           "target_composition": Dict[str, float],  # Requested composition
+           "tolerance": float,  # Composition tolerance used
+           "require_binaries": bool,  # Whether binary filter applied
+           "ehull_window_eV": Tuple[float, float],  # Energy window used
+           "num_materials_found": int,  # Number of results
+           "closest_match_used": bool,  # True if no exact matches within tolerance
+           "used_metastable_fallback": bool,  # True if stable search failed
+           "max_composition_deviation": float,  # Max deviation from target
+           "l1_distance_to_target": float,  # L1 distance to target composition
+           "materials": [  # List of matching materials
+               {
+                   "material_id": str,
+                   "formula": str,
+                   "composition": Dict[str, float],
+                   "atomic_fractions": Dict[str, float],
+                   "energy_above_hull": float,
+                   "is_stable": bool,
+                   "bulk_modulus_vrh": float,  # If available
+                   "max_composition_deviation": float,
+                   "closest_match": bool  # Present only if this is fallback match
+               },
+               ...
+           ]
+       },
+       "confidence": float,
+       "citations": List[str],
+       "duration_ms": float
+   }
 
 **Example:**
 
 .. code-block:: python
 
-   # Find Ag-Cu alloys with ~12.5% Cu (87.5% Ag)
-   result = await handler.find_alloy_compositions(
+   # Find Ag-Cu alloys closest to ~12.5% Cu (87.5% Ag)
+   result = await handler.find_closest_alloy_compositions(
        elements=['Ag', 'Cu'],
        target_composition={'Ag': 0.875, 'Cu': 0.125},
        tolerance=0.05,
@@ -828,7 +882,7 @@ Analyze the effect of doping a host material with a dopant element. Compares pur
       }
       
       # Try stable entries first (Ehull ≈ 0)
-      alloys = find_alloy_compositions(
+      alloys = find_closest_alloy_compositions(
           mpr, [host_element, dopant_element],
           target_composition=target_comp,
           tolerance=0.05,  # ±5 at.%
@@ -837,7 +891,7 @@ Analyze the effect of doping a host material with a dopant element. Compares pur
       
       # Fallback: allow metastable entries (Ehull ≤ 0.20 eV/atom)
       if no results:
-          alloys = find_alloy_compositions(..., is_stable=False, ehull_max=0.20)
+          alloys = find_closest_alloy_compositions(..., is_stable=False, ehull_max=0.20)
 
 3. **VRH Mixture Model Fallback:**
    

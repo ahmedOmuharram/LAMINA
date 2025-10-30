@@ -117,7 +117,7 @@ def get_elastic_properties(mpr, material_id: str) -> Dict[str, Any]:
         )
 
 
-def find_alloy_compositions(
+def find_closest_alloy_compositions(
     mpr,
     elements: List[str],
     target_composition: Optional[Dict[str, float]] = None,
@@ -127,7 +127,7 @@ def find_alloy_compositions(
     require_binaries: bool = True
 ) -> Dict[str, Any]:
     """
-    Find materials with specific alloy compositions.
+    Find materials with closest matching alloy compositions.
     
     Args:
         mpr: MPRester client instance
@@ -163,10 +163,18 @@ def find_alloy_compositions(
         
         docs = mpr.materials.summary.search(**search_kwargs)
         
+        # If no stable materials found, try with broader stability criteria
+        used_fallback_stability = False
+        if not docs and is_stable:
+            _log.info(f"No stable materials found for {chemsys}, trying with metastable entries (Ehull ≤ {ehull_max} eV/atom)")
+            search_kwargs["energy_above_hull"] = (0, ehull_max)
+            docs = mpr.materials.summary.search(**search_kwargs)
+            used_fallback_stability = True
+        
         if not docs:
             return error_result(
                 handler="materials",
-                function="find_alloy_compositions",
+                function="find_closest_alloy_compositions",
                 error=f"No materials found for {chemsys}",
                 error_type=ErrorType.NOT_FOUND,
                 citations=["Materials Project"]
@@ -250,17 +258,18 @@ def find_alloy_compositions(
         
         return success_result(
             handler="materials",
-            function="find_alloy_compositions",
+            function="find_closest_alloy_compositions",
             data={
                 "chemical_system": chemsys,
                 "target_composition": target_composition,
                 "tolerance": tolerance,
                 "require_binaries": require_binaries,
-                "ehull_window_eV": (0, 1e-3) if is_stable else (0, ehull_max),
+                "ehull_window_eV": (0, ehull_max) if used_fallback_stability else ((0, 1e-3) if is_stable else (0, ehull_max)),
                 "num_materials_found": len(materials),
                 "closest_match_used": closest_match_used,
                 "max_composition_deviation": max_deviation,
                 "l1_distance_to_target": best_l1_distance,
+                "used_metastable_fallback": used_fallback_stability,
                 "materials": materials
             },
             citations=["Materials Project"],
@@ -271,7 +280,7 @@ def find_alloy_compositions(
         _log.error(f"Error finding alloy compositions: {e}", exc_info=True)
         return error_result(
             handler="materials",
-            function="find_alloy_compositions",
+            function="find_closest_alloy_compositions",
             error=str(e),
             error_type=ErrorType.COMPUTATION_ERROR,
             citations=["Materials Project"]
@@ -457,7 +466,7 @@ def analyze_doping_effect(
         }
         
         # Try stable entries first
-        alloys = find_alloy_compositions(
+        alloys = find_closest_alloy_compositions(
             mpr,
             [host_element, dopant_element],
             target_composition=target_comp,
@@ -470,7 +479,7 @@ def analyze_doping_effect(
         used_metastable = False
         if not alloys.get("success") or not alloys.get("materials"):
             _log.info(f"No stable {host_element}-{dopant_element} alloys found, trying metastable entries (Ehull ≤ 0.20 eV/atom)")
-            alloys = find_alloy_compositions(
+            alloys = find_closest_alloy_compositions(
                 mpr,
                 [host_element, dopant_element],
                 target_composition=target_comp,

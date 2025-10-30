@@ -14,7 +14,7 @@ from kani import ai_function, AIParam
 from ..shared import success_result, error_result, ErrorType, Confidence
 from .utils import (
     get_elastic_properties,
-    find_alloy_compositions,
+    find_closest_alloy_compositions,
     compare_material_properties,
     analyze_doping_effect
 )
@@ -393,8 +393,8 @@ class MaterialsAIFunctionsMixin:
         self._track_tool_output("get_elastic_properties", result)
         return result
 
-    @ai_function(desc="Find materials with specific alloy compositions (e.g., Ag-Cu alloys with ~12.5% Cu).", auto_truncate=128000)
-    async def find_alloy_compositions(
+    @ai_function(desc="Find materials with closest matching alloy compositions (e.g., Ag-Cu alloys near ~12.5% Cu). Returns closest match if exact composition not found.", auto_truncate=128000)
+    async def find_closest_alloy_compositions(
         self,
         elements: Annotated[List[str], AIParam(desc="List of elements in the alloy, e.g., ['Ag', 'Cu'].")],
         target_composition: Annotated[Optional[Dict[str, float]], AIParam(desc="Target atomic fractions as a dictionary, e.g., {'Ag': 0.875, 'Cu': 0.125} for 12.5% Cu. If None, returns all compositions.")] = None,
@@ -403,10 +403,10 @@ class MaterialsAIFunctionsMixin:
         ehull_max: Annotated[float, AIParam(desc="Maximum energy above hull for metastable entries in eV/atom (default 0.20).")] = 0.20,
         require_binaries: Annotated[bool, AIParam(desc="Whether to require exactly 2 elements (default True).")] = True
     ) -> Dict[str, Any]:
-        """Find materials with specific alloy compositions."""
+        """Find materials with closest matching alloy compositions."""
         start_time = time.time()
         
-        util_result = find_alloy_compositions(
+        util_result = find_closest_alloy_compositions(
             self.mpr,
             elements,
             target_composition,
@@ -421,8 +421,8 @@ class MaterialsAIFunctionsMixin:
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
-                function="find_alloy_compositions",
-                error=util_result.get("error", "Failed to find alloy compositions"),
+                function="find_closest_alloy_compositions",
+                error=util_result.get("error", "Failed to find closest alloy compositions"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
                 citations=["Materials Project", "pymatgen"],
                 duration_ms=duration_ms
@@ -431,14 +431,14 @@ class MaterialsAIFunctionsMixin:
             data = {k: v for k, v in util_result.items() if k != "success"}
             result = success_result(
                 handler="materials",
-                function="find_alloy_compositions",
+                function="find_closest_alloy_compositions",
                 data=data,
                 citations=["Materials Project", "pymatgen"],
                 confidence=Confidence.HIGH,
                 duration_ms=duration_ms
             )
         
-        self._track_tool_output("find_alloy_compositions", result)
+        self._track_tool_output("find_closest_alloy_compositions", result)
         return result
 
     @ai_function(desc="Compare a specific property (e.g., bulk modulus) between two materials.", auto_truncate=128000)
