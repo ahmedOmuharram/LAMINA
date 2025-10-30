@@ -10,27 +10,28 @@ Overview
 
 The Materials handler provides comprehensive access to:
 
-1. **Material Search**: Find materials by composition, formula, or elements
-2. **Property-Based Search**: Search materials by characteristics (band gap, crystal system, mechanical properties, etc.)
-3. **Detailed Material Information**: Retrieve comprehensive data for specific materials
-4. **Elastic and Mechanical Properties**: Access elastic moduli, Poisson's ratio, and anisotropy
-5. **Alloy Analysis**: Find and analyze alloy compositions with composition matching
-6. **Property Comparison**: Compare properties between materials with percent change calculations
-7. **Doping Analysis**: Analyze effects of doping on material properties using database entries or mixture models
+1. **Material Search**: Find materials by composition, formula, or elements (``mp_search_by_composition``)
+2. **Material Lookup by ID**: Get materials by Materials Project ID (``mp_get_by_id``)
+3. **Property-Based Search**: Search materials by characteristics (band gap, crystal system, mechanical properties, etc.)
+4. **Detailed Material Information**: Retrieve comprehensive data for specific materials
+5. **Elastic and Mechanical Properties**: Access elastic moduli, Poisson's ratio, and anisotropy
+6. **Alloy Analysis**: Find and analyze alloy compositions with composition matching
+7. **Property Comparison**: Compare properties between materials with percent change calculations
+8. **Doping Analysis**: Analyze effects of doping on material properties using database entries or mixture models
 
 Core Search Functions
 ---------------------
 
-.. _mp_get_by_id:
+.. _mp_search_by_composition:
 
-mp_get_by_id
-^^^^^^^^^^^^
+mp_search_by_composition
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Function Definition:**
 
 .. code-block:: python
 
-   async def mp_get_by_id(
+   async def mp_search_by_composition(
        self,
        chemsys: Optional[str] = None,
        formula: Optional[str] = None,
@@ -41,7 +42,7 @@ mp_get_by_id
 
 **Description:**
 
-Query materials by their chemical system, formula, or elements. This is the primary entry point for composition-based material search. Returns material IDs and basic formula information.
+Search materials by their chemical system, formula, or elements. This is the primary entry point for composition-based material search. Returns material IDs and basic formula information.
 
 **When to Use:**
 
@@ -151,18 +152,18 @@ Dictionary containing:
 .. code-block:: python
 
    # Search for Li-Fe-O system materials
-   result = await handler.mp_get_by_id(
+   result = await handler.mp_search_by_composition(
        chemsys="Li-Fe-O",
        per_page=10
    )
    
    # Search for specific formula
-   result = await handler.mp_get_by_id(
+   result = await handler.mp_search_by_composition(
        formula="Fe2O3"
    )
    
    # Search for materials containing specific elements
-   result = await handler.mp_get_by_id(
+   result = await handler.mp_search_by_composition(
        element="Li,Fe,O",
        page=2,
        per_page=20
@@ -253,7 +254,7 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
 
 5. **Result Processing:**
    
-   Same as ``mp_get_by_id``: convert docs → paginate → compute total count → return envelope
+   Same as ``mp_search_by_composition``: convert docs → paginate → compute total count → return envelope
 
 **Parameters:**
 
@@ -261,7 +262,7 @@ See the :ref:`Parameters <parameters_section>` section for a complete list of al
 
 **Returns:**
 
-Dictionary with same structure as ``mp_get_by_id``, including filtered results and pagination metadata.
+Dictionary with same structure as ``mp_search_by_composition``, including filtered results and pagination metadata.
 
 **Example:**
 
@@ -286,6 +287,82 @@ Dictionary with same structure as ``mp_get_by_id``, including filtered results a
    result = await handler.mp_get_by_characteristic(
        magnetic_ordering="FM",  # Use enum value: FM, AFM, FiM, NM, PM
        is_stable=True
+   )
+
+.. _mp_get_by_id:
+
+mp_get_by_id
+^^^^^^^^^^^^
+
+**Function Definition:**
+
+.. code-block:: python
+
+   async def mp_get_by_id(
+       self,
+       material_ids: List[str],
+       page: int = 1,
+       per_page: int = 10
+   ) -> Dict[str, Any]
+
+**Description:**
+
+Get materials by their Materials Project IDs. Returns basic material information (IDs, formulas, elements, chemical systems). Use ``mp_get_material_details()`` for comprehensive property data.
+
+**When to Use:**
+
+- Retrieving basic material information when you already have the Materials Project ID
+- Quick lookups of material IDs to verify existence
+- Getting IDs, formulas, and elements for known materials
+- Use ``mp_get_material_details()`` for comprehensive property data
+
+**How It Fetches Data:**
+
+1. **Material ID Parsing:**
+   
+   - Accepts list of material IDs: ``['mp-149', 'mp-150', 'mp-151']``
+   - Also accepts JSON string: ``'["mp-149", "mp-150"]'`` (parsed automatically)
+   - Or CSV string: ``'mp-149,mp-150,mp-151'`` (split on comma)
+   - Converts to comma-separated string for API: ``"mp-149,mp-150,mp-151"``
+
+2. **Field Selection:**
+   
+   - Returns only basic fields: ``["material_id", "formula_pretty", "elements", "chemsys"]``
+   - Uses ``mp_get_material_details()`` internally with limited fields
+   - Designed for quick ID lookups, not comprehensive property access
+
+3. **API Query:**
+   
+   .. code-block:: python
+   
+      # In mp_get_by_id():
+      search_kwargs = {
+          "material_ids": "mp-149,mp-150,mp-151",  # CSV string
+          "fields": ["material_id", "formula_pretty", "elements", "chemsys"]
+      }
+      docs = mpr.materials.summary.search(**search_kwargs)
+
+4. **Result Processing:**
+   
+   Same as ``mp_search_by_composition``: convert docs → paginate → compute total count → return envelope
+
+**Parameters:**
+
+- ``material_ids`` (List[str], required): List of material IDs (e.g., ``['mp-149', 'mp-30', 'mp-81']``)
+- ``page`` (int, optional): Page number. Default: 1
+- ``per_page`` (int, optional): Items per page. Default: 10
+
+**Returns:**
+
+Dictionary with same structure as ``mp_search_by_composition``, containing basic material information.
+
+**Example:**
+
+.. code-block:: python
+
+   # Get basic info for materials by ID
+   result = await handler.mp_get_by_id(
+       material_ids=['mp-149', 'mp-30']
    )
 
 .. _mp_get_material_details:

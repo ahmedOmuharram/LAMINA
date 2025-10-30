@@ -25,8 +25,8 @@ _log = logging.getLogger(__name__)
 class MaterialsAIFunctionsMixin:
     """Mixin class containing AI function methods for Materials handlers."""
     
-    @ai_function(desc="Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly (e.g., Li-Fe-O, Fe2O3, Li).", auto_truncate=128000)
-    async def mp_get_by_id(
+    @ai_function(desc="Search materials by their chemical system, formula, or elements. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly (e.g., Li-Fe-O, Fe2O3, Li).", auto_truncate=128000)
+    async def mp_search_by_composition(
         self,
         chemsys: Annotated[str, AIParam(desc="Chemical system(s) or comma-separated list (e.g., Li-Fe-O,Si-*). Use chemical symbols directly.")] = None,
         formula: Annotated[str, AIParam(desc="Formula(s), anonymized formula, or wildcard(s) (e.g., Li2FeO3,Fe2O3,Fe*O*). Use chemical symbols directly.")] = None,
@@ -34,7 +34,7 @@ class MaterialsAIFunctionsMixin:
         page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
         per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
     ) -> Dict[str, Any]:
-        """Query materials by their chemical system and return their material IDs and formula. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly."""
+        """Search materials by their chemical system, formula, or elements. At least one of chemsys, formula, or element must be provided. Use chemical symbols directly."""
         start_time = time.time()
         
         params = {}
@@ -54,8 +54,54 @@ class MaterialsAIFunctionsMixin:
         if not util_result.get("success"):
             result = error_result(
                 handler="materials",
-                function="mp_get_by_id",
+                function="mp_search_by_composition",
                 error=util_result.get("error", "Material search failed"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
+                citations=["Materials Project"],
+                duration_ms=duration_ms
+            )
+        else:
+            data = {k: v for k, v in util_result.items() if k != "success"}
+            result = success_result(
+                handler="materials",
+                function="mp_search_by_composition",
+                data=data,
+                citations=["Materials Project"],
+                confidence=Confidence.HIGH,
+                duration_ms=duration_ms
+            )
+        
+        # Store the result for tooltip display
+        self._track_tool_output("mp_search_by_composition", result)
+        return result
+
+    @ai_function(desc="Get materials by their Materials Project IDs. Returns material IDs and basic formula information.", auto_truncate=128000)
+    async def mp_get_by_id(
+        self,
+        material_ids: Annotated[List[str], AIParam(desc="List of material IDs (e.g., ['mp-149', 'mp-30', 'mp-81']).")],
+        page: Annotated[int, AIParam(desc="Page number (default 1).")] = 1,
+        per_page: Annotated[int, AIParam(desc="Items per page (default 10).")] = 10
+    ) -> Dict[str, Any]:
+        """Get materials by their Materials Project IDs. Returns material IDs and basic formula information."""
+        start_time = time.time()
+        
+        params = {
+            "material_ids": material_ids,
+            "all_fields": False,  # Only return basic info
+            "fields": ["material_id", "formula_pretty", "elements", "chemsys"],
+            "page": page,
+            "per_page": per_page
+        }
+        
+        util_result = self.mp_get_material_details(params)
+        
+        duration_ms = (time.time() - start_time) * 1000
+        
+        if not util_result.get("success"):
+            result = error_result(
+                handler="materials",
+                function="mp_get_by_id",
+                error=util_result.get("error", "Failed to get materials by ID"),
                 error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
                 citations=["Materials Project"],
                 duration_ms=duration_ms
