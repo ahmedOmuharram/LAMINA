@@ -196,9 +196,9 @@ Fetch materials by their characteristics (band gap, mechanical properties, magne
 
 **When to Use:**
 
-- Finding materials with specific property ranges (e.g., band gap 1-3 eV)
+- Finding materials with specific property ranges (e.g., band gap :math:`1-3` eV)
 - Filtering by crystal structure (e.g., cubic systems only)
-- Searching for materials with target mechanical properties (e.g., bulk modulus > 100 GPa)
+- Searching for materials with target mechanical properties (e.g., bulk modulus :math:`> 100` GPa)
 - Combining multiple property constraints (e.g., stable semiconductors with direct band gap)
 
 **How It Fetches Data:**
@@ -540,17 +540,13 @@ The function uses **two separate API endpoints** to fetch elastic properties:
    
    Computes additional mechanical properties from bulk modulus (K) and shear modulus (G):
    
-   .. code-block:: python
-   
-      # Poisson ratio: ν = (3K - 2G) / (2(3K + G))
-      # Young's modulus: E = 9KG / (3K + G)
-      # Pugh ratio: K/G (brittleness indicator)
+   .. math::
       
-      nu = _safe_ratio(K, G)  # Handles division by zero
-      E = 9.0 * K * G / (3.0 * K + G) if (3.0 * K + G) != 0 else None
-      pugh = K / G if G != 0 else None
+      \nu &= \frac{3K - 2G}{2(3K + G)} \quad \text{(Poisson's ratio)} \\
+      E &= \frac{9KG}{3K + G} \quad \text{(Young's modulus)} \\
+      \frac{K}{G} &= \text{Pugh ratio} \quad \text{(brittleness indicator)}
    
-   **Important**: If G ≤ 0, all derived values are **suppressed** (set to ``None``) to prevent reporting unphysical values (e.g., Poisson ratio > 0.5, negative Young's modulus). A flag ``derived_suppressed_due_to_non_positive_shear_modulus`` is added.
+   **Important**: If :math:`G \leq 0`, all derived values are **suppressed** (set to ``None``) to prevent reporting unphysical values (e.g., Poisson ratio :math:`> 0.5`, negative Young's modulus). A flag ``derived_suppressed_due_to_non_positive_shear_modulus`` is added.
 
 4. **Data Quality Validation:**
    
@@ -559,15 +555,15 @@ The function uses **two separate API endpoints** to fetch elastic properties:
    .. code-block:: python
    
       flags = []
-      if K <= 0:
+      if K <= 0:  # :math:`K \leq 0`
           flags.append("non_positive_bulk_modulus")
-      if G <= 0:
+      if G <= 0:  # :math:`G \leq 0`
           flags.append("non_positive_shear_modulus")
-      if nu is not None and not (-1.0 < nu < 0.5):
+      if nu is not None and not (-1.0 < nu < 0.5):  # :math:`-1.0 < \nu < 0.5`
           flags.append("poisson_out_of_bounds")
-      if E <= 0:
+      if E <= 0:  # :math:`E \leq 0`
           flags.append("non_positive_youngs_modulus")
-      if pugh < 0:
+      if pugh < 0:  # :math:`K/G < 0`
           flags.append("negative_pugh_ratio")
 
 5. **Elasticity Endpoint (Tensor Data & Born Stability):**
@@ -661,9 +657,9 @@ Dictionary containing:
            "universal_anisotropy": float,  # Present if available
            "poisson_ratio": float,  # From MP homogeneous_poisson (if available)
            "derived": {
-               "poisson_from_KG": float or None,  # Computed from K and G; None if G <= 0
-               "youngs_from_KG": float or None,    # Young's modulus in GPa; None if G <= 0
-               "pugh_K_over_G": float or None      # Pugh ratio (brittleness); None if G <= 0
+               "poisson_from_KG": float or None,  # Computed from K and G; None if :math:`G \leq 0`
+               "youngs_from_KG": float or None,    # Young's modulus in GPa; None if :math:`G \leq 0`
+               "pugh_K_over_G": float or None      # Pugh ratio (brittleness); None if :math:`G \leq 0`
            },
            "mechanical_stability": {
                "likely_stable": bool,  # True if passes all checks or Born stable
@@ -690,10 +686,10 @@ The function provides two levels of stability assessment:
 
 1. **Heuristic Validation** (always performed):
    
-   - Checks that K > 0, G > 0
-   - Validates Poisson ratio: -1.0 < ν < 0.5
-   - Validates Young's modulus: E > 0
-   - Validates Pugh ratio: K/G ≥ 0
+   - Checks that :math:`K > 0`, :math:`G > 0`
+   - Validates Poisson ratio: :math:`-1.0 < \nu < 0.5`
+   - Validates Young's modulus: :math:`E > 0`
+   - Validates Pugh ratio: :math:`K/G \geq 0`
    
    Sets ``likely_stable = True`` only if all checks pass.
 
@@ -713,12 +709,12 @@ The function provides two levels of stability assessment:
 
 **Common Validation Flags:**
 
-- ``non_positive_bulk_modulus``: K ≤ 0 (unphysical, indicates calculation issues)
-- ``non_positive_shear_modulus``: G ≤ 0 (unphysical, e.g., Au mp-81 with -5.74 GPa)
-- ``poisson_out_of_bounds``: ν not in (-1.0, 0.5) range
-- ``non_positive_youngs_modulus``: E ≤ 0 (derived from invalid moduli)
-- ``negative_pugh_ratio``: K/G < 0 (indicates brittle/ductile classification impossible)
-- ``derived_suppressed_due_to_non_positive_shear_modulus``: When G ≤ 0, all derived properties (Poisson ratio, Young's modulus, Pugh ratio) are set to ``None`` to avoid reporting unphysical values
+- ``non_positive_bulk_modulus``: :math:`K \leq 0` (unphysical, indicates calculation issues)
+- ``non_positive_shear_modulus``: :math:`G \leq 0` (unphysical, e.g., Au mp-81 with -5.74 GPa)
+- ``poisson_out_of_bounds``: :math:`\nu` not in :math:`(-1.0, 0.5)` range
+- ``non_positive_youngs_modulus``: :math:`E \leq 0` (derived from invalid moduli)
+- ``negative_pugh_ratio``: :math:`K/G < 0` (indicates brittle/ductile classification impossible)
+- ``derived_suppressed_due_to_non_positive_shear_modulus``: When :math:`G \leq 0`, all derived properties (Poisson ratio, Young's modulus, Pugh ratio) are set to ``None`` to avoid reporting unphysical values
 
 **Example:**
 
@@ -750,7 +746,7 @@ find_closest_alloy_compositions
 
 **Description:**
 
-Find materials with closest matching alloy compositions (e.g., Ag-Cu alloys near ~12.5% Cu). Returns the closest match if no exact composition is found within tolerance. Supports composition matching with tolerance and stability filtering.
+Find materials with closest matching alloy compositions (e.g., Ag-Cu alloys near :math:`\approx 12.5\%` Cu). Returns the closest match if no exact composition is found within tolerance. Supports composition matching with tolerance and stability filtering.
 
 **When to Use:**
 
@@ -781,7 +777,7 @@ Find materials with closest matching alloy compositions (e.g., Ag-Cu alloys near
       if is_stable:
           search_kwargs["energy_above_hull"] = (0, 1e-3)  # Essentially 0
       else:
-          search_kwargs["energy_above_hull"] = (0, ehull_max)  # e.g., 0-0.20 eV/atom
+          search_kwargs["energy_above_hull"] = (0, ehull_max)  # e.g., :math:`0-0.20` eV/atom
       
       # Initial search
       docs = mpr.materials.summary.search(**search_kwargs)
@@ -794,47 +790,31 @@ Find materials with closest matching alloy compositions (e.g., Ag-Cu alloys near
 
 3. **Composition Matching:**
    
-   For each material in system:
+   For each material, computes atomic fractions and checks if within tolerance:
    
-   .. code-block:: python
-   
-      comp_dict = doc.composition.as_dict()
-      total_atoms = sum(comp_dict.values())
-      fractions = {el: count/total_atoms for el, count in comp_dict.items()}
+   .. math::
       
-      # Check if within tolerance
-      matches_target = True
-      max_deviation = 0.0
-      if target_composition:
-          for el, target_frac in target_composition.items():
-              actual_frac = fractions.get(el, 0.0)
-              deviation = abs(actual_frac - target_frac)
-              max_deviation = max(max_deviation, deviation)
-              if deviation > tolerance:
-                  matches_target = False
+      f_i &= \frac{n_i}{N} \quad \text{(atomic fraction for element } i\text{)} \\
+      \delta_i &= |f_{i,\text{actual}} - f_{i,\text{target}}| \quad \text{(deviation for element } i\text{)} \\
+      \delta_{\max} &= \max_i \delta_i
+   
+   Material matches target if :math:`\delta_{\max} \leq \text{tolerance}`.
 
 4. **Closest Match Fallback:**
    
-   If materials found but none within tolerance:
+   If materials found but none within tolerance, finds closest match using L1 distance:
    
-   .. code-block:: python
-   
-      # Calculate L1 distance to target
-      def composition_distance(mat):
-          fracs = mat["atomic_fractions"]
-          return sum(abs(fracs.get(el, 0.0) - target_composition.get(el, 0.0))
-                    for el in target_composition)
+   .. math::
       
-      # Find closest match
-      closest = min(all_candidates, key=composition_distance)
-      closest["closest_match"] = True
-      materials = [closest]
+      d_{\text{L1}} = \sum_i |f_{i,\text{actual}} - f_{i,\text{target}}|
+   
+   Returns the material with minimum :math:`d_{\text{L1}}`.
 
 **Two-Tier Fallback System:**
 
 This function implements two levels of fallback:
 
-1. **Stability Fallback** (Step 2): If ``is_stable=True`` but no stable materials exist in the system, automatically searches for metastable entries with ``Ehull ≤ ehull_max`` (default 0.20 eV/atom). The result includes ``used_metastable_fallback: True`` to indicate this occurred.
+1. **Stability Fallback** (Step 2): If ``is_stable=True`` but no stable materials exist in the system, automatically searches for metastable entries with :math:`E_{\text{hull}} \leq e_{\text{hull,max}}` (default 0.20 eV/atom). The result includes ``used_metastable_fallback: True`` to indicate this occurred.
 
 2. **Composition Fallback** (Step 4): If materials exist but none match the target composition within tolerance, returns the single closest match by L1 distance. The result includes ``closest_match_used: True`` and composition deviation metrics.
 
@@ -844,11 +824,11 @@ This function implements two levels of fallback:
 - ``target_composition`` (Dict[str, float], optional): Target atomic fractions (e.g., ``{'Ag': 0.875, 'Cu': 0.125}'``)
   
   - If None, returns all compositions in system
-  - Fractions must sum to 1.0
+  - Fractions must sum to :math:`1.0`
   - Atomic fractions (not weight percent)
 
-- ``tolerance`` (float, optional): Composition matching tolerance. Default: 0.05 (±5 at.%)
-- ``is_stable`` (bool, optional): Filter for stable materials only (Ehull ≈ 0). Default: True
+- ``tolerance`` (float, optional): Composition matching tolerance. Default: 0.05 (:math:`\pm 5` at.%)
+- ``is_stable`` (bool, optional): Filter for stable materials only (:math:`E_{\text{hull}} \approx 0`). Default: True
 - ``ehull_max`` (float, optional): Max energy above hull for metastable entries in eV/atom. Default: 0.20
 - ``require_binaries`` (bool, optional): Require exactly 2 elements. Default: True
 
@@ -897,7 +877,7 @@ Dictionary containing:
 
 .. code-block:: python
 
-   # Find Ag-Cu alloys closest to ~12.5% Cu (87.5% Ag)
+   # Find Ag-Cu alloys closest to :math:`\approx 12.5\%` Cu (87.5% Ag)
    result = await handler.find_closest_alloy_compositions(
        elements=['Ag', 'Cu'],
        target_composition={'Ag': 0.875, 'Cu': 0.125},
@@ -941,20 +921,19 @@ Compare a specific property between two materials and calculate percent change, 
 
 2. **Comparison Calculation:**
    
-   .. code-block:: python
+   Calculates differences using the following formulas:
    
-      # Calculate differences
-      absolute_diff = val2 - val1
-      percent_change = (absolute_diff / val1) * 100.0 if val1 != 0 else None
-      ratio = val2 / val1 if val1 != 0 else None
+   .. math::
       
-      # Interpretation
-      if abs(percent_change) < 1:
-          interpretation = "Negligible change"
-      elif percent_change > 0:
-          interpretation = f"Material 2 has {abs(percent_change):.1f}% higher {property_name}"
-      else:
-          interpretation = f"Material 2 has {abs(percent_change):.1f}% lower {property_name}"
+      \Delta &= v_2 - v_1 \quad \text{(absolute difference)} \\
+      \% &= \frac{\Delta}{v_1} \times 100 \quad \text{(percent change)} \\
+      r &= \frac{v_2}{v_1} \quad \text{(ratio)}
+   
+   Interpretation:
+   
+   - If :math:`|\%| < 1`: Negligible change
+   - If :math:`\% > 0`: Material 2 has higher property value
+   - If :math:`\% < 0`: Material 2 has lower property value
 
 **Parameters:**
 
@@ -1014,54 +993,29 @@ Analyze the effect of doping a host material with a dopant element. Compares pur
 
 2. **Doped Alloy Search:**
    
-   Constructs target composition and searches with tolerance:
+   Constructs target composition from dopant concentration :math:`x_{\text{dopant}}`:
    
-   .. code-block:: python
+   .. math::
+      
+      x_{\text{host}} &= 1 - x_{\text{dopant}} \\
+      x_{\text{dopant}} &= x_{\text{dopant}}
    
-      target_comp = {
-          host_element: 1.0 - dopant_concentration,
-          dopant_element: dopant_concentration
-      }
-      
-      # Try stable entries first (Ehull ≈ 0)
-      alloys = find_closest_alloy_compositions(
-          mpr, [host_element, dopant_element],
-          target_composition=target_comp,
-          tolerance=0.05,  # ±5 at.%
-          is_stable=True
-      )
-      
-      # Fallback: allow metastable entries (Ehull ≤ 0.20 eV/atom)
-      if no results:
-          alloys = find_closest_alloy_compositions(..., is_stable=False, ehull_max=0.20)
+   Searches for stable entries first (:math:`E_{\text{hull}} \approx 0`) with tolerance :math:`\pm 5` at.%. If no results found, falls back to metastable entries (:math:`E_{\text{hull}} \leq 0.20` eV/atom).
 
 3. **VRH Mixture Model Fallback:**
    
    If no database entries found, computes rigorous Voigt-Reuss-Hill bounds from pure elements:
    
-   .. code-block:: python
+   Given bulk moduli :math:`K_{\text{host}}` and :math:`K_{\text{dopant}}` for pure host and dopant materials, and dopant concentration :math:`x`:
    
-      # Get pure dopant properties
-      dopant_props = get_elastic_properties(mpr, dopant_element)
+   .. math::
       
-      # Extract bulk moduli
-      K_host = host_data["bulk_modulus"]["k_vrh"]
-      K_dopant = dopant_data["bulk_modulus"]["k_vrh"]
-      x = dopant_concentration
-      
-      # Voigt bound (iso-strain, upper bound)
-      K_V = (1 - x) * K_host + x * K_dopant
-      
-      # Reuss bound (iso-stress, lower bound)
-      K_R = 1.0 / ((1 - x) / K_host + x / K_dopant)
-      
-      # VRH average (recommended value)
-      K_VRH = 0.5 * (K_V + K_R)
-      
-      # Percent changes
-      pct_vrh = 100 * (K_VRH - K_host) / K_host
-      pct_voigt = 100 * (K_V - K_host) / K_host
-      pct_reuss = 100 * (K_R - K_host) / K_host
+      K_V &= (1-x) K_{\text{host}} + x K_{\text{dopant}} \quad \text{(Voigt bound, iso-strain, upper bound)} \\
+      K_R &= \frac{1}{\frac{1-x}{K_{\text{host}}} + \frac{x}{K_{\text{dopant}}}} \quad \text{(Reuss bound, iso-stress, lower bound)} \\
+      K_{\text{VRH}} &= \frac{1}{2}(K_V + K_R) \quad \text{(VRH average, recommended value)} \\
+      \%_{\text{VRH}} &= 100 \times \frac{K_{\text{VRH}} - K_{\text{host}}}{K_{\text{host}}} \\
+      \%_{\text{Voigt}} &= 100 \times \frac{K_V - K_{\text{host}}}{K_{\text{host}}} \\
+      \%_{\text{Reuss}} &= 100 \times \frac{K_R - K_{\text{host}}}{K_{\text{host}}}
 
 4. **Property Comparison:**
    
@@ -1217,7 +1171,7 @@ The Materials Project database provides extensive material properties. Below are
 - ``uncorrected_energy_per_atom``: Uncorrected energy per atom
 - ``formation_energy_per_atom``: Formation energy in eV/atom (relative to elemental references)
 - ``energy_above_hull``: Energy above convex hull in eV/atom (stability indicator)
-- ``is_stable``: Boolean indicating if on convex hull (Ehull = 0)
+- ``is_stable``: Boolean indicating if on convex hull (:math:`E_{\text{hull}} = 0`)
 - ``equilibrium_reaction_energy_per_atom``: Equilibrium reaction energy
 - ``decomposes_to``: Products of decomposition reaction
 
@@ -1322,13 +1276,13 @@ The Materials Project database contains DFT-calculated properties for over 200,0
 
 - **Convex hull construction**: Computed from formation energies of all phases in chemical system
 - **Energy above hull**: Perpendicular distance from convex hull surface
-- **Ehull = 0**: Stable (on hull)
-- **Ehull > 0**: Metastable (decomposes to products with lower energy)
-- **Ehull > 0.20 eV/atom**: Likely synthesizable metastable phase
+- :math:`E_{\text{hull}} = 0`: Stable (on hull)
+- :math:`E_{\text{hull}} > 0`: Metastable (decomposes to products with lower energy)
+- :math:`E_{\text{hull}} > 0.20` eV/atom: Likely synthesizable metastable phase
 
 **Band Gap Limitations:**
 
-- PBE-GGA **systematically underestimates** band gaps (typically 30-50% error)
+- PBE-GGA **systematically underestimates** band gaps (typically :math:`30-50\%` error)
 - Metals and semimetals generally well-described
 - Band structures and DOS are GGA(PBE) or GGA+U; hybrid functionals (HSE06) or GW corrections are not standard in MP core database
 - For experimental validation, always compare with measured band gaps
@@ -1337,7 +1291,7 @@ The Materials Project database contains DFT-calculated properties for over 200,0
 
 - All queries via **mp-api** Python client (Materials Project REST API v2)
 - Streaming/chunking with ``chunk_size`` and ``num_chunks`` parameters (not page/per_page)
-- Rate limiting: Burst throttle ≈ 25 requests/second (requires API key authentication)
+- Rate limiting: Burst throttle :math:`\approx 25` requests/second (requires API key authentication)
 - Handler implements client-side pagination for consistency with other handlers
 
 Citations
@@ -1373,14 +1327,14 @@ Notes and Best Practices
 
 **Stability Interpretation:**
 
-- ``energy_above_hull = 0``: **Stable** - lies on convex hull
-- ``0 < Ehull ≤ 0.010 eV/atom``: **Marginally stable** - numerical tolerance, effectively on hull
-- ``0.010 < Ehull ≤ 0.050 eV/atom``: **Metastable** - may be kinetically stable
-- ``0.050 < Ehull ≤ 0.100 eV/atom``: **Metastable** - most known synthesizable metastables fall in this range
-- ``0.100 < Ehull ≤ 0.200 eV/atom``: **Metastable** - approaching practical synthesis limits, non-equilibrium processing required
-- ``Ehull > 0.200 eV/atom``: **Highly metastable** - synthesis increasingly unlikely
+- :math:`E_{\text{hull}} = 0`: **Stable** - lies on convex hull
+- :math:`0 < E_{\text{hull}} \leq 0.010` eV/atom: **Marginally stable** - numerical tolerance, effectively on hull
+- :math:`0.010 < E_{\text{hull}} \leq 0.050` eV/atom: **Metastable** - may be kinetically stable
+- :math:`0.050 < E_{\text{hull}} \leq 0.100` eV/atom: **Metastable** - most known synthesizable metastables fall in this range
+- :math:`0.100 < E_{\text{hull}} \leq 0.200` eV/atom: **Metastable** - approaching practical synthesis limits, non-equilibrium processing required
+- :math:`E_{\text{hull}} > 0.200` eV/atom: **Highly metastable** - synthesis increasingly unlikely
 
-Literature (Sun 2016, Aykol 2018) shows most experimentally known metastable materials have Ehull ≤ 0.10 eV/atom; values above 0.20 eV/atom are rare and synthesis becomes impractical.
+Literature (Sun 2016, Aykol 2018) shows most experimentally known metastable materials have :math:`E_{\text{hull}} \leq 0.10` eV/atom; values above 0.20 eV/atom are rare and synthesis becomes impractical.
 
 **Elastic Moduli Interpretation:**
 
@@ -1394,28 +1348,28 @@ Literature (Sun 2016, Aykol 2018) shows most experimentally known metastable mat
   - High G → stiff against shear (tungsten: ~161 GPa)
   - Low G → compliant (aluminum: ~26 GPa)
 
-- **Poisson's ratio (ν)**: Lateral strain / axial strain under uniaxial stress
+- **Poisson's ratio** (:math:`\nu`): Lateral strain / axial strain under uniaxial stress
   
-  - ν ≈ 0.5 → incompressible (rubber-like, volume preserving)
-  - ν ≈ 0.3 → typical metals
-  - ν → 0 → cork-like (no lateral expansion)
+  - :math:`\nu \approx 0.5` → incompressible (rubber-like, volume preserving)
+  - :math:`\nu \approx 0.3` → typical metals
+  - :math:`\nu \to 0` → cork-like (no lateral expansion)
 
 - **Universal anisotropy**: Deviation from isotropic elasticity
   
-  - A = 0 → isotropic
-  - A > 1 → anisotropic (directionally dependent)
+  - :math:`A = 0` → isotropic
+  - :math:`A > 1` → anisotropic (directionally dependent)
 
-- **Young's modulus (E)**: Stiffness in uniaxial tension/compression
+- **Young's modulus** (:math:`E`): Stiffness in uniaxial tension/compression
   
-  - E = 9KG / (3K + G) (derived from K and G)
-  - High E → stiff (tungsten: ~411 GPa)
-  - Low E → compliant (rubber: ~0.01 GPa)
+  - :math:`E = \frac{9KG}{3K + G}` (derived from K and G)
+  - High :math:`E` → stiff (tungsten: ~411 GPa)
+  - Low :math:`E` → compliant (rubber: ~0.01 GPa)
 
-- **Pugh ratio (K/G)**: Brittleness indicator
+- **Pugh ratio** (:math:`K/G`): Brittleness indicator
   
-  - K/G > 1.75 → ductile (metals)
-  - K/G < 1.75 → brittle (ceramics)
-  - Negative K/G → unphysical (indicates data quality issues)
+  - :math:`K/G > 1.75` → ductile (metals)
+  - :math:`K/G < 1.75` → brittle (ceramics)
+  - Negative :math:`K/G` → unphysical (indicates data quality issues)
 
 **Elastic Data Quality Validation:**
 
@@ -1429,15 +1383,15 @@ The ``get_elastic_properties()`` function automatically validates data quality a
   
   These are flagged as ``non_positive_shear_modulus`` or ``non_positive_bulk_modulus``.
 
-- **Derived values suppression**: When G ≤ 0, the function **suppresses** (sets to ``None``) all derived properties:
+- **Derived values suppression**: When :math:`G \leq 0`, the function **suppresses** (sets to ``None``) all derived properties:
   
   - ``derived.poisson_from_KG`` → ``None``
   - ``derived.youngs_from_KG`` → ``None``
   - ``derived.pugh_K_over_G`` → ``None``
   
-  This prevents reporting unphysical values (e.g., Poisson ratio > 0.5, negative Young's modulus) that could mislead downstream consumers. A flag ``derived_suppressed_due_to_non_positive_shear_modulus`` is added to indicate this occurred.
+  This prevents reporting unphysical values (e.g., Poisson ratio :math:`> 0.5`, negative Young's modulus) that could mislead downstream consumers. A flag ``derived_suppressed_due_to_non_positive_shear_modulus`` is added to indicate this occurred.
 
-- **Out-of-bounds Poisson ratio**: Valid range is (-1.0, 0.5). Values outside indicate:
+- **Out-of-bounds Poisson ratio**: Valid range is :math:`(-1.0, 0.5)`. Values outside indicate:
   
   - Data quality issues
   - Unstable elastic tensor
@@ -1475,9 +1429,9 @@ The ``get_elastic_properties()`` function automatically validates data quality a
 
 **Note**: Composition tolerance and closest-match logic are **handler-side features**, not native MP API capabilities. The handler retrieves all materials in a chemical system and performs client-side filtering by composition.
 
-- Use **tolerance = 0.05** (±5 at.%) for general alloy searches
-- Tighten to **0.02** (±2 at.%) for precise composition requirements
-- Relax to **0.10** (±10 at.%) for exploratory searches
+- Use **tolerance = 0.05** (:math:`\pm 5` at.%) for general alloy searches
+- Tighten to **0.02** (:math:`\pm 2` at.%) for precise composition requirements
+- Relax to **0.10** (:math:`\pm 10` at.%) for exploratory searches
 - Enable **metastable search** (``is_stable=False``, ``ehull_max=0.20``) for non-equilibrium alloys
 - Check **closest_match_used** flag in results to identify tolerance violations
 
@@ -1524,5 +1478,5 @@ The ``get_elastic_properties()`` function automatically validates data quality a
   - **Unconverged calculations** (k-mesh, cutoff) can produce unphysical tensors
   - **Missing physics** (e.g., spin-orbit coupling for heavy elements like Au) can cause instability
   - **Born stability** fetched from dedicated ``materials.elasticity`` endpoint and checked when tensor available (more rigorous than heuristic)
-  - When G ≤ 0, **derived properties are suppressed** (set to ``None``) to avoid unphysical values
+  - When :math:`G \leq 0`, **derived properties are suppressed** (set to ``None``) to avoid unphysical values
   - Always check ``mechanical_stability.flags``, ``data_quality``, and ``confidence`` level for data quality assessment
