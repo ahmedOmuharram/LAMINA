@@ -47,29 +47,13 @@ class MaterialsAIFunctionsMixin:
         params["page"] = page
         params["per_page"] = per_page
         
-        util_result = self.mp_search_by_composition(params)
+        result = self._handle_search_by_composition(params)
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="mp_search_by_composition",
-                error=util_result.get("error", "Material search failed"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project"],
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="mp_search_by_composition",
-                data=data,
-                citations=["Materials Project"],
-                confidence=Confidence.HIGH,
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         # Store the result for tooltip display
         self._track_tool_output("mp_search_by_composition", result)
@@ -99,29 +83,13 @@ class MaterialsAIFunctionsMixin:
             # Default to basic fields if not specified
             params["fields"] = ["material_id", "formula_pretty", "elements", "chemsys"]
         
-        util_result = self.mp_get_material_details(params)
+        result = self._handle_material_details(params)
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="mp_get_by_id",
-                error=util_result.get("error", "Failed to get materials by ID"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project"],
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="mp_get_by_id",
-                data=data,
-                citations=["Materials Project"],
-                confidence=Confidence.HIGH,
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         # Store the result for tooltip display
         self._track_tool_output("mp_get_by_id", result)
@@ -281,29 +249,13 @@ class MaterialsAIFunctionsMixin:
         params["page"] = page
         params["per_page"] = per_page
         
-        util_result = self.mp_get_by_characteristic(params)
+        result = self._handle_get_by_characteristic(params)
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="mp_get_by_characteristic",
-                error=util_result.get("error", "Material search by characteristics failed"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project"],
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="mp_get_by_characteristic",
-                data=data,
-                citations=["Materials Project"],
-                confidence=Confidence.HIGH,
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         # Store the result for tooltip display
         self._track_tool_output("mp_get_by_characteristic", result)
@@ -330,29 +282,13 @@ class MaterialsAIFunctionsMixin:
         if fields is not None:
             params["fields"] = fields
         
-        util_result = self.mp_get_material_details(params)
+        result = self._handle_material_details(params)
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="mp_get_material_details",
-                error=util_result.get("error", "Failed to fetch material details"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project"],
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="mp_get_material_details",
-                data=data,
-                citations=["Materials Project"],
-                confidence=Confidence.HIGH,
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         # Store the result for tooltip display
         self._track_tool_output("mp_get_material_details", result)
@@ -366,29 +302,13 @@ class MaterialsAIFunctionsMixin:
         """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio, mechanical stability assessment, and derived properties. Automatically validates data quality and flags unphysical values (e.g., negative moduli). When elastic tensor is available, recomputes VRH values and provides Born stability verdict."""
         start_time = time.time()
         
-        util_result = get_elastic_properties(self.mpr, material_id)
+        result = get_elastic_properties(self.mpr, material_id)
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="get_elastic_properties",
-                error=util_result.get("error", "Failed to get elastic properties"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project", "pymatgen"],
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="get_elastic_properties",
-                data=data,
-                citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.HIGH,
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         self._track_tool_output("get_elastic_properties", result)
         return result
@@ -406,7 +326,7 @@ class MaterialsAIFunctionsMixin:
         """Find materials with closest matching alloy compositions."""
         start_time = time.time()
         
-        util_result = find_closest_alloy_compositions(
+        result = find_closest_alloy_compositions(
             self.mpr,
             elements,
             target_composition,
@@ -416,27 +336,11 @@ class MaterialsAIFunctionsMixin:
             require_binaries
         )
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="find_closest_alloy_compositions",
-                error=util_result.get("error", "Failed to find closest alloy compositions"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.API_ERROR,
-                citations=["Materials Project", "pymatgen"],
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="find_closest_alloy_compositions",
-                data=data,
-                citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.HIGH,
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         self._track_tool_output("find_closest_alloy_compositions", result)
         return result
@@ -451,29 +355,13 @@ class MaterialsAIFunctionsMixin:
         """Compare a specific property between two materials and calculate percent change."""
         start_time = time.time()
         
-        util_result = compare_material_properties_by_id(self.mpr, material_id1, material_id2, property_name)
+        result = compare_material_properties_by_id(self.mpr, material_id1, material_id2, property_name)
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="compare_material_properties",
-                error=util_result.get("error", "Failed to compare properties"),
-                error_type=ErrorType.COMPUTATION_ERROR,
-                citations=util_result.get("citations", ["Materials Project", "pymatgen"]),
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="compare_material_properties",
-                data=data,
-                citations=util_result.get("citations", ["Materials Project", "pymatgen"]),
-                confidence=util_result.get("confidence", Confidence.HIGH),
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         self._track_tool_output("compare_material_properties", result)
         return result
@@ -489,7 +377,7 @@ class MaterialsAIFunctionsMixin:
         """Analyze how doping a host material affects a specific property, comparing pure vs doped materials."""
         start_time = time.time()
         
-        util_result = analyze_doping_effect(
+        result = analyze_doping_effect(
             self.mpr,
             host_element,
             dopant_element,
@@ -497,28 +385,11 @@ class MaterialsAIFunctionsMixin:
             property_name
         )
         
+        # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
-        
-        if not util_result.get("success"):
-            result = error_result(
-                handler="materials",
-                function="analyze_doping_effect",
-                error=util_result.get("error", "Failed to analyze doping effect"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(util_result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
-                citations=["Materials Project", "pymatgen"],
-                duration_ms=duration_ms
-            )
-        else:
-            data = {k: v for k, v in util_result.items() if k != "success"}
-            result = success_result(
-                handler="materials",
-                function="analyze_doping_effect",
-                data=data,
-                citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.MEDIUM,
-                notes=["Comparison between pure and doped materials"],
-                duration_ms=duration_ms
-            )
+        if "metadata" in result and isinstance(result["metadata"], dict):
+            if "duration_ms" not in result["metadata"]:
+                result["metadata"]["duration_ms"] = duration_ms
         
         self._track_tool_output("analyze_doping_effect", result)
         return result

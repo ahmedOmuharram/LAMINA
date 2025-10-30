@@ -85,13 +85,15 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
         if bulk_modulus:
             # Handle both dict and object formats
             if isinstance(bulk_modulus, dict):
+                # API returns dict with k_vrh, k_voigt, k_reuss keys
                 data["bulk_modulus"] = {
-                    "k_vrh": float(bulk_modulus.get('vrh')) if bulk_modulus.get('vrh') is not None else None,
-                    "k_voigt": float(bulk_modulus.get('voigt')) if bulk_modulus.get('voigt') is not None else None,
-                    "k_reuss": float(bulk_modulus.get('reuss')) if bulk_modulus.get('reuss') is not None else None,
+                    "k_vrh": float(bulk_modulus.get('k_vrh') or bulk_modulus.get('vrh')) if (bulk_modulus.get('k_vrh') is not None or bulk_modulus.get('vrh') is not None) else None,
+                    "k_voigt": float(bulk_modulus.get('k_voigt') or bulk_modulus.get('voigt')) if (bulk_modulus.get('k_voigt') is not None or bulk_modulus.get('voigt') is not None) else None,
+                    "k_reuss": float(bulk_modulus.get('k_reuss') or bulk_modulus.get('reuss')) if (bulk_modulus.get('k_reuss') is not None or bulk_modulus.get('reuss') is not None) else None,
                     "unit": "GPa"
                 }
             else:
+                # Object format with vrh, voigt, reuss attributes
                 data["bulk_modulus"] = {
                     "k_vrh": float(bulk_modulus.vrh) if hasattr(bulk_modulus, 'vrh') and bulk_modulus.vrh is not None else None,
                     "k_voigt": float(bulk_modulus.voigt) if hasattr(bulk_modulus, 'voigt') and bulk_modulus.voigt is not None else None,
@@ -104,13 +106,15 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
         if shear_modulus:
             # Handle both dict and object formats
             if isinstance(shear_modulus, dict):
+                # API returns dict with g_vrh, g_voigt, g_reuss keys
                 data["shear_modulus"] = {
-                    "g_vrh": float(shear_modulus.get('vrh')) if shear_modulus.get('vrh') is not None else None,
-                    "g_voigt": float(shear_modulus.get('voigt')) if shear_modulus.get('voigt') is not None else None,
-                    "g_reuss": float(shear_modulus.get('reuss')) if shear_modulus.get('reuss') is not None else None,
+                    "g_vrh": float(shear_modulus.get('g_vrh') or shear_modulus.get('vrh')) if (shear_modulus.get('g_vrh') is not None or shear_modulus.get('vrh') is not None) else None,
+                    "g_voigt": float(shear_modulus.get('g_voigt') or shear_modulus.get('voigt')) if (shear_modulus.get('g_voigt') is not None or shear_modulus.get('voigt') is not None) else None,
+                    "g_reuss": float(shear_modulus.get('g_reuss') or shear_modulus.get('reuss')) if (shear_modulus.get('g_reuss') is not None or shear_modulus.get('reuss') is not None) else None,
                     "unit": "GPa"
                 }
             else:
+                # Object format with vrh, voigt, reuss attributes
                 data["shear_modulus"] = {
                     "g_vrh": float(shear_modulus.vrh) if hasattr(shear_modulus, 'vrh') and shear_modulus.vrh is not None else None,
                     "g_voigt": float(shear_modulus.voigt) if hasattr(shear_modulus, 'voigt') and shear_modulus.voigt is not None else None,
@@ -834,22 +838,27 @@ def analyze_doping_effect(
             alloy_props = get_elastic_properties(mpr, alloy_id)
             
             if alloy_props.get("success"):
-                comparison = compare_material_properties(
+                comparison_result = compare_material_properties(
                     host_props,
                     alloy_props,
                     property_name
                 )
-                if comparison.get("success"):
-                    comparison["alloy_composition"] = alloy["atomic_fractions"]
-                    comparison["alloy_energy_above_hull"] = alloy.get("energy_above_hull")
-                    comparison["is_closest_match"] = alloy.get("closest_match", False)
-                    comparison["composition_deviation"] = alloy.get("max_composition_deviation")
+                if comparison_result.get("success"):
+                    # Extract the data from the standardized result
+                    comparison_data = comparison_result.get("data", comparison_result)
                     
-                    # Add requested vs actual composition info
-                    comparison["requested_composition"] = target_comp
-                    comparison["actual_composition"] = alloy["atomic_fractions"]
+                    # Create a new comparison entry with additional metadata
+                    comparison_entry = {
+                        **comparison_data,
+                        "alloy_composition": alloy["atomic_fractions"],
+                        "alloy_energy_above_hull": alloy.get("energy_above_hull"),
+                        "is_closest_match": alloy.get("closest_match", False),
+                        "composition_deviation": alloy.get("max_composition_deviation"),
+                        "requested_composition": target_comp,
+                        "actual_composition": alloy["atomic_fractions"]
+                    }
                     
-                    comparisons.append(comparison)
+                    comparisons.append(comparison_entry)
         
         # Always compute VRH estimate at exact composition for comparison
         vrh_estimate = None

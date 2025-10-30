@@ -1,0 +1,8 @@
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.11.0
+pytest-cov>=4.1.0
+mp-api>=0.41.0
+pymatgen>=2023.10.0
+numpy>=1.24.0
+

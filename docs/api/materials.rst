@@ -115,8 +115,13 @@ Dictionary containing:
 
    {
        "success": bool,
-       "handler": str,
-       "function": str,
+       "metadata": {
+           "handler": str,
+           "function": str,
+           "timestamp": str,
+           "version": str,
+           "duration_ms": float
+       },
        "data": {
            "total_count": int,
            "page": int,
@@ -137,9 +142,8 @@ Dictionary containing:
                ...
            ]
        },
-       "confidence": float,
-       "citations": List[str],
-       "duration_ms": float
+       "confidence": str,
+       "citations": List[str]
    }
 
 **Side Effects:**
@@ -630,8 +634,13 @@ Dictionary containing:
 
    {
        "success": bool,
-       "handler": str,
-       "function": str,
+       "metadata": {
+           "handler": str,
+           "function": str,
+           "timestamp": str,
+           "version": str,
+           "duration_ms": float
+       },
        "data": {
            "material_id": str,
            "formula": str,
@@ -837,8 +846,13 @@ Dictionary containing:
 
    {
        "success": bool,
-       "handler": "materials",
-       "function": "find_closest_alloy_compositions",
+       "metadata": {
+           "handler": str,
+           "function": str,
+           "timestamp": str,
+           "version": str,
+           "duration_ms": float
+       },
        "data": {
            "chemical_system": str,  # e.g., "Ag-Cu"
            "target_composition": Dict[str, float],  # Requested composition
@@ -865,9 +879,8 @@ Dictionary containing:
                ...
            ]
        },
-       "confidence": float,
-       "citations": List[str],
-       "duration_ms": float
+       "confidence": str,
+       "citations": List[str]
    }
 
 **Example:**

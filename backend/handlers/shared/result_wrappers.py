@@ -9,7 +9,7 @@ Schema Version: 0.0.`
 """
 
 from typing import Any, Dict, List, Optional, Union
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 from functools import wraps
 import logging
@@ -68,7 +68,7 @@ def success_result(
         "metadata": {
             "handler": handler,
             "function": function,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "version": SCHEMA_VERSION
         },
         "citations": citations or [],
@@ -160,7 +160,8 @@ def error_result(
         "metadata": {
             "handler": handler,
             "function": function,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "version": SCHEMA_VERSION
         },
         "citations": citations or []
@@ -261,7 +262,7 @@ def with_timing(handler: str):
                 result["metadata"].update({
                     "handler": handler,
                     "function": func.__name__,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "duration_ms": duration_ms,
                     "version": SCHEMA_VERSION
                 })

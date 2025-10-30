@@ -19,8 +19,8 @@ _log = logging.getLogger(__name__)
 class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
     """Unified handler for material search and details endpoints."""
 
-    def mp_get_material_details(self, params: Mapping[str, Any]) -> Dict[str, Any]:
-        """Handle materials/summary/get_material_details_by_ids endpoint."""
+    def _handle_material_details(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+        """Handle materials/summary/get_material_details_by_ids endpoint (internal implementation)."""
         _log.info(f"GET materials/summary/get_material_details_by_ids with params: {params}")
 
         try:
@@ -105,8 +105,8 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
                 citations=["Materials Project"]
             )
 
-    def mp_search_by_composition(self, params: Mapping[str, Any]) -> Dict[str, Any]:
-        """Handle materials/summary/get_material endpoint."""
+    def _handle_search_by_composition(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+        """Handle materials/summary/get_material endpoint (internal implementation)."""
         _log.info(f"GET materials/summary/get_material with params: {params}")
         
         try:
@@ -162,35 +162,35 @@ class MaterialHandler(MaterialsAIFunctionsMixin, BaseHandler):
                 citations=["Materials Project"]
             )
 
-    def mp_get_by_characteristic(self, params: Mapping[str, Any]) -> Dict[str, Any]:
-        """Handle materials/summary/get_material_by_char endpoint."""
+    def _handle_get_by_characteristic(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+        """Handle materials/summary/get_material_by_char endpoint (internal implementation)."""
         _log.info(f"GET materials/summary/get_material_by_char with params: {params}")
         
         try:
-            kwargs = self._build_summary_search_kwargs(params)
-            if "__errors__" in kwargs:
-                return error_result(
-                    handler="materials",
-                    function="mp_get_by_characteristic",
-                    error="One or more range parameters are invalid: " + str(kwargs["__errors__"]),
-                    error_type=ErrorType.INVALID_INPUT,
-                    citations=["Materials Project"]
-                )
-
-            # Accept either identity selectors OR any numeric/range filters
+            # Check for selectors in input params first (before filtering by API signature)
             selector_keys = {
                 "material_ids", "formula", "formula_pretty", "chemsys", "elements", "exclude_elements",
                 "spacegroup_number", "spacegroup_symbol", "crystal_system", "magnetic_ordering", "ordering"
             }
             range_selector_keys = set(self.RANGE_KEYS)
-
-            has_selector = any(k in kwargs for k in selector_keys | range_selector_keys)
+            
+            has_selector = any(k in params for k in selector_keys | range_selector_keys)
 
             if not has_selector:
                 return error_result(
                     handler="materials",
                     function="mp_get_by_characteristic",
                     error="Provide at least one selector (e.g., formula/chemsys/elements/material_ids) or a numeric/range filter (e.g., band_gap).",
+                    error_type=ErrorType.INVALID_INPUT,
+                    citations=["Materials Project"]
+                )
+            
+            kwargs = self._build_summary_search_kwargs(params)
+            if "__errors__" in kwargs:
+                return error_result(
+                    handler="materials",
+                    function="mp_get_by_characteristic",
+                    error="One or more range parameters are invalid: " + str(kwargs["__errors__"]),
                     error_type=ErrorType.INVALID_INPUT,
                     citations=["Materials Project"]
                 )
