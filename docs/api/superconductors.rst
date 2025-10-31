@@ -25,8 +25,8 @@ The Superconductors handler provides specialized, family-aware analysis for:
 3. **Structure-Property Relationships**: Understand how apical oxygen coordination influences superconducting properties
 4. **Trend Analysis**: Predict stability changes from hypothetical structural modifications **(with family-specific verdicts)**
 
-Core Analysis Function
-----------------------
+Core Analysis Functions
+-----------------------
 
 .. _analyze_cuprate_octahedral_stability:
 
