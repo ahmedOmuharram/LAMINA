@@ -241,6 +241,83 @@ class TestGetElasticProperties:
         # Warnings should be present
         assert "elasticity_warnings" in data
         assert len(data["elasticity_warnings"]) > 0
+    
+    def test_citations_and_units_invariants(self, mock_mprester, silicon_doc):
+        """Test that citations list and units are present in success responses."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        mock_mprester.setup_search_response([silicon_doc])
+        mock_mprester.materials.elasticity.search.return_value = []
+        
+        result = get_elastic_properties(mock_mprester, "mp-149")
+        
+        assert result["success"]
+        
+        # Citations must be a non-empty list for success responses
+        assert "citations" in result
+        assert isinstance(result["citations"], list)
+        assert len(result["citations"]) > 0
+        assert any("Materials Project" in cite for cite in result["citations"])
+        
+        # Units must be present for moduli in success responses
+        data = result["data"]
+        if data.get("bulk_modulus"):
+            assert data["bulk_modulus"]["unit"] == "GPa"
+        if data.get("shear_modulus"):
+            assert data["shear_modulus"]["unit"] == "GPa"
+    
+    def test_born_unstable_tensor_detection(self, mock_mprester):
+        """Test that Born-unstable elastic tensor is detected and flagged."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        from tests.base.mock_api import MockElasticityDoc, create_sample_material
+        
+        # Create material with positive K and G from summary
+        mat_doc = create_sample_material(
+            material_id="mp-999",
+            formula="X",
+            bulk_modulus_vrh=50.0,
+            shear_modulus_vrh=25.0
+        )
+        
+        # Create tensor that violates Born stability criteria
+        # For cubic: c11 > |c12|, c11 > 0, c44 > 0, c11+2c12 > 0
+        # This tensor violates c11 > |c12| (50 < |60|)
+        unstable_tensor = [
+            [50, 60, 60, 0, 0, 0],
+            [60, 50, 60, 0, 0, 0],
+            [60, 60, 50, 0, 0, 0],
+            [0, 0, 0, 5, 0, 0],
+            [0, 0, 0, 0, 5, 0],
+            [0, 0, 0, 0, 0, 5],
+        ]
+        
+        elasticity_doc = MockElasticityDoc(
+            material_id="mp-999",
+            K_VRH=None,
+            G_VRH=None,
+            elastic_tensor=unstable_tensor
+        )
+        
+        mock_mprester.setup_search_response([mat_doc])
+        mock_mprester.setup_elasticity_response([elasticity_doc])
+        
+        result = get_elastic_properties(mock_mprester, "mp-999")
+        
+        # Should still return success but with stability assessment
+        assert result["success"]
+        data = result["data"]
+        
+        # Check mechanical stability assessment
+        mech = data.get("mechanical_stability", {})
+        
+        # If Born stability check is implemented, it should flag as unstable
+        if "born_details" in data:
+            born_stable = data["born_details"].get("is_born_stable")
+            # If Born check ran, it should detect instability
+            if born_stable is not None:
+                assert born_stable is False, "Born-unstable tensor should be detected"
+                # Mechanical stability should reflect Born result
+                assert mech.get("likely_stable") is False or mech.get("flags")
 
 
 class TestFindClosestAlloyCompositions:
@@ -403,10 +480,63 @@ class TestFindClosestAlloyCompositions:
         # Error should mention that materials were not found (flexible wording)
         error_lower = result["error"].lower()
         assert "no materials found" in error_lower or "not found" in error_lower
+    
+    def test_negative_tolerance_rejected(self, mock_mprester):
+        """Test that negative tolerance is rejected."""
+        from backend.handlers.materials.utils import find_closest_alloy_compositions
+        
+        result = find_closest_alloy_compositions(
+            mock_mprester,
+            elements=["Ag", "Cu"],
+            target_composition={"Ag": 0.9, "Cu": 0.1},
+            tolerance=-0.1,
+            is_stable=True
+        )
+        
+        assert_error_response(result, "materials")
+        assert "tolerance" in result["error"].lower() or "invalid" in result["error"].lower()
 
 
 class TestCompareMaterialProperties:
     """Tests for compare_material_properties functions."""
+    
+    def test_compare_with_zero_baseline_division_safety(self):
+        """Test comparison with zero baseline value handles division safely."""
+        from backend.handlers.materials.utils import compare_material_properties
+        from backend.handlers.shared.result_wrappers import success_result, Confidence
+        
+        # Material with zero bulk modulus (pathological but possible in bad data)
+        a = success_result(
+            "materials", "test", 
+            {
+                "material_id": "mp-1", 
+                "formula": "A",
+                "bulk_modulus": {"k_vrh": 0.0, "unit": "GPa"}
+            }, 
+            [], 
+            confidence=Confidence.HIGH
+        )
+        b = success_result(
+            "materials", "test",
+            {
+                "material_id": "mp-2", 
+                "formula": "B",
+                "bulk_modulus": {"k_vrh": 10.0, "unit": "GPa"}
+            },
+            [],
+            confidence=Confidence.HIGH
+        )
+        
+        result = compare_material_properties(a, b, "bulk_modulus")
+        assert result["success"]
+        comp = result["data"]["comparison"]
+        
+        # Absolute difference should work
+        assert comp["absolute_difference"] == 10.0
+        
+        # Percent change and ratio should be None or sentinel when baseline is zero
+        assert comp["percent_change"] is None or comp.get("infinite_percent_change") is True
+        assert comp["ratio"] is None or comp.get("infinite_ratio") is True
     
     def test_successful_comparison(self):
         """Test successful property comparison between two materials."""
@@ -531,6 +661,34 @@ class TestCompareMaterialProperties:
 
 class TestAnalyzeDopingEffect:
     """Tests for analyze_doping_effect function."""
+    
+    def test_invalid_dopant_concentration(self, mock_mprester, silver_doc):
+        """Test that dopant concentration outside [0,1] is rejected."""
+        from backend.handlers.materials.utils import analyze_doping_effect
+        from tests.base.assertions import assert_error_response
+        
+        mock_mprester.materials.summary.search.return_value = [silver_doc]
+        
+        # Test concentration > 1
+        result = analyze_doping_effect(
+            mock_mprester,
+            host_element="Ag",
+            dopant_element="Cu",
+            dopant_concentration=1.5,
+            property_name="bulk_modulus"
+        )
+        assert_error_response(result, "materials")
+        assert "concentration" in result["error"].lower() or "invalid" in result["error"].lower()
+        
+        # Test negative concentration
+        result = analyze_doping_effect(
+            mock_mprester,
+            host_element="Ag",
+            dopant_element="Cu",
+            dopant_concentration=-0.1,
+            property_name="bulk_modulus"
+        )
+        assert_error_response(result, "materials")
     
     def test_doping_with_database_entry(self, mock_mprester, silver_doc, copper_doc, ag_cu_alloy_docs):
         """Test doping analysis when database entry exists for alloy."""

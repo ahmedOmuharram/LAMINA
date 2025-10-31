@@ -344,6 +344,16 @@ def find_closest_alloy_compositions(
         Dictionary with matching materials
     """
     try:
+        # Input validation
+        if tolerance < 0:
+            return error_result(
+                handler="materials",
+                function="find_closest_alloy_compositions",
+                error=f"Invalid tolerance {tolerance}. Must be non-negative.",
+                error_type=ErrorType.INVALID_INPUT,
+                citations=["Materials Project"]
+            )
+        
         chemsys = "-".join(sorted(elements))
         
         search_kwargs = {
@@ -652,6 +662,16 @@ def analyze_doping_effect(
         Dictionary with doping analysis results
     """
     try:
+        # Input validation
+        if not (0 < dopant_concentration < 1):
+            return error_result(
+                handler="materials",
+                function="analyze_doping_effect",
+                error=f"Invalid dopant concentration {dopant_concentration}. Must be between 0 and 1 (exclusive).",
+                error_type=ErrorType.INVALID_INPUT,
+                citations=["Materials Project"]
+            )
+        
         # Find pure host material
         host_docs = mpr.materials.summary.search(
             elements=[host_element],

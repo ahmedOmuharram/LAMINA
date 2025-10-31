@@ -113,6 +113,21 @@ class TestMaterialHandlerParameterParsing:
         # Beyond range
         result = handler._slice_for_page(items, page=20, per_page=10)
         assert result == []
+    
+    def test_slice_for_page_edge_cases(self, mock_handler_with_mpr):
+        """Test pagination edge cases with exact divisions and single items."""
+        handler = mock_handler_with_mpr
+        
+        # Test per_page=1
+        data = list(range(10))
+        result = handler._slice_for_page(data, page=5, per_page=1)
+        assert result == [4]
+        
+        # Test when total_count % per_page == 0 (exact division)
+        data = list(range(20))  # Exactly 2 pages of 10
+        result = handler._slice_for_page(data, page=2, per_page=10)
+        assert result == list(range(10, 20))
+        assert len(result) == 10  # Full last page
 
 
 class TestMaterialHandlerSearchByComposition:
@@ -314,6 +329,22 @@ class TestMaterialHandlerGetMaterialDetails:
 
 class TestMaterialHandlerBuildSearchKwargs:
     """Tests for _build_summary_search_kwargs method."""
+    
+    def test_build_kwargs_reversed_range_auto_swap(self, mock_handler_with_mpr):
+        """Test that reversed numeric ranges are automatically swapped."""
+        handler = mock_handler_with_mpr
+        
+        # Test the _parse_range method directly to verify swap logic
+        result = handler._parse_range([3.0, 1.0], require_two=True)
+        assert result == (1.0, 3.0), "Reversed range should be auto-swapped by _parse_range"
+        
+        # Also test with correct order (no swap needed)
+        result = handler._parse_range([1.0, 3.0], require_two=True)
+        assert result == (1.0, 3.0), "Correct order should be preserved"
+        
+        # Test with string format
+        result = handler._parse_range("[3.0, 1.0]", require_two=True)
+        assert result == (1.0, 3.0), "Reversed range in string format should be auto-swapped"
     
     def test_build_kwargs_with_range_parameters(self, mock_handler_with_mpr):
         """Test building search kwargs with range parameters."""

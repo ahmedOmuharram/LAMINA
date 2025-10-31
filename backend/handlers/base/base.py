@@ -96,7 +96,11 @@ class BaseHandler:
                 return None
             if len(value) >= 2:
                 try:
-                    return float(value[0]), float(value[1])
+                    min_val, max_val = float(value[0]), float(value[1])
+                    # Auto-swap if reversed
+                    if min_val > max_val:
+                        return max_val, min_val
+                    return min_val, max_val
                 except Exception:
                     return None
             return None
@@ -115,7 +119,11 @@ class BaseHandler:
                             raise InvalidRangeError("Expected two numbers (min,max), got one.")
                         return None
                     if len(arr) >= 2:
-                        return float(arr[0]), float(arr[1])
+                        min_val, max_val = float(arr[0]), float(arr[1])
+                        # Auto-swap if reversed
+                        if min_val > max_val:
+                            return max_val, min_val
+                        return min_val, max_val
             except Exception:
                 pass  # fall through to flexible parsing
 
@@ -133,13 +141,21 @@ class BaseHandler:
 
         if len(non_empty) >= 2:
             try:
-                return float(non_empty[0]), float(non_empty[1])
+                min_val, max_val = float(non_empty[0]), float(non_empty[1])
+                # Auto-swap if reversed
+                if min_val > max_val:
+                    return max_val, min_val
+                return min_val, max_val
             except Exception:
                 # Last resort: extract first two numbers anywhere in the string
                 nums = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
                 if len(nums) >= 2:
                     try:
-                        return float(nums[0]), float(nums[1])
+                        min_val, max_val = float(nums[0]), float(nums[1])
+                        # Auto-swap if reversed
+                        if min_val > max_val:
+                            return max_val, min_val
+                        return min_val, max_val
                     except Exception:
                         return None
         return None
