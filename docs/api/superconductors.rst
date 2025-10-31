@@ -113,7 +113,7 @@ Analyze how c-axis lattice spacing affects copper-oxygen octahedral stability in
       
       c_{\text{projected}} &= c_{\text{baseline}} \times (1 + p) \\
       \Delta c_{\text{abs}} &= p \times c_{\text{baseline}} \\
-      p &= \text{trend\_probe} \quad \text{(default 0.01)}
+      p &= \text{trend_probe} \quad \text{(default 0.01)}
    
    where :math:`c_{\text{baseline}}` is the typical literature value from ``CUPRATE_DATA``.
    
