@@ -65,6 +65,7 @@ def _detect_cuprate_family(material_formula: str) -> Optional[str]:
             
             # Reduced composition for ratio analysis
             comp_reduced = comp.reduced_composition
+            el = comp_reduced.get_el_amt_dict()
             
             # 214-type: A₂CuO₄ (K₂NiF₄ structure)
             # A = La, Sr, Ba, Nd, Pr, etc.
@@ -72,8 +73,8 @@ def _detect_cuprate_family(material_formula: str) -> Optional[str]:
                 A_elements = element_syms - {'Cu', 'O', 'Ce', 'F'}  # Exclude dopants/anions
                 if len(A_elements) >= 1:
                     # Check stoichiometry ratios
-                    cu_amt = comp_reduced.get('Cu', 0)
-                    o_amt = comp_reduced.get('O', 0)
+                    cu_amt = el.get('Cu', 0)
+                    o_amt = el.get('O', 0)
                     
                     # 214-type: A₂CuO₄ → reduced A:Cu:O ~ 2:1:4 or 1:0.5:2
                     # Allow some flexibility for doping
@@ -87,8 +88,8 @@ def _detect_cuprate_family(material_formula: str) -> Optional[str]:
                     
                     # 123-type: YBa₂Cu₃O₇ → Y:Ba:Cu ~ 1:2:3
                     if 'Y' in element_syms or 'Ba' in element_syms:
-                        ba_amt = comp_reduced.get('Ba', 0)
-                        y_amt = comp_reduced.get('Y', 0)
+                        ba_amt = el.get('Ba', 0)
+                        y_amt = el.get('Y', 0)
                         # Rough ratio check: Ba/Cu ~ 2/3, Y/Cu ~ 1/3
                         if 2.5 <= cu_amt <= 3.5:
                             if (0.8 <= ba_amt <= 2.5) and (0.3 <= y_amt <= 1.2):
@@ -176,6 +177,10 @@ def analyze_cuprate_octahedral_stability(
             else:  # "MP" or "unknown"
                 threshold = 0.02  # 2% to account for DFT systematic errors
         
+        # Ensure minimum threshold for MP data
+        if data_source == "MP":
+            threshold = max(threshold, 0.02)
+        
         # Normalize formula
         formula_clean = material_formula.strip()
         
@@ -234,12 +239,6 @@ def analyze_cuprate_octahedral_stability(
         # Get typical c-axis
         typical_c = cuprate_info.get("typical_c", 13.0) if cuprate_info else 13.0
         c_used = c_axis_spacing if c_axis_spacing is not None else typical_c
-        
-        # Adjust threshold based on data source
-        if data_source == "MP":
-            effective_threshold = max(threshold, 0.02)  # At least 2% for MP due to DFT errors
-        else:
-            effective_threshold = threshold
         
         # Calculate relative c-axis change
         delta_c_rel = (c_used - typical_c) / typical_c
@@ -314,10 +313,14 @@ def analyze_cuprate_octahedral_stability(
                     "scenario": "observed",
                     "material": matched_formula or formula_clean,
                     "family": family,
+                    "claim": "Does increasing c-axis stabilize Cu–O octahedral coordination?",
+                    "verdict": "FALSE",
                     "c_axis_analyzed": c_used,
                     "c_axis_typical": typical_c,
                     "observed_change_angstrom": round(delta_c_abs, 4),
                     "observed_change_percent": round(100 * delta_c_rel, 2),
+                    "threshold_used_percent": round(100 * threshold, 1),
+                    "data_source": data_source,
                     "coordination": cuprate_info.get("coordination") if cuprate_info else "square pyramidal",
                     "explanation": explanation,
                     "c_axis_driver": "chain_oxygen",
@@ -426,7 +429,7 @@ def analyze_cuprate_octahedral_stability(
             return out
         
         # Observed mode (for 214 and compatible families)
-        if abs(delta_c_rel) > effective_threshold:
+        if abs(delta_c_rel) > threshold:
             if delta_c_rel > 0:
                 stability_effect = "stabilized"
                 mechanism = (
@@ -445,7 +448,7 @@ def analyze_cuprate_octahedral_stability(
             stability_effect = "minimal_change"
             mechanism = (
                 f"c-axis change of {delta_c_abs:+.3f} Å ({100*delta_c_rel:+.1f}%) is below threshold "
-                f"({100*effective_threshold:.0f}%, adjusted for {data_source} data source) "
+                f"({100*threshold:.0f}%, adjusted for {data_source} data source) "
                 "and cannot reliably indicate octahedral stability change."
             )
             verdict = "AMBIGUOUS"
@@ -465,7 +468,7 @@ def analyze_cuprate_octahedral_stability(
             "c_axis_typical": typical_c,
             "observed_change_angstrom": round(delta_c_abs, 4),
             "observed_change_percent": round(100 * delta_c_rel, 2),
-            "threshold_used_percent": round(100 * effective_threshold, 1),
+            "threshold_used_percent": round(100 * threshold, 1),
             "data_source": data_source,
             "coordination": cuprate_info.get("coordination") if cuprate_info else "elongated octahedral",
             "stability_effect": stability_effect,
