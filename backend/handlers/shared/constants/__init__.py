@@ -15,6 +15,7 @@ Organization:
     - electrochemistry.py: Battery diffusion barriers and structure defaults
     - magnetics.py: Magnetic conversion factors
     - api.py: API query parameter constants
+    - superconductors.py: Cuprate and other superconductor structural data
 
 Usage:
     from handlers.base.constants import FARADAY_CONSTANT, METALLIC_RADII_PM
@@ -88,6 +89,17 @@ from .api import (
     RANGE_KEYS,
 )
 
+# Superconductor constants
+from .superconductors import (
+    CUPRATE_DATA,
+    C_AXIS_APICAL_OXYGEN_CORRELATION,
+    JAHN_TELLER_DISTORTION,
+    TC_MAX_VALUES,
+    CUPRATE_DOPING_RANGES,
+    FE_BASED_SC,
+    MGB2_DATA,
+)
+
 __all__ = [
     # Physical
     "FARADAY_CONSTANT",
@@ -122,5 +134,13 @@ __all__ = [
     "STRUCTURE_DIFFUSION_DEFAULTS",
     # API
     "RANGE_KEYS",
+    # Superconductors
+    "CUPRATE_DATA",
+    "C_AXIS_APICAL_OXYGEN_CORRELATION",
+    "JAHN_TELLER_DISTORTION",
+    "TC_MAX_VALUES",
+    "CUPRATE_DOPING_RANGES",
+    "FE_BASED_SC",
+    "MGB2_DATA",
 ]
 

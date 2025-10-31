@@ -8,6 +8,8 @@ import logging
 from typing import Dict, Any, Optional
 import numpy as np
 
+from ..shared.constants import CUPRATE_DATA
+
 _log = logging.getLogger(__name__)
 
 
@@ -31,28 +33,6 @@ def analyze_cuprate_octahedral_stability(
         Dictionary with stability analysis
     """
     try:
-        # Known cuprate systems and their typical c-axis parameters
-        CUPRATE_DATA = {
-            "La2CuO4": {
-                "typical_c": 13.15,  # Å, tetragonal high-T phase
-                "typical_c_ortho": 13.13,  # Å, orthorhombic low-T phase
-                "coordination": "elongated octahedral",
-                "apical_distance": 2.4,  # Å, typical Cu-O apical
-                "planar_distance": 1.9,  # Å, typical Cu-O in-plane
-                "note": "Jahn-Teller distorted CuO6 octahedra; apical O at larger distance",
-            },
-            "YBa2Cu3O7": {
-                "typical_c": 11.68,  # Å
-                "coordination": "square pyramidal",
-                "note": "CuO5 pyramids and CuO4 planes",
-            },
-            "Bi2Sr2CaCu2O8": {
-                "typical_c": 30.89,  # Å
-                "coordination": "square pyramidal",
-                "note": "BiO layers cause large c-axis",
-            },
-        }
-        
         # Normalize formula
         formula_clean = material_formula.strip()
         
