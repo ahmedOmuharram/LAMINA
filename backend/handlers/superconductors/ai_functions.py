@@ -22,7 +22,8 @@ class SuperconductorAIFunctionsMixin:
     @ai_function(
         desc=(
             "Analyze how c-axis spacing affects Cu-O octahedral stability in cuprate superconductors "
-            "(e.g., La2CuO4, YBCO). Use this for questions about structural effects on octahedral "
+            "(e.g., La2CuO4, YBCO). FAMILY-AWARE: returns different verdicts for 214-type (La2CuO4) vs "
+            "123-type (YBCO) vs T′/infinite-layer. Use for questions about structural effects on octahedral "
             "coordination, Jahn-Teller distortions, or claims about c-axis expansion stabilizing/destabilizing octahedra. "
             "Default mode answers the general trend question (does increasing c stabilize or destabilize?)."
         ),
@@ -30,10 +31,11 @@ class SuperconductorAIFunctionsMixin:
     )
     async def analyze_cuprate_octahedral_stability(
         self,
-        material_formula: Annotated[str, AIParam(desc="Cuprate formula, e.g., 'La2CuO4', 'YBa2Cu3O7'.")],
+        material_formula: Annotated[str, AIParam(desc="Cuprate formula, e.g., 'La2CuO4', 'YBa2Cu3O7', 'La1.85Sr0.15CuO4'.")],
         c_axis_spacing: Annotated[Optional[float], AIParam(desc="c-axis lattice parameter in Å (optional).")] = None,
         scenario: Annotated[str, AIParam(desc="Use 'trend_increase' (default), 'trend_decrease', or 'observed'.")] = "trend_increase",
         trend_probe: Annotated[float, AIParam(desc="Hypothetical ±fractional change used in trend mode (default 0.01 = 1%).")] = 0.01,
+        data_source: Annotated[str, AIParam(desc="Data source: 'MP' | 'experiment' | 'high_precision_xrd' | 'unknown'. Affects classification threshold.")] = "unknown",
     ) -> Dict[str, Any]:
         """
         Analyze cuprate octahedral stability as a function of c-axis spacing.
@@ -60,14 +62,26 @@ class SuperconductorAIFunctionsMixin:
                         structure = doc.structure if hasattr(doc, "structure") else None
                         if structure:
                             c_from_mp_raw = float(structure.lattice.c)
-                            # Detect primitive vs conventional cell for cuprates (primitive c ≈ half of conventional)
-                            # If c < 10 Å for La2CuO4-like, likely primitive → double it
-                            if "la2cuo4" in material_formula.lower().replace(" ", "") and c_from_mp_raw < 10.0:
-                                c_from_mp = c_from_mp_raw * 2.0
-                                cell_type = "primitive (doubled to conventional)"
-                            else:
-                                c_from_mp = c_from_mp_raw
-                                cell_type = "conventional"
+                            
+                            # Use pymatgen standardization to get conventional cell
+                            try:
+                                from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+                                sga = SpacegroupAnalyzer(structure)
+                                conv_structure = sga.get_conventional_standard_structure()
+                                c_from_mp = float(conv_structure.lattice.c)
+                                cell_type = "conventionalized via spglib"
+                                conventionalized = True
+                            except Exception as e:
+                                # Fallback: heuristic for La2CuO4-like if standardization fails
+                                _log.debug(f"Standardization failed, using heuristic: {e}")
+                                if "la2cuo4" in material_formula.lower().replace(" ", "") and c_from_mp_raw < 10.0:
+                                    c_from_mp = c_from_mp_raw * 2.0
+                                    cell_type = "primitive (doubled to conventional, heuristic)"
+                                    conventionalized = False
+                                else:
+                                    c_from_mp = c_from_mp_raw
+                                    cell_type = "as returned by MP"
+                                    conventionalized = False
                             
                             if c_axis_spacing is None:
                                 c_axis_spacing = c_from_mp
@@ -76,20 +90,28 @@ class SuperconductorAIFunctionsMixin:
                                 "c_axis_mp_raw": c_from_mp_raw,
                                 "c_axis_mp_conventional": c_from_mp,
                                 "cell_type": cell_type,
-                                "note": "MP data for reference only; trend baseline uses typical_c from literature",
+                                "conventionalized": conventionalized,
+                                "note": "MP data for reference; trend baseline uses typical_c from literature",
                             }
                 except Exception as e:
                     _log.warning(f"Could not fetch structure from MP: {e}")
             
+            # Override data_source if MP was fetched
+            if structure_data and data_source == "unknown":
+                data_source = "MP"
+            
             util_result = utils.analyze_cuprate_octahedral_stability(
                 material_formula, c_axis_spacing, structure_data,
-                scenario=scenario, trend_probe=trend_probe
+                scenario=scenario, trend_probe=trend_probe,
+                data_source=data_source
             )
             
             if structure_data:
                 util_result["materials_project_data"] = structure_data
             
-            data = {k: v for k, v in util_result.items() if k != "success"}
+            # Filter out success, citations, notes, caveats (handled separately)
+            data = {k: v for k, v in util_result.items() 
+                    if k not in {"success", "citations", "notes", "caveats"}}
             
             citations = util_result.get("citations", [
                 "Avella/Guarino et al., Phys. Rev. B 105, 014512 (2022): Oxygen reduction decreases c via removal of apical O.",

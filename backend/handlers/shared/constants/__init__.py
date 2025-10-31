@@ -92,12 +92,14 @@ from .api import (
 # Superconductor constants
 from .superconductors import (
     CUPRATE_DATA,
+    FAMILY_C_AXIS_RULES,
     C_AXIS_APICAL_OXYGEN_CORRELATION,
     JAHN_TELLER_DISTORTION,
     TC_MAX_VALUES,
     CUPRATE_DOPING_RANGES,
     FE_BASED_SC,
     MGB2_DATA,
+    LITERATURE as SUPERCONDUCTOR_LITERATURE,
 )
 
 __all__ = [
@@ -136,11 +138,13 @@ __all__ = [
     "RANGE_KEYS",
     # Superconductors
     "CUPRATE_DATA",
+    "FAMILY_C_AXIS_RULES",
     "C_AXIS_APICAL_OXYGEN_CORRELATION",
     "JAHN_TELLER_DISTORTION",
     "TC_MAX_VALUES",
     "CUPRATE_DOPING_RANGES",
     "FE_BASED_SC",
     "MGB2_DATA",
+    "SUPERCONDUCTOR_LITERATURE",
 ]
 
