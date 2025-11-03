@@ -42,3 +42,11 @@ class ChatResponse(BaseModel):
     model: str
     choices: List[Dict[str, Any]]
     usage: Dict[str, Any]
+
+class CohenKappaRequest(BaseModel):
+    y1: List[int]
+    y2: List[int]
+
+class CohenKappaResponse(BaseModel):
+    kappa: float
+    agreement: str

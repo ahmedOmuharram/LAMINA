@@ -180,22 +180,31 @@ def simulate_as_cast_microstructure_simple(
 def mechanical_desirability_score(
     phase_fractions: Dict[str, float],
     phase_categories: Dict[str, str]
-) -> Tuple[float, str]:
+) -> float:
     """
-    Heuristic mechanical desirability assessment for cast alloys.
+    Quantitative mechanical assessment for cast alloys based on phase fractions.
     
-    Rules of thumb:
-    - High FCC matrix (>85%) with modest intermetallics (<15%): good ductility/toughness → +1
-    - Very high intermetallic content (>20%): likely brittle → -1
-    - High Laves/continuous network phases (>15%): poor ductility → -1
-    - Otherwise: mixed/depends → 0
+    Score scale (-1.0 to +1.0):
+        +1.0: High ductile FCC matrix (>85%) with modest intermetallic content (<15%)
+        +0.5: Good FCC matrix (>75%) with moderate intermetallic content (<20%)
+         0.0: Mixed characteristics, depends on specific morphology
+        -0.5: High tau content (>20%), potential ductility reduction
+        -1.0: Excessive intermetallics (>25%) or high Laves fraction (>15%)
+    
+    Scoring criteria:
+    - High FCC matrix (>85%) with modest intermetallics (<15%): +1
+    - Very high intermetallic content (>25%): -1
+    - High Laves fraction (>15%): -1
+    - High tau content (>20%): -0.5
+    - Good FCC matrix (>75%) with moderate intermetallics (<20%): +0.5
+    - Otherwise: 0
     
     Args:
         phase_fractions: Dict of {phase_name: fraction}
         phase_categories: Dict of {phase_name: category_string}
         
     Returns:
-        (score: -1/0/+1, interpretation: str)
+        Numeric score from -1.0 to +1.0
     """
     # Sum fractions by category
     fcc_frac = sum(frac for phase, frac in phase_fractions.items() 
@@ -216,27 +225,16 @@ def mechanical_desirability_score(
     # Scoring logic
     if fcc_frac > 0.85 and intermetallic_total < 0.15:
         score = +1.0
-        interpretation = "Likely acceptable: High ductile FCC matrix with modest intermetallic strengthening"
-    
     elif intermetallic_total > 0.25:
         score = -1.0
-        interpretation = "Likely undesirable: Excessive intermetallic content reduces ductility/toughness"
-    
     elif laves_frac > 0.15:
         score = -1.0
-        interpretation = "Likely undesirable: High Laves fraction tends to form brittle networks"
-    
     elif tau_frac > 0.20:
         score = -0.5
-        interpretation = "Marginal: High tau content may reduce ductility depending on morphology"
-    
     elif fcc_frac > 0.75 and intermetallic_total < 0.20:
         score = +0.5
-        interpretation = "Generally acceptable: Good matrix with moderate intermetallic content"
-    
     else:
         score = 0.0
-        interpretation = "Mixed: Depends on exact morphology and application requirements"
     
-    return score, interpretation
+    return score
 

@@ -31,7 +31,7 @@ class MagnetAIFunctionsMixin:
     """Mixin class containing AI function methods for Magnet strength handlers."""
     
     @ai_function(
-        desc="Assess whether doping makes a material a stronger permanent magnet. Evaluates pull force, coercivity, and magnetic ordering to determine if doped material can 'pull better' than baseline. Returns comprehensive analysis with verdict.",
+        desc="Assess whether doping makes a material a stronger permanent magnet. Evaluates pull force, coercivity, and magnetic ordering to determine if doped material can 'pull better' than baseline. Returns comprehensive analysis with strength assessment.",
         auto_truncate=128000
     )
     async def assess_magnet_strength_with_doping(
@@ -50,7 +50,7 @@ class MagnetAIFunctionsMixin:
         1. Identifies host and doped material phases, structures, and magnetic ordering
         2. Estimates magnetic properties (Br, Hc, (BH)max, Ms) for both materials
         3. Calculates pull force for a standard cylindrical geometry
-        4. Provides verdict: is doped material "stronger" (better pull force)?
+        4. Provides assessment: is doped material "stronger" (better pull force)?
         
         "Stronger" means:
         - Higher pull force F (primarily from higher remanence Br)
@@ -58,7 +58,7 @@ class MagnetAIFunctionsMixin:
         - Suitable magnetic ordering (FM or FiM, not AFM/weak-FM)
         
         Returns comprehensive analysis with phase checks, property estimates,
-        force calculations, and verdict with reasoning.
+        force calculations, and strength assessment with reasoning.
         """
         start_time = time.time()
         
@@ -99,7 +99,7 @@ class MagnetAIFunctionsMixin:
                     data=data,
                     citations=["Materials Project", "pymatgen"],
                     confidence=Confidence.MEDIUM,
-                    notes=["Pull force estimated from remanence Br and geometry", "Verdict based on relative pull force comparison"],
+                    notes=["Pull force estimated from remanence Br and geometry", "Strength assessment based on relative pull force comparison"],
                     caveats=["DFT cannot predict coercivity accurately", "Real magnet performance depends on microstructure and processing"],
                     duration_ms=duration_ms
                 )
@@ -350,7 +350,7 @@ class MagnetAIFunctionsMixin:
         - host_Ms: Host saturation magnetization
         - doped_Ms: Doped material saturation magnetization
         - Ms_change_percent: Percentage change in Ms
-        - verdict: Whether doping increases/decreases Ms
+        - change_direction: Whether doping increases/decreases Ms
         - analysis: Detailed reasoning based on magnetic moments and ordering
         """
         start_time = time.time()
@@ -388,7 +388,7 @@ class MagnetAIFunctionsMixin:
                     data=data,
                     citations=["Materials Project", "pymatgen"],
                     confidence=Confidence.MEDIUM,
-                    notes=["Ms change calculated from DFT magnetization data", "Verdict based on percentage change in Ms"],
+                    notes=["Ms change calculated from DFT magnetization data", "Change assessment based on percentage change in Ms"],
                     duration_ms=duration_ms
                 )
             

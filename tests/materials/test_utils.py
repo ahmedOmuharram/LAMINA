@@ -318,6 +318,135 @@ class TestGetElasticProperties:
                 assert born_stable is False, "Born-unstable tensor should be detected"
                 # Mechanical stability should reflect Born result
                 assert mech.get("likely_stable") is False or mech.get("flags")
+    
+    def test_composition_structure_mode(self, mock_mprester, silicon_doc):
+        """Test get_elastic_properties with composition + structure mode."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        mock_mprester.setup_search_response([silicon_doc])
+        mock_mprester.setup_elasticity_response([])
+        
+        result = get_elastic_properties(
+            mock_mprester,
+            element="Si",
+            spacegroup_number=227,
+            crystal_system="Cubic"
+        )
+        
+        assert_success_response(result, "materials")
+        data = result["data"]
+        assert_elastic_properties_structure(data)
+        assert data["material_id"] == "mp-149"
+        assert data["formula"] == "Si"
+        assert data["search_mode"] == "composition_structure"
+        assert data["search_criteria"]["theoretical"] is False
+    
+    def test_composition_structure_with_formula(self, mock_mprester, silicon_doc):
+        """Test get_elastic_properties with formula + structure mode."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        mock_mprester.setup_search_response([silicon_doc])
+        mock_mprester.setup_elasticity_response([])
+        
+        result = get_elastic_properties(
+            mock_mprester,
+            formula="Si",
+            spacegroup_number=227,
+            crystal_system="Cubic"
+        )
+        
+        assert result["success"]
+        data = result["data"]
+        assert data["search_mode"] == "composition_structure"
+        assert data["search_criteria"]["formula"] == "Si"
+        assert data["search_criteria"]["theoretical"] is False
+    
+    def test_composition_structure_with_chemsys(self, mock_mprester, silicon_doc):
+        """Test get_elastic_properties with chemsys + structure mode."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        mock_mprester.setup_search_response([silicon_doc])
+        mock_mprester.setup_elasticity_response([])
+        
+        result = get_elastic_properties(
+            mock_mprester,
+            chemsys="Si",
+            spacegroup_number=227,
+            crystal_system="Cubic"
+        )
+        
+        assert result["success"]
+        data = result["data"]
+        assert data["search_mode"] == "composition_structure"
+        assert data["search_criteria"]["chemsys"] == "Si"
+    
+    def test_composition_structure_not_found(self, mock_mprester):
+        """Test error when no materials match composition+structure criteria."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        mock_mprester.setup_search_response([])
+        
+        result = get_elastic_properties(
+            mock_mprester,
+            element="Si",
+            spacegroup_number=999,
+            crystal_system="Cubic"
+        )
+        
+        assert_error_response(result, "materials")
+        assert "no materials found" in result["error"].lower()
+        assert "spacegroup=999" in result["error"]
+        assert "theoretical=False" in result["error"]
+    
+    def test_invalid_input_no_material_id_or_structure(self, mock_mprester):
+        """Test error when neither material_id nor full structure info provided."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        # Missing crystal_system
+        result = get_elastic_properties(
+            mock_mprester,
+            element="Si",
+            spacegroup_number=227
+        )
+        
+        assert_error_response(result, "materials")
+        assert "must provide" in result["error"].lower()
+    
+    def test_invalid_input_both_modes(self, mock_mprester):
+        """Test error when both material_id and composition/structure provided."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        result = get_elastic_properties(
+            mock_mprester,
+            material_id="mp-149",
+            element="Si",
+            spacegroup_number=227,
+            crystal_system="Cubic"
+        )
+        
+        assert_error_response(result, "materials")
+        assert "cannot provide both" in result["error"].lower()
+    
+    def test_composition_structure_multiple_matches(self, mock_mprester, silicon_doc, copper_doc):
+        """Test that first match is used when multiple materials match criteria."""
+        from backend.handlers.materials.utils import get_elastic_properties
+        
+        # Return multiple materials
+        mock_mprester.setup_search_response([silicon_doc, copper_doc])
+        mock_mprester.setup_elasticity_response([])
+        
+        result = get_elastic_properties(
+            mock_mprester,
+            element="Si",
+            spacegroup_number=227,
+            crystal_system="Cubic"
+        )
+        
+        assert result["success"]
+        data = result["data"]
+        # Should use first match (silicon_doc)
+        assert data["material_id"] == "mp-149"
+        assert data["num_matches_found"] == 2
 
 
 class TestFindClosestAlloyCompositions:

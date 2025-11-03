@@ -143,7 +143,7 @@ def analyze_cuprate_octahedral_stability(
     """
     Analyze how c-axis spacing affects Cu-O octahedral stability in cuprates.
     
-    FAMILY-AWARE: Returns family-specific verdicts. YBCO and infinite-layer have
+    FAMILY-AWARE: Returns family-specific analysis. YBCO and infinite-layer have
     special handling since their c-axis does NOT track apical oxygen.
     
     Args:
@@ -161,7 +161,6 @@ def analyze_cuprate_octahedral_stability(
     Returns:
         Dictionary with family-aware stability analysis, unified schema:
         - claim: str (the question being asked, always about increasing c)
-        - verdict: "TRUE" | "FALSE" | "AMBIGUOUS" | "NOT_APPLICABLE"
         - stability_effect: "stabilized" | "destabilized" | "minimal_change" | etc.
         - family: str (detected family code)
         - threshold_used_percent: float (classification threshold used)
@@ -207,7 +206,6 @@ def analyze_cuprate_octahedral_stability(
                 "material": matched_formula or formula_clean,
                 "family": family,
                 "analysis_type": "not_applicable",
-                "verdict": "NOT_APPLICABLE",
                 "explanation": (
                     f"{matched_formula or formula_clean} is an infinite-layer cuprate with NO apical oxygen by design. "
                     "Octahedral stability analysis is not applicable. Structure has square planar CuO₄ coordination "
@@ -265,7 +263,6 @@ def analyze_cuprate_octahedral_stability(
                         "Cu-O chains (Cu1 sites), NOT removal of apical oxygen from plane Cu sites (Cu2). "
                         "Square pyramidal CuO₅ coordination on planes is preserved."
                     )
-                    verdict = "FALSE"  # Increasing c does NOT mean apical retention in YBCO
                     stability_effect = "chain_depleted"
                 else:
                     explanation = (
@@ -274,7 +271,6 @@ def analyze_cuprate_octahedral_stability(
                         f"(maintaining O₇ stoichiometry), which ENHANCES superconducting properties. "
                         "Apical oxygen on CuO₂ planes (Cu2 sites) remains present."
                     )
-                    verdict = "FALSE"  # Claim is about increasing c; decreasing c also doesn't relate to octahedral stability
                     stability_effect = "chain_retained"
                 
                 return {
@@ -283,7 +279,6 @@ def analyze_cuprate_octahedral_stability(
                     "material": matched_formula or formula_clean,
                     "family": family,
                     "claim": "Does increasing c-axis stabilize Cu–O octahedral coordination?",
-                    "verdict": verdict,
                     "baseline_c_axis": round(baseline, 4),
                     "projected_c_axis": round(projected, 4),
                     "hypothetical_delta_angstrom": round(abs(probe_abs), 4),
@@ -314,7 +309,6 @@ def analyze_cuprate_octahedral_stability(
                     "material": matched_formula or formula_clean,
                     "family": family,
                     "claim": "Does increasing c-axis stabilize Cu–O octahedral coordination?",
-                    "verdict": "FALSE",
                     "c_axis_analyzed": c_used,
                     "c_axis_typical": typical_c,
                     "observed_change_angstrom": round(delta_c_abs, 4),
@@ -345,7 +339,6 @@ def analyze_cuprate_octahedral_stability(
                 "material": matched_formula or formula_clean,
                 "family": family,
                 "analysis_type": "T_prime_no_apical",
-                "verdict": "AMBIGUOUS",
                 "explanation": explanation,
                 "c_axis_driver": "interstitial_oxygen",
                 "applicable_to_octahedral_stability": False,
@@ -365,7 +358,6 @@ def analyze_cuprate_octahedral_stability(
             
             # Check if family supports octahedral stability analysis
             if family_rules and not family_rules.get("applicable_to_octahedral_stability", True):
-                verdict = "AMBIGUOUS"
                 explanation = (
                     f"For {matched_formula or formula_clean} ({family}-type), c-axis changes "
                     f"(hypothetical {probe_abs:+.3f} Å, {100*abs(probe_rel):.1f}%) "
@@ -374,7 +366,6 @@ def analyze_cuprate_octahedral_stability(
                 )
                 stability_effect = "ambiguous"
             elif sign > 0:
-                verdict = "TRUE"
                 stability_effect = "stabilized"
                 explanation = (
                     f"Hypothetical c-axis increase of {abs(probe_abs):.3f} Å ({100*abs(probe_rel):.1f}%) "
@@ -383,7 +374,6 @@ def analyze_cuprate_octahedral_stability(
                     "This is the established trend for 214-type (K₂NiF₄ structure) cuprates."
                 )
             else:
-                verdict = "FALSE"
                 stability_effect = "destabilized"
                 explanation = (
                     f"Hypothetical c-axis decrease of {abs(probe_abs):.3f} Å ({100*abs(probe_rel):.1f}%) "
@@ -398,7 +388,6 @@ def analyze_cuprate_octahedral_stability(
                 "material": matched_formula or formula_clean,
                 "family": family or "214_assumed",
                 "claim": "Does increasing c-axis stabilize Cu–O octahedral coordination?",
-                "verdict": verdict,
                 "baseline_c_axis": round(baseline, 4),
                 "projected_c_axis": round(projected, 4),
                 "hypothetical_delta_angstrom": round(abs(probe_abs), 4),
@@ -436,14 +425,12 @@ def analyze_cuprate_octahedral_stability(
                     f"Increasing c-axis by {delta_c_abs:.3f} Å ({100*delta_c_rel:.1f}%) "
                     "correlates with retention of apical oxygen and stabilizes CuO₆ octahedra."
                 )
-                verdict = "TRUE"
             else:
                 stability_effect = "destabilized"
                 mechanism = (
                     f"Decreasing c-axis by {abs(delta_c_abs):.3f} Å ({100*abs(delta_c_rel):.1f}%) "
                     "correlates with removal of apical oxygen, destabilizing CuO₆ octahedra."
                 )
-                verdict = "FALSE"
         else:
             stability_effect = "minimal_change"
             mechanism = (
@@ -451,7 +438,6 @@ def analyze_cuprate_octahedral_stability(
                 f"({100*threshold:.0f}%, adjusted for {data_source} data source) "
                 "and cannot reliably indicate octahedral stability change."
             )
-            verdict = "AMBIGUOUS"
         
         # Add data source note if from MP
         if data_source == "MP":
@@ -463,7 +449,6 @@ def analyze_cuprate_octahedral_stability(
             "material": matched_formula or formula_clean,
             "family": family or "214_assumed",
             "claim": "Does increasing c-axis stabilize Cu–O octahedral coordination?",
-            "verdict": verdict,
             "c_axis_analyzed": c_used,
             "c_axis_typical": typical_c,
             "observed_change_angstrom": round(delta_c_abs, 4),

@@ -725,7 +725,6 @@ class SemiconductorAIFunctionsMixin:
                     "interstitial_hex": res.E_int_hex_eV  # hex for diamond, oct for fcc/hcp
                 },
                 "margin_eV": res.margin_eV,
-                "verdict": res.verdict,
                 "diagnostics": res.diagnostics,
             }
             

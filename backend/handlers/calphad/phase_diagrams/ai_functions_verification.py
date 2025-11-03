@@ -6,12 +6,10 @@ Contains sophisticated verification and fact-checking functions:
 - sweep_microstructure_claim_over_region: Sweep composition space to evaluate claims
 - fact_check_microstructure_claim: Fact-check microstructure claims
 """
-import numpy as np
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import logging
 import time
 
-from pycalphad import Database
 from kani.ai_function import ai_function
 from typing_extensions import Annotated
 from kani import AIParam
@@ -258,7 +256,7 @@ class VerificationMixin:
                         continue
                     
                     # Extract phase fractions
-                    from .equilibrium_utils import extract_phase_fractions_from_equilibrium
+                    from ...shared.calphad_utils import extract_phase_fractions_from_equilibrium
                     phase_fractions = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
                     
                     # Helper to strip instance suffixes (e.g., "FCC_A1#2" -> "FCC_A1")
@@ -313,190 +311,131 @@ class VerificationMixin:
             phase_count_below = sum(1 for r in below_threshold if r['phase_present'])
             phase_count_above = sum(1 for r in above_threshold if r['phase_present'])
             
-            # Build response
-            response_lines = [
-                f"## Phase Formation Analysis: {system_str} System",
-                f"**Phase**: {display_name}",
-                f"**Temperature**: {temperature:.1f} K",
-                f"**Threshold**: {threshold_pct:.1f} at.% {threshold_elem}",
-            ]
-            
-            if is_ternary:
-                response_lines.append(f"**Fixed**: {fixed_composition:.1f} at.% {fixed_elem}")
-            
-            response_lines.extend([
-                "",
-                "### Results:",
-                ""
-            ])
-            
-            # Summary statistics
+            # Build response - structured JSON
             total_below = len(below_threshold)
             total_above = len(above_threshold)
             
-            if total_below > 0:
-                fraction_below = phase_count_below / total_below
-                response_lines.append(f"**Below threshold** (<{threshold_pct:.1f}% {threshold_elem}):")
-                response_lines.append(f"  - Phase '{display_name}' present in {phase_count_below}/{total_below} compositions ({fraction_below*100:.1f}%)")
-                
-                # Show example phases below threshold (pick one where phase is present if possible)
-                if below_threshold:
-                    # Prefer an example where the phase is actually present
-                    present_examples = [r for r in below_threshold if r['phase_present']]
-                    example = present_examples[len(present_examples)//2] if present_examples else below_threshold[len(below_threshold)//2]
-                    
-                    # Format phases with FCC_A1 host labeling
-                    phases_str_list = []
-                    for p, f in sorted(example['all_phases'].items(), key=lambda x: -x[1]):
-                        if f > 0.01:
-                            if p == 'FCC_A1':
-                                host_el = max(elements, key=lambda el: example[f'at_pct_{el}'])
-                                phases_str_list.append(f"{p}({host_el}-rich)({f*100:.1f}%)")
-                            else:
-                                phases_str_list.append(f"{p}({f*100:.1f}%)")
-                    phases_str = ", ".join(phases_str_list)
-                    
-                    # Build composition string dynamically
-                    comp_parts = [f"{example[f'at_pct_{el}']:.1f}% {el}" for el in elements]
-                    response_lines.append(f"  - Example at {' / '.join(comp_parts)}: {phases_str}")
-            
-            response_lines.append("")
-            
-            if total_above > 0:
-                fraction_above = phase_count_above / total_above
-                response_lines.append(f"**Above threshold** (≥{threshold_pct:.1f}% {threshold_elem}):")
-                response_lines.append(f"  - Phase '{display_name}' present in {phase_count_above}/{total_above} compositions ({fraction_above*100:.1f}%)")
-                
-                # Show example phases above threshold (pick one where phase is present if possible)
-                if above_threshold:
-                    # Prefer an example where the phase is actually present
-                    present_examples = [r for r in above_threshold if r['phase_present']]
-                    example = present_examples[len(present_examples)//2] if present_examples else above_threshold[len(above_threshold)//2]
-                    
-                    # Format phases with FCC_A1 host labeling
-                    phases_str_list = []
-                    for p, f in sorted(example['all_phases'].items(), key=lambda x: -x[1]):
-                        if f > 0.01:
-                            if p == 'FCC_A1':
-                                host_el = max(elements, key=lambda el: example[f'at_pct_{el}'])
-                                phases_str_list.append(f"{p}({host_el}-rich)({f*100:.1f}%)")
-                            else:
-                                phases_str_list.append(f"{p}({f*100:.1f}%)")
-                    phases_str = ", ".join(phases_str_list)
-                    
-                    # Build composition string dynamically
-                    comp_parts = [f"{example[f'at_pct_{el}']:.1f}% {el}" for el in elements]
-                    response_lines.append(f"  - Example at {' / '.join(comp_parts)}: {phases_str}")
-            
-            response_lines.append("")
-            response_lines.append("### Verification:")
-            response_lines.append("")
-            
-            # Compute frequencies (already calculated above, but ensure they're defined)
+            # Calculate fractions
             fraction_below = (phase_count_below / total_below) if total_below > 0 else 0.0
             fraction_above = (phase_count_above / total_above) if total_above > 0 else 0.0
             
-            # Use frequency-based comparison, not raw counts
-            eps = 0.05  # 5 percentage points tolerance to avoid false flips from numerical noise
+            # Build example compositions
+            below_threshold_example = None
+            above_threshold_example = None
             
-            if fraction_above > 0 and fraction_below == 0:
-                response_lines.append(
-                    f"✅ **VERIFIED**: Phase '{display_name}' forms above {threshold_pct:.1f}% {threshold_elem} "
-                    f"and is absent below this threshold."
-                )
-            
-            elif fraction_above >= eps and (fraction_above - fraction_below) > eps:
-                response_lines.append(
-                    f"⚠️ **PARTIALLY VERIFIED**: Phase '{display_name}' forms more frequently above "
-                    f"{threshold_pct:.1f}% {threshold_elem} ({fraction_above*100:.1f}% vs {fraction_below*100:.1f}% of samples), "
-                    f"but it can also appear below."
-                )
-            
-            elif fraction_below >= eps and (fraction_below - fraction_above) > eps:
-                response_lines.append(
-                    f"❌ **CONTRADICTED**: Phase '{display_name}' is actually more frequent below "
-                    f"{threshold_pct:.1f}% {threshold_elem} ({fraction_below*100:.1f}% vs {fraction_above*100:.1f}% of samples), "
-                    f"opposite to the claim."
-                )
-            
-            elif fraction_above > 0 and fraction_below > 0 and abs(fraction_above - fraction_below) <= eps:
-                response_lines.append(
-                    f"❌ **NOT VERIFIED**: Phase '{display_name}' appears both above and below "
-                    f"{threshold_pct:.1f}% {threshold_elem} with similar frequency "
-                    f"({fraction_above*100:.1f}% vs {fraction_below*100:.1f}% of samples)."
-                )
-            
-            elif fraction_above == 0 and fraction_below > 0:
-                response_lines.append(
-                    f"❌ **CONTRADICTED**: Phase '{display_name}' actually forms below "
-                    f"{threshold_pct:.1f}% {threshold_elem}, not above."
-                )
-            
-            else:
-                response_lines.append(
-                    f"⚠️ **INCONCLUSIVE**: Phase '{display_name}' was not detected at {temperature:.1f} K "
-                    f"across the sampled range. It may form at other temperatures."
-                )
-            
-            # Show detailed composition scan
-            response_lines.append("")
-            response_lines.append("### Detailed Phase Presence:")
-            response_lines.append("")
-            response_lines.append(f"_Note: Table shows ~10 representative compositions from {len(results)} total sampled points._")
-            response_lines.append("")
-            
-            # Build table header dynamically
-            element_headers = " | ".join([f"{el} at.%" for el in elements])
-            header = f"| {element_headers} | {phase_to_check} Present | {phase_to_check} Fraction | Other Major Phases |"
-            separator = "|" + "|".join(["---------"] * (len(elements) + 3)) + "|"
-            
-            response_lines.append(header)
-            response_lines.append(separator)
-            
-            for r in results[::max(1, len(results)//10)]:  # Show ~10 representative points
-                present = "✓" if r['phase_present'] else "✗"
-                fraction = f"{r['phase_fraction']*100:.1f}%" if r['phase_fraction'] > 0 else "-"
+            if total_below > 0 and below_threshold:
+                present_examples = [r for r in below_threshold if r['phase_present']]
+                example = present_examples[len(present_examples)//2] if present_examples else below_threshold[len(below_threshold)//2]
                 
-                # Build other_phases list with FCC_A1 host element labeling
+                # Format phases
+                example_phases = []
+                for p, f in sorted(example['all_phases'].items(), key=lambda x: -x[1]):
+                    if f > 0.01:
+                        phase_entry = {"name": p, "fraction": f}
+                        if p == 'FCC_A1':
+                            host_el = max(elements, key=lambda el: example[f'at_pct_{el}'])
+                            phase_entry["host_element"] = host_el
+                        example_phases.append(phase_entry)
+                
+                below_threshold_example = {
+                    "composition": {el: example[f'at_pct_{el}'] for el in elements},
+                    "phases": example_phases
+                }
+            
+            if total_above > 0 and above_threshold:
+                present_examples = [r for r in above_threshold if r['phase_present']]
+                example = present_examples[len(present_examples)//2] if present_examples else above_threshold[len(above_threshold)//2]
+                
+                # Format phases
+                example_phases = []
+                for p, f in sorted(example['all_phases'].items(), key=lambda x: -x[1]):
+                    if f > 0.01:
+                        phase_entry = {"name": p, "fraction": f}
+                        if p == 'FCC_A1':
+                            host_el = max(elements, key=lambda el: example[f'at_pct_{el}'])
+                            phase_entry["host_element"] = host_el
+                        example_phases.append(phase_entry)
+                
+                above_threshold_example = {
+                    "composition": {el: example[f'at_pct_{el}'] for el in elements},
+                    "phases": example_phases
+                }
+            
+            # Build detailed phase presence table
+            detailed_compositions = []
+            for r in results[::max(1, len(results)//10)]:  # ~10 representative points
                 other_phases_list = []
                 for p, f in sorted(r['all_phases'].items(), key=lambda x: -x[1]):
                     if p != phase_to_check and f > 0.05:
-                        # For FCC_A1, indicate which element is the host (majority)
+                        phase_entry = {"name": p, "fraction": f}
                         if p == 'FCC_A1':
-                            # Find majority element at this composition
                             host_el = max(elements, key=lambda el: r[f'at_pct_{el}'])
-                            other_phases_list.append(f"{p}({host_el}-rich)")
-                        else:
-                            other_phases_list.append(p)
-                    if len(other_phases_list) >= 3:
-                        break
-                other_phases = ", ".join(other_phases_list)
+                            phase_entry["host_element"] = host_el
+                        other_phases_list.append(phase_entry)
+                        if len(other_phases_list) >= 3:
+                            break
                 
-                # Build row with dynamic element columns
-                element_values = " | ".join([f"{r[f'at_pct_{el}']:.1f}" for el in elements])
-                response_lines.append(f"| {element_values} | {present} | {fraction} | {other_phases} |")
+                detailed_compositions.append({
+                    "composition": {el: r[f'at_pct_{el}'] for el in elements},
+                    "phase_present": r['phase_present'],
+                    "phase_fraction": r['phase_fraction'] if r['phase_fraction'] > 0 else None,
+                    "other_major_phases": other_phases_list
+                })
             
             duration_ms = (time.time() - start_time) * 1000
+            
+            # Calculate confidence based on sample size and detection rate
+            sample_confidence = min(1.0, len(results) / 20.0)  # More samples = more confidence
+            detection_confidence = max(fraction_below, fraction_above)  # Higher detection rate = more confidence
+            overall_confidence = (sample_confidence + detection_confidence) / 2.0
+            
+            if overall_confidence > 0.8:
+                conf_level = Confidence.HIGH
+            elif overall_confidence > 0.5:
+                conf_level = Confidence.MEDIUM
+            else:
+                conf_level = Confidence.LOW
+            
+            # Build structured JSON response
+            response_data = {
+                "system": system_str,
+                "phase": display_name,
+                "temperature_K": temperature,
+                "threshold": {
+                    "element": threshold_elem,
+                    "value_at_pct": threshold_pct
+                },
+                "results": {
+                    "below_threshold": {
+                        "count": phase_count_below,
+                        "total_compositions": total_below,
+                        "fraction": fraction_below,
+                        "example": below_threshold_example
+                    },
+                    "above_threshold": {
+                        "count": phase_count_above,
+                        "total_compositions": total_above,
+                        "fraction": fraction_above,
+                        "example": above_threshold_example
+                    },
+                    "frequency_difference": fraction_above - fraction_below
+                },
+                "detailed_compositions": detailed_compositions,
+                "total_sampled_points": len(results)
+            }
+            
+            if is_ternary:
+                response_data["fixed_element"] = {
+                    "element": fixed_elem,
+                    "value_at_pct": fixed_composition
+                }
+            
             return success_result(
                 handler="calphad",
                 function="verify_phase_formation_across_composition",
-                data={
-                    "message": "\n".join(response_lines),
-                    "system": system_str,
-                    "phase": display_name,
-                    "threshold": {"element": threshold_elem, "value_at_pct": threshold_pct},
-                    "temperature_K": temperature,
-                    "verification_summary": {
-                        "phase_count_below": phase_count_below,
-                        "phase_count_above": phase_count_above,
-                        "total_below": total_below,
-                        "total_above": total_above,
-                        "fraction_below": fraction_below,
-                        "fraction_above": fraction_above
-                    }
-                },
+                data=response_data,
                 citations=["pycalphad"],
-                confidence=Confidence.HIGH if (fraction_above > 0 and fraction_below == 0) else Confidence.MEDIUM,
+                confidence=conf_level,
                 duration_ms=duration_ms
             )
             
@@ -512,7 +451,7 @@ class VerificationMixin:
                 duration_ms=duration_ms
             )
     
-    @ai_function(desc="Sweep composition space and evaluate whether a microstructure claim holds across an entire region. Use this to test universal claims like 'all Al-Mg-Zn alloys with Mg<8 at.% and Zn<4 at.% form desirable fcc+tau microstructures'. Returns grid of results and overall verdict.")
+    @ai_function(desc="Sweep composition space and evaluate microstructure properties across an entire region. Use this to test claims like 'all Al-Mg-Zn alloys with Mg<8 at.% and Zn<4 at.% form fcc+tau microstructures'. Returns grid of results with phase data.")
     async def sweep_microstructure_claim_over_region(
         self,
         system: Annotated[str, AIParam(desc="Chemical system (e.g., 'Al-Mg-Zn')")],
@@ -572,7 +511,11 @@ class VerificationMixin:
                         "citations": ["pycalphad"]
                     }
                 phase_list = [p.strip().lower() for p in expected_phases.replace('+', ',').split(',')]
-                if len(phase_list) != 2:
+                
+                # Auto-correct claim_type based on actual number of phases
+                if len(phase_list) == 3:
+                    claim_type_lower = "three_phase"
+                elif len(phase_list) != 2:
                     return {
                         "success": False,
                         "error": (
@@ -595,7 +538,11 @@ class VerificationMixin:
                         "citations": ["pycalphad"]
                     }
                 phase_list = [p.strip().lower() for p in expected_phases.replace('+', ',').split(',')]
-                if len(phase_list) != 3:
+                
+                # Auto-correct claim_type based on actual number of phases
+                if len(phase_list) == 2:
+                    claim_type_lower = "two_phase"
+                elif len(phase_list) != 3:
                     return {
                         "success": False,
                         "error": (
@@ -692,9 +639,6 @@ class VerificationMixin:
             
             # Evaluate claim at each grid point
             results_grid = []
-            pass_count = 0
-            fail_count = 0
-            mech_fail_count = 0
             
             for comp_dict in grid_compositions:
                 # Format composition string with separators for parser compatibility
@@ -716,21 +660,6 @@ class VerificationMixin:
                     composition_constraints=None  # Don't gate - we're generating valid points
                 )
                 
-                point_pass = result.get("verdict", False)
-                mech_ok = True
-                
-                if require_mechanical_desirability and "mechanical_score" in result:
-                    mech_ok = result["mechanical_score"] > 0
-                    if not mech_ok:
-                        mech_fail_count += 1
-                
-                overall_pass = point_pass and mech_ok
-                
-                if overall_pass:
-                    pass_count += 1
-                else:
-                    fail_count += 1
-                
                 # Extract phase information from supporting_data (handles both "phases" and "all_phases" keys)
                 supporting_data = result.get("supporting_data", {})
                 error_msg = result.get("error")
@@ -749,123 +678,74 @@ class VerificationMixin:
                     if supporting_data:  # Has data but no phase keys
                         _log.warning(f"Point {comp_str}: supporting_data has keys {list(supporting_data.keys())} but no phases/all_phases")
                 
-                results_grid.append({
+                grid_entry = {
                     "composition": comp_dict,
                     "composition_str": comp_str,
-                    "microstructure_verdict": point_pass,
-                    "mechanical_ok": mech_ok if require_mechanical_desirability else None,
-                    "overall_pass": overall_pass,
                     "score": result.get("score", 0),
+                    "confidence": result.get("confidence", 0),
                     "phases": phase_list,
-                    "error": error_msg  # Include error for debugging
-                })
+                    "reasoning": result.get("claim_analysis", {}).get("reasoning", "")
+                }
+                
+                # Add mechanical score if evaluated
+                if require_mechanical_desirability and "mechanical_score" in result:
+                    grid_entry["mechanical_score"] = result["mechanical_score"]
+                
+                # Add error if present
+                if error_msg:
+                    grid_entry["error"] = error_msg
+                
+                results_grid.append(grid_entry)
             
-            # Aggregate verdict
+            # Calculate aggregate statistics (data only)
             total_points = len(results_grid)
-            pass_fraction = pass_count / total_points if total_points > 0 else 0.0
+            scores = [r["score"] for r in results_grid]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            min_score = min(scores) if scores else 0
+            max_score = max(scores) if scores else 0
             
-            if pass_fraction == 1.0:
-                overall_verdict = "UNIVERSALLY SUPPORTED"
-                overall_score = 2
-                confidence = 1.0
-            elif pass_fraction >= 0.9:
-                overall_verdict = "MOSTLY SUPPORTED"
-                overall_score = 1
-                confidence = 0.8
-            elif pass_fraction >= 0.5:
-                overall_verdict = "MIXED"
-                overall_score = 0
-                confidence = 0.5
-            elif pass_fraction > 0:
-                overall_verdict = "MOSTLY REJECTED"
-                overall_score = -1
-                confidence = 0.7
-            else:
-                overall_verdict = "UNIVERSALLY REJECTED"
-                overall_score = -2
-                confidence = 1.0
-            
-            # Format response
+            # Format response - structured JSON
             comp_unit = "at.%" if comp_type == "atomic" else "wt.%"
-            message_lines = [
-                f"## Region Sweep Fact-Check Result",
-                f"",
-                f"**System**: {system}",
-                f"**Composition Region**: {', '.join([f'{el} ∈ [{r[0]}, {r[1]}) {comp_unit}' for el, r in ranges_dict.items()])}",
-                f"**Grid Points**: {total_points} ({grid_points} per element)",
-                f"**Process**: {process_type}",
-                f"**Claim**: {claim_type} - {expected_phases or phase_to_check}",
-                f"",
-                f"### Verdict: **{overall_verdict}**",
-                f"- **Score**: {overall_score:+d}/2 (confidence: {confidence:.0%})",
-                f"- **Pass Rate**: {pass_count}/{total_points} compositions ({pass_fraction:.1%})",
-            ]
             
-            if require_mechanical_desirability:
-                microstructure_pass = pass_count + mech_fail_count  # Points that passed microstructure check
-                message_lines.append(f"- **Mechanical Desirability**: Required (score > 0)")
-                message_lines.append(f"  - Microstructure match: {microstructure_pass}/{total_points}")
-                message_lines.append(f"  - Mechanical failures: {mech_fail_count}/{total_points} (brittle/undesirable phases)")
-                message_lines.append(f"  - Overall pass: {pass_count}/{total_points}")
-            
-            message_lines.extend([
-                f"",
-                f"### Interpretation:",
-            ])
-            
-            if overall_score >= 1:
-                message_lines.append(f"The claim holds across {'all' if overall_score == 2 else 'most of'} the stated composition region. The microstructure prediction is {'universally' if overall_score == 2 else 'generally'} valid.")
-                if require_mechanical_desirability and mech_fail_count > 0:
-                    message_lines.append(f"Note: Some compositions matched the claimed phases but were rejected due to poor mechanical properties (e.g., brittle intermetallics dominating).")
-            elif overall_score == 0:
-                message_lines.append(f"The claim holds in some parts of the region but fails in others. The statement is over-generalized.")
-                if require_mechanical_desirability and mech_fail_count > 0:
-                    message_lines.append(f"Note: {mech_fail_count} compositions matched the phases but had undesirable mechanical properties.")
-            else:
-                message_lines.append(f"The claim fails across {'all' if overall_score == -2 else 'most of'} the composition region. The statement is incorrect.")
-                if require_mechanical_desirability and mech_fail_count > 0:
-                    message_lines.append(f"Note: Some failures were due to poor mechanical desirability rather than wrong phase mix.")
-            
-            # Sample failures with detailed reasons
-            failures = [r for r in results_grid if not r["overall_pass"]]
-            if failures and len(failures) <= 5:
-                message_lines.append(f"")
-                message_lines.append(f"**Failed Compositions:**")
-                for fail in failures:
-                    reason = ""
-                    if require_mechanical_desirability and fail.get("mechanical_ok") is False:
-                        reason = " (mechanical failure)"
-                    elif not fail.get("microstructure_verdict"):
-                        reason = " (microstructure mismatch)"
-                    message_lines.append(f"- {fail['composition_str']}: Score {fail['score']:+d}{reason}")
-            elif failures:
-                message_lines.append(f"")
-                message_lines.append(f"**Sample Failures** (showing 5 of {len(failures)}):")
-                for fail in failures[:5]:
-                    reason = ""
-                    if require_mechanical_desirability and fail.get("mechanical_ok") is False:
-                        reason = " (mechanical failure)"
-                    elif not fail.get("microstructure_verdict"):
-                        reason = " (microstructure mismatch)"
-                    message_lines.append(f"- {fail['composition_str']}: Score {fail['score']:+d}{reason}")
+            # Build composition region description
+            composition_region = {
+                el: {"min": r[0], "max": r[1], "unit": comp_unit}
+                for el, r in ranges_dict.items()
+            }
             
             result_dict = {
                 "success": True,
-                "message": "\n".join(message_lines),
-                "overall_verdict": overall_verdict,
-                "overall_score": overall_score,
-                "confidence": confidence,
-                "pass_count": pass_count,
-                "fail_count": fail_count,
-                "total_points": total_points,
-                "pass_fraction": pass_fraction,
+                "system": system,
+                "composition_region": composition_region,
+                "grid_points": {
+                    "total": total_points,
+                    "per_element": grid_points
+                },
+                "process_type": process_type,
+                "claim": {
+                    "type": claim_type,
+                    "phases": expected_phases or phase_to_check
+                },
+                "statistics": {
+                    "avg_score": avg_score,
+                    "min_score": min_score,
+                    "max_score": max_score,
+                    "score_range": max_score - min_score
+                },
                 "grid_results": results_grid[:20],  # Limit to first 20 for response size
+                "total_compositions_evaluated": len(results_grid),
                 "citations": ["pycalphad"]
             }
             
+            # Add mechanical desirability info if enabled
             if require_mechanical_desirability:
-                result_dict["mechanical_fail_count"] = mech_fail_count
-                result_dict["microstructure_pass_count"] = pass_count + mech_fail_count
+                mech_scores = [r.get("mechanical_score", 0) for r in results_grid if "mechanical_score" in r]
+                if mech_scores:
+                    result_dict["mechanical_statistics"] = {
+                        "avg_mechanical_score": sum(mech_scores) / len(mech_scores),
+                        "min_mechanical_score": min(mech_scores),
+                        "max_mechanical_score": max(mech_scores)
+                    }
             
             return result_dict
             
@@ -881,7 +761,7 @@ class VerificationMixin:
                 duration_ms=duration_ms
             )
     
-    @ai_function(desc="Evaluate microstructure claims for multicomponent alloys. Use this to fact-check metallurgical assertions like 'Al-8Mg-4Zn forms fcc + tau phase with tau < 20%' or 'eutectic composition shows >20% intermetallics'. Returns detailed verdict with score (-2 to +2) and supporting thermodynamic data.")
+    @ai_function(desc="Evaluate microstructure properties for multicomponent alloys. Use this to analyze metallurgical assertions like 'Al-8Mg-4Zn forms fcc + tau phase with tau < 20%' or 'eutectic composition shows >20% intermetallics'. Returns detailed analysis with score (-2 to +2) and supporting thermodynamic data.")
     async def fact_check_microstructure_claim(
         self,
         system: Annotated[str, AIParam(desc="Chemical system (e.g., 'Al-Mg-Zn', 'Fe-Cr-Ni')")],
@@ -896,28 +776,27 @@ class VerificationMixin:
         composition_constraints: Annotated[Optional[str], AIParam(desc="Composition constraints as JSON string, For example, if the claim is about an Al-Mg-Zn alloy, and the claim is that the alloy has less than 8% Mg and less than 4% Zn, the composition_constraints would be '{\"MG\": {\"lt\": 8.0}, \"ZN\": {\"lt\": 4.0}}'. Supports: lt, lte, gt, gte, between:[min,max]")] = None
     ) -> Dict[str, Any]:
         """
-        Evaluate microstructure claims using CALPHAD thermodynamic calculations.
+        Evaluate microstructure properties using CALPHAD thermodynamic calculations.
         
-        This function acts as an automated "materials expert witness" that can verify
-        metallurgical assertions about multicomponent alloys by:
+        This function provides detailed thermodynamic analysis of multicomponent alloys by:
         1. Simulating the processing path (as-cast solidification or full equilibrium)
         2. Calculating resulting phases and phase fractions
         3. Interpreting CALPHAD phases into metallurgical categories (fcc, tau, gamma, etc.)
         4. Evaluating mechanical desirability based on phase distribution
-        5. Returning a verdict with score and detailed reasoning
+        5. Returning quantitative data with score and detailed reasoning for model evaluation
         
         **IMPORTANT**: By default uses 'as_cast' process_type which simulates
         slow solidification from the melt (typical casting). This answers:
         "What do I get after the alloy freezes?" NOT "What do I get after infinite
         time at room temperature?" (which would require process_type='equilibrium_300K').
         
-        Returns detailed verdict with:
-        - verdict: True/False (claim supported or rejected)
-        - score: -2 to +2 (-2 = completely wrong, +2 = fully correct)
-        - confidence: 0-1 (confidence in the verdict)
-        - reasoning: Explanation of why claim passed/failed
-        - mechanical_score: -1/0/+1 (brittleness/desirability assessment)
-        - supporting_data: Phase fractions and thermodynamic details
+        Returns detailed analysis with:
+        - score: -2 to +2 (-2 = claim strongly contradicted, +2 = claim strongly supported)
+        - confidence: 0-1 (confidence in the analysis)
+        - reasoning: Detailed explanation of the microstructure findings
+        - mechanical_score: -1 to +1 (brittleness/desirability assessment for as_cast)
+        - phases: List of phases with fractions and categories
+        - supporting_data: Complete phase fractions and thermodynamic details
         
         Example usage:
         - Claim: "Slowly solidified Al-8Mg-4Zn forms fcc + tau with tau < 20%"
@@ -1080,48 +959,75 @@ class VerificationMixin:
             fact_checker = AlloyFactChecker(db, elements, phases, T_ref)
             
             # Add appropriate checker based on claim type
-            if claim_type.lower() == "two_phase":
+            claim_type_eval = claim_type.lower()
+            checker_added = False
+            
+            if claim_type_eval == "two_phase":
                 # Parse expected phases
                 if not expected_phases:
                     return {"success": False, "error": "expected_phases required for two_phase claim", "citations": ["pycalphad"]}
                 
                 phase_list = [p.strip().lower() for p in expected_phases.replace('+', ',').split(',')]
-                if len(phase_list) != 2:
+                
+                # Auto-correct claim_type based on actual number of phases
+                if len(phase_list) == 3:
+                    claim_type_eval = "three_phase"
+                elif len(phase_list) != 2:
                     return {"success": False, "error": "two_phase claim requires exactly 2 phases", "citations": ["pycalphad"]}
                 
-                # Map phase names to categories
-                primary_cat = map_phase_to_category(phase_list[0])
-                secondary_cat = map_phase_to_category(phase_list[1])
+                if claim_type_eval == "two_phase":
+                    # Map phase names to categories
+                    primary_cat = map_phase_to_category(phase_list[0])
+                    secondary_cat = map_phase_to_category(phase_list[1])
+                    
+                    checker = TwoPhaseChecker(
+                        db, elements, phases,
+                        primary_category=primary_cat,
+                        secondary_category=secondary_cat,
+                        secondary_max_fraction=max_fraction or 0.20,
+                        temperature=T_ref
+                    )
+                    fact_checker.add_checker(checker)
+                    checker_added = True
                 
-                checker = TwoPhaseChecker(
-                    db, elements, phases,
-                    primary_category=primary_cat,
-                    secondary_category=secondary_cat,
-                    secondary_max_fraction=max_fraction or 0.20,
-                    temperature=T_ref
-                )
-                fact_checker.add_checker(checker)
-                
-            elif claim_type.lower() == "three_phase":
+            if claim_type_eval == "three_phase":
                 # Parse expected phases
                 if not expected_phases:
                     return {"success": False, "error": "expected_phases required for three_phase claim", "citations": ["pycalphad"]}
                 
                 phase_list = [p.strip().lower() for p in expected_phases.replace('+', ',').split(',')]
-                if len(phase_list) != 3:
+                
+                # Auto-correct claim_type based on actual number of phases
+                if len(phase_list) == 2:
+                    claim_type_eval = "two_phase"
+                    # Map phase names to categories
+                    primary_cat = map_phase_to_category(phase_list[0])
+                    secondary_cat = map_phase_to_category(phase_list[1])
+                    
+                    checker = TwoPhaseChecker(
+                        db, elements, phases,
+                        primary_category=primary_cat,
+                        secondary_category=secondary_cat,
+                        secondary_max_fraction=max_fraction or 0.20,
+                        temperature=T_ref
+                    )
+                    fact_checker.add_checker(checker)
+                    checker_added = True
+                elif len(phase_list) == 3:
+                    # Map to categories
+                    categories = [map_phase_to_category(p) for p in phase_list]
+                    
+                    checker = ThreePhaseChecker(
+                        db, elements, phases,
+                        expected_categories=categories,
+                        temperature=T_ref
+                    )
+                    fact_checker.add_checker(checker)
+                    checker_added = True
+                else:
                     return {"success": False, "error": "three_phase claim requires exactly 3 phases", "citations": ["pycalphad"]}
                 
-                # Map to categories
-                categories = [map_phase_to_category(p) for p in phase_list]
-                
-                checker = ThreePhaseChecker(
-                    db, elements, phases,
-                    expected_categories=categories,
-                    temperature=T_ref
-                )
-                fact_checker.add_checker(checker)
-                
-            elif claim_type.lower() == "phase_fraction":
+            if claim_type_eval == "phase_fraction":
                 if not phase_to_check:
                     return {"success": False, "error": "phase_to_check required for phase_fraction claim", "citations": ["pycalphad"]}
                 
@@ -1135,7 +1041,9 @@ class VerificationMixin:
                     temperature=T_ref
                 )
                 fact_checker.add_checker(checker)
-            else:
+                checker_added = True
+            
+            if not checker_added:
                 return {"success": False, "error": f"Unknown claim_type: {claim_type}. Use 'two_phase', 'three_phase', or 'phase_fraction'", "citations": ["pycalphad"]}
             
             # Evaluate claims (with precalculated fractions if using as_cast)
@@ -1148,17 +1056,16 @@ class VerificationMixin:
             
             # Calculate mechanical desirability score (only for as_cast)
             mech_score = 0.0
-            mech_interpretation = "Not evaluated"
             
             if process_type.lower() == "as_cast" and precalc_fractions:
                 # For as-cast, evaluate mechanical properties
                 # (Only meaningful for as-cast microstructures, not infinite-time equilibrium)
                 microstructure = interpret_microstructure(precalc_fractions)
                 phase_categories = {p.base_name: p.category.value for p in microstructure}
-                mech_score, mech_interpretation = mechanical_desirability_score(
+                mech_score = mechanical_desirability_score(
                     precalc_fractions, phase_categories
                 )
-                _log.info(f"Mechanical desirability: {mech_score} - {mech_interpretation}")
+                _log.info(f"Mechanical score: {mech_score}")
             
             # Format response
             if results:
@@ -1167,14 +1074,10 @@ class VerificationMixin:
                 # Apply composition constraint violations
                 if composition_constraints and not composition_within_bounds:
                     # Composition is outside the claim's stated bounds
-                    # Even if microstructure matched, the claim doesn't apply here
-                    original_verdict = result.verdict
                     original_score = result.score
                     
-                    result.verdict = False
-                    
-                    # If microstructure was good but chemistry is wrong, mild fail (-1)
-                    # If both were wrong, keep the harsh score
+                    # If microstructure analysis gave positive score but chemistry is wrong, adjust to mild negative (-1)
+                    # If both were already negative, keep the harsh score
                     if original_score > 0:
                         result.score = -1
                     
@@ -1185,13 +1088,13 @@ class VerificationMixin:
                     result.supporting_data["composition_within_bounds"] = False
                     result.supporting_data["composition_violations"] = violations
                     
-                    _log.warning(f"Verdict adjusted due to composition constraints: {original_verdict} → {result.verdict}, score: {original_score} → {result.score}")
+                    _log.warning(f"Score adjusted due to composition constraints: {original_score} → {result.score}")
                 else:
                     result.supporting_data["composition_within_bounds"] = True
                     result.supporting_data["composition_violations"] = []
                 
-                # Format supporting data for display
-                phases_info = []
+                # Format phases_info as structured data
+                phases_list = []
                 _log.info(f"Supporting data keys: {list(result.supporting_data.keys())}")
                 
                 if "phases" in result.supporting_data or "all_phases" in result.supporting_data:
@@ -1201,57 +1104,60 @@ class VerificationMixin:
                     if phase_data:
                         for phase_info in phase_data[:10]:  # Top 10 phases
                             if len(phase_info) >= 3:
-                                phases_info.append(f"{phase_info[0]}: {phase_info[1]*100:.1f}% ({phase_info[2]})")
+                                phases_list.append({
+                                    "name": phase_info[0],
+                                    "fraction": phase_info[1],
+                                    "category": phase_info[2]
+                                })
                 else:
                     _log.warning("No 'phases' or 'all_phases' key in supporting_data")
                 
-                verdict_emoji = "✓" if result.verdict else "✗"
-                score_text = f"{result.score:+d}/2"
-                
-                message_lines = [
-                    f"## Microstructure Fact-Check Result",
-                    f"",
-                    f"**Composition**: {composition} ({'-'.join(elements)} system)",
-                    f"**Process**: {process_description}",
-                    f"**Claim**: {result.claim_text}",
-                    f"",
-                    f"### {verdict_emoji} Verdict: **{'SUPPORTED' if result.verdict else 'REJECTED'}**",
-                    f"- **Score**: {score_text} (confidence: {result.confidence:.0%})",
-                    f"- **Reasoning**: {result.reasoning}",
-                ]
+                # Build structured response
+                response_data = {
+                    "success": True,
+                    "composition": composition,
+                    "system": '-'.join(elements),
+                    "process": {
+                        "type": process_type,
+                        "description": process_description
+                    },
+                    "claim_analysis": {
+                        "type": result.claim_text,
+                        "score": result.score,
+                        "confidence": result.confidence,
+                        "reasoning": result.reasoning
+                    },
+                    "phases": phases_list,
+                    "supporting_data": result.supporting_data,
+                    "citations": ["pycalphad"],
+                    "score": result.score,
+                    "confidence": result.confidence
+                }
                 
                 # Add composition constraint status if checked
                 if composition_constraints:
-                    if composition_within_bounds:
-                        message_lines.append(f"- **Composition Bounds**: ✓ Within stated constraints")
-                    else:
-                        message_lines.append(f"- **Composition Bounds**: ✗ VIOLATED - {'; '.join(violations)}")
+                    response_data["composition_constraints"] = {
+                        "within_bounds": composition_within_bounds,
+                        "violations": violations if not composition_within_bounds else []
+                    }
                 
-                # Add mechanical desirability if evaluated (only for as_cast)
-                if process_type.lower() == "as_cast" and (mech_score != 0.0 or mech_interpretation != "Not evaluated"):
-                    mech_emoji = "✓" if mech_score > 0 else ("✗" if mech_score < 0 else "○")
-                    message_lines.append(f"- **Mechanical Desirability**: {mech_emoji} {mech_interpretation} (score: {mech_score:+.1f})")
+                # Add mechanical score if evaluated (only for as_cast)
+                if process_type.lower() == "as_cast":
+                    response_data["mechanical_analysis"] = {
+                        "score": mech_score,
+                        "scale": {
+                            "min": -1.0,
+                            "max": 1.0,
+                            "description": "Negative: high intermetallic/brittle network, Positive: ductile FCC matrix"
+                        }
+                    }
+                    # Backwards-compatible top-level key
+                    response_data["mechanical_score"] = mech_score
                 
-                if phases_info:
-                    message_lines.append(f"\n### Calculated Phase Fractions:")
-                    for phase_line in phases_info:
-                        message_lines.append(f"- {phase_line}")
+                # Include full report for debugging/detailed analysis
+                response_data["full_report"] = report
                 
-                message_lines.append(f"\n---")
-                message_lines.append(f"\n**Full Report:**\n```\n{report}\n```")
-                
-                return {
-                    "success": True,
-                    "message": "\n".join(message_lines),
-                    "verdict": result.verdict,
-                    "score": result.score,
-                    "confidence": result.confidence,
-                    "mechanical_score": mech_score,
-                    "mechanical_interpretation": mech_interpretation,
-                    "process_type": process_type,
-                    "supporting_data": result.supporting_data,
-                    "citations": ["pycalphad"]
-                }
+                return response_data
             else:
                 return {"success": False, "error": "No results from fact-checker", "citations": ["pycalphad"]}
                 

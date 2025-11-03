@@ -175,7 +175,6 @@ FAMILY_C_AXIS_RULES = {
         "c_axis_meaning": "Apical oxygen presence",
         "trend": "larger_c_means_apical_retention",
         "mechanism": "T-phase (c≈13.15 Å) has apical O; T′-phase (c≈12.55 Å) lacks apical O",
-        "verdict_increasing_c": "TRUE",  # Stabilizes octahedra
         "applicable_to_octahedral_stability": True,
         "citations": [
             "Yamamoto et al., Physica C 470, 1383 (2010): T vs T′ phases",
@@ -187,7 +186,6 @@ FAMILY_C_AXIS_RULES = {
         "c_axis_meaning": "Chain oxygen content (NOT apical on planes)",
         "trend": "larger_c_means_chain_depletion",
         "mechanism": "O₇ (c≈11.66 Å, superconducting) → O₆ (c≈11.84 Å, insulating) with deoxygenation",
-        "verdict_increasing_c": "FALSE",  # Does NOT stabilize (apical on planes are retained regardless)
         "applicable_to_octahedral_stability": False,  # Chain oxygen, not apical
         "citations": [
             "Jorgensen et al., Phys. Rev. B 41, 1863 (1990): YBCO structure vs oxygen content",
@@ -199,7 +197,6 @@ FAMILY_C_AXIS_RULES = {
         "c_axis_meaning": "BiO layer stacking and intercalation",
         "trend": "large_c_from_BiO_blocks",
         "mechanism": "BiO bilayers impose large c-axis; apical oxygen present; modulation complicates c",
-        "verdict_increasing_c": "AMBIGUOUS",  # c doesn't cleanly track apical stability
         "applicable_to_octahedral_stability": False,  # Large c dominated by BiO, not apical
         "citations": [
             "RSC Adv. 2, 239 (2012); RSC 2013: Bi-2212/2223 c-axis",
@@ -211,7 +208,6 @@ FAMILY_C_AXIS_RULES = {
         "c_axis_meaning": "TlO layer stacking",
         "trend": "large_c_from_TlO_blocks",
         "mechanism": "Similar to Bi-22n but less disorder; apical oxygen present",
-        "verdict_increasing_c": "AMBIGUOUS",
         "applicable_to_octahedral_stability": False,
         "citations": ["arXiv:2301.08313: Tl-2223"],
     },
@@ -220,7 +216,6 @@ FAMILY_C_AXIS_RULES = {
         "c_axis_meaning": "HgO layer stacking",
         "trend": "compact_c_from_HgO",
         "mechanism": "HgO provides minimal blocking; apical oxygen present; cleanest tetragonal",
-        "verdict_increasing_c": "AMBIGUOUS",
         "applicable_to_octahedral_stability": False,
         "citations": [
             "RSC Adv. 12, 32700 (2022): Hg-1223",
@@ -232,7 +227,6 @@ FAMILY_C_AXIS_RULES = {
         "c_axis_meaning": "Interstitial oxygen reorganization",
         "trend": "no_apical_by_design",
         "mechanism": "Square planar CuO₄; annealing changes interstitial O; c can move either direction depending on starting oxygen state",
-        "verdict_increasing_c": "AMBIGUOUS",
         "applicable_to_octahedral_stability": False,  # No apical O to stabilize/destabilize
         "citations": [
             "Avella & Guarino, Phys. Rev. B 105, 014512 (2022): Electron-doped NCCO annealing",
@@ -244,7 +238,6 @@ FAMILY_C_AXIS_RULES = {
         "c_axis_meaning": "Minimal stacking, no apical oxygen",
         "trend": "tiny_c_no_apical",
         "mechanism": "CuO₂ planes with no apical O; c ≈ 3.2–3.4 Å",
-        "verdict_increasing_c": "NOT_APPLICABLE",
         "applicable_to_octahedral_stability": False,  # No octahedral coordination
         "citations": ["Standard cuprate crystallography texts"],
     },

@@ -26,6 +26,7 @@ def parse_composition_string(
     - Format 1: "Fe30Al70" or "Al88Mg8Zn4" (element immediately followed by number)
     - Format 2: "Al-8Mg-4Zn" (element-number pairs, first element is balance)
     - Format 3: "Fe-30Al-70" (element-number pairs with all values specified)
+    - Format 4: "50Al-50Fe" or "30Fe70Al" (number before element)
     
     Args:
         composition: Composition string to parse
@@ -42,10 +43,26 @@ def parse_composition_string(
         
         >>> parse_composition_string("Al-8Mg-4Zn", {"Al", "Mg", "Zn"})
         ({"Al": 88.0, "Mg": 8.0, "Zn": 4.0}, None)
+        
+        >>> parse_composition_string("50Al-50Fe", {"Al", "Fe"})
+        ({"Al": 50.0, "Fe": 50.0}, None)
     """
     comp_dict = {}
     
-    # Try format 1: concatenated (e.g., "Al88Mg8Zn4")
+    # Try format 4: number before element (e.g., "50Al-50Fe" or "30Fe70Al")
+    # Match patterns like: 50Al, 30Fe (with optional hyphen/space separator)
+    number_first_matches = re.findall(r'(\d+\.?\d*)([A-Z][a-z]?)', composition)
+    
+    if number_first_matches and len(number_first_matches) == len(expected_elements):
+        # Format 4: number-element pairs
+        for pct, elem in number_first_matches:
+            comp_dict[elem] = float(pct)
+        
+        # Validate elements match expected
+        if set(comp_dict.keys()) == expected_elements:
+            return comp_dict, None
+    
+    # Try format 1: element followed by number (e.g., "Al88Mg8Zn4")
     matches = re.findall(r'([A-Z][a-z]?)(\d+\.?\d*)', composition)
     
     if matches and len(matches) == len(expected_elements):

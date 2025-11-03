@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { apiClient } from '@/lib/api';
 import { ToolCallModal } from '@/components/chat/ToolCallModal';
+import { CohenKappaCalculator } from './CohenKappaCalculator';
 import type { TestRun, TestTemplate, ToolCall } from '@/types/api';
 
 interface TestingInterfaceProps {
@@ -12,7 +13,7 @@ interface TestingInterfaceProps {
 }
 
 export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
-  const [view, setView] = useState<'create' | 'results' | 'history' | 'templates'>('create');
+  const [view, setView] = useState<'create' | 'results' | 'history' | 'templates' | 'cohen_kappa'>('create');
   const [testName, setTestName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [questions, setQuestions] = useState('');
@@ -524,6 +525,14 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
               >
                 History ({testRuns.length})
               </Button>
+              <Button
+                variant={view === 'cohen_kappa' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setView('cohen_kappa')}
+                className="text-xs"
+              >
+                Cohen's Kappa
+              </Button>
             </div>
           </div>
           <Badge variant="secondary" className="text-xs">
@@ -767,7 +776,7 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                         )}
 
                         <div className="text-xs text-gray-500 bg-blue-50 p-2 rounded">
-                          <strong>Example:</strong> To extract verdicts like "Verdict: -2", use pattern: <code className="bg-white px-1">Verdict:\s*(-?\d+)</code> with column name: <code className="bg-white px-1">Verdict</code>
+                          <strong>Example:</strong> To extract verdicts like "Verdict: -2", use pattern: <code className="bg-white px-1">[*]{'{0,2}'}\s*Verdict\s*[*]{'{0,2}'}\s*:\s*[*]{'{0,2}'}\s*(-?\d+)\s*[*]{'{0,2}'}</code> with column name: <code className="bg-white px-1">Verdict</code>
                         </div>
                       </>
                     )}
@@ -1130,6 +1139,12 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                 </CardContent>
               </Card>
             </div>
+          </ScrollArea>
+        )}
+
+        {view === 'cohen_kappa' && (
+          <ScrollArea className="h-full p-6">
+            <CohenKappaCalculator />
           </ScrollArea>
         )}
       </div>

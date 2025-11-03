@@ -35,13 +35,31 @@ def _safe_ratio(K, G, eps=1e-12):
     return (3.0*K - 2.0*G) / denom
 
 
-def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[str, Any]:
+def get_elastic_properties(
+    mpr, 
+    material_id: Optional[str] = None,
+    element: Optional[str] = None,
+    formula: Optional[str] = None,
+    chemsys: Optional[str] = None,
+    spacegroup_number: Optional[int] = None,
+    crystal_system: Optional[str] = None,
+    eps: float = 1e-12
+) -> Dict[str, Any]:
     """
     Get elastic/mechanical properties for a material.
     
+    Supports two modes:
+    1. By material_id: Provide material_id only
+    2. By composition + structure: Provide (element OR formula OR chemsys) AND spacegroup_number AND crystal_system
+    
     Args:
         mpr: MPRester client instance
-        material_id: Material ID
+        material_id: Material ID (optional if composition/structure provided)
+        element: Element(s) or comma-separated list (e.g., "Li,Fe,O")
+        formula: Formula (e.g., "Li2FeO3", "Fe2O3")
+        chemsys: Chemical system (e.g., "Li-Fe-O")
+        spacegroup_number: Spacegroup number
+        crystal_system: Crystal system (Triclinic, Monoclinic, Orthorhombic, Tetragonal, Trigonal, Hexagonal, Cubic)
         eps: Epsilon value for numerical stability in division checks (default: 1e-12)
         
     Returns:
@@ -50,37 +68,111 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
         mechanical stability assessment, and optional tensor-based recomputation.
     """
     try:
-        docs = mpr.materials.summary.search(
-            material_ids=material_id,
-            fields=[
+        # Validate input modes
+        has_material_id = material_id is not None
+        has_composition = any([element, formula, chemsys])
+        has_structure = spacegroup_number is not None and crystal_system is not None
+        
+        if not has_material_id and not (has_composition and has_structure):
+            return error_result(
+                handler="materials",
+                function="get_elastic_properties",
+                error="Must provide either material_id OR (element/formula/chemsys + spacegroup_number + crystal_system)",
+                error_type=ErrorType.INVALID_INPUT,
+                citations=["Materials Project"]
+            )
+        
+        if has_material_id and (has_composition or has_structure):
+            return error_result(
+                handler="materials",
+                function="get_elastic_properties",
+                error="Cannot provide both material_id and composition/structure parameters",
+                error_type=ErrorType.INVALID_INPUT,
+                citations=["Materials Project"]
+            )
+        
+        # Build search parameters
+        search_params = {
+            "fields": [
                 "material_id", "formula_pretty", "composition",
                 "bulk_modulus", "shear_modulus", "universal_anisotropy",
                 "homogeneous_poisson", "energy_above_hull", "is_stable"
             ]
-        )
+        }
+        
+        if has_material_id:
+            # Mode 1: Search by material ID
+            search_params["material_ids"] = material_id
+        else:
+            # Mode 2: Search by composition + structure (theoretical=False)
+            if element:
+                search_params["elements"] = element
+            if formula:
+                search_params["formula"] = formula
+            if chemsys:
+                search_params["chemsys"] = chemsys
+            search_params["spacegroup_number"] = spacegroup_number
+            search_params["crystal_system"] = crystal_system
+            search_params["theoretical"] = False
+        
+        docs = mpr.materials.summary.search(**search_params)
         
         if not docs:
+            if has_material_id:
+                error_msg = f"Material {material_id} not found"
+            else:
+                search_desc = []
+                if element:
+                    search_desc.append(f"element={element}")
+                if formula:
+                    search_desc.append(f"formula={formula}")
+                if chemsys:
+                    search_desc.append(f"chemsys={chemsys}")
+                search_desc.append(f"spacegroup={spacegroup_number}")
+                search_desc.append(f"crystal_system={crystal_system}")
+                search_desc.append("theoretical=False")
+                error_msg = f"No materials found matching criteria: {', '.join(search_desc)}"
+            
             return error_result(
                 handler="materials",
                 function="get_elastic_properties",
-                error=f"Material {material_id} not found",
+                error=error_msg,
                 error_type=ErrorType.NOT_FOUND,
                 citations=["Materials Project"]
             )
         
+        # If multiple materials found (in composition+structure mode), use the first one
+        if len(docs) > 1 and not has_material_id:
+            _log.info(f"Found {len(docs)} materials matching criteria, using first: {docs[0].material_id}")
+        
         doc = docs[0]
+        actual_material_id = doc.material_id if hasattr(doc, 'material_id') else material_id
         
         # Extract bulk modulus data
         bulk_modulus = doc.bulk_modulus if hasattr(doc, 'bulk_modulus') else None
         shear_modulus = doc.shear_modulus if hasattr(doc, 'shear_modulus') else None
         
         data = {
-            "material_id": material_id,
+            "material_id": actual_material_id,
             "formula": doc.formula_pretty if hasattr(doc, 'formula_pretty') else str(doc.composition),
             "composition": dict(doc.composition.as_dict()) if hasattr(doc, 'composition') else None,
             "is_stable": doc.is_stable if hasattr(doc, 'is_stable') else None,
             "energy_above_hull": float(doc.energy_above_hull) if hasattr(doc, 'energy_above_hull') and doc.energy_above_hull is not None else None
         }
+        
+        # Add search mode info
+        if not has_material_id:
+            data["search_mode"] = "composition_structure"
+            data["search_criteria"] = {
+                "element": element,
+                "formula": formula,
+                "chemsys": chemsys,
+                "spacegroup_number": spacegroup_number,
+                "crystal_system": crystal_system,
+                "theoretical": False
+            }
+            if len(docs) > 1:
+                data["num_matches_found"] = len(docs)
         
         if bulk_modulus:
             # Handle both dict and object formats
@@ -172,21 +264,20 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
         # 2) ELASTICITY: fetch tensor & Born stability from the dedicated endpoint
         et_doc = None
         used_pymatgen = False
-        born_stable = None
         
         try:
             # Try with explicit fields (may vary by server version)
             et_docs = mpr.materials.elasticity.search(
-                material_ids=material_id,
+                material_ids=actual_material_id,
                 fields=["material_id", "elastic_tensor", "K_VRH", "G_VRH", "warnings"]
             )
         except Exception as e:
             # Fallback: no field filtering (avoids "invalid fields" errors)
-            _log.debug(f"Elasticity search with fields failed for {material_id}, trying without fields: {e}")
+            _log.debug(f"Elasticity search with fields failed for {actual_material_id}, trying without fields: {e}")
             try:
-                et_docs = mpr.materials.elasticity.search(material_ids=material_id)
+                et_docs = mpr.materials.elasticity.search(material_ids=actual_material_id)
             except Exception as e2:
-                _log.warning(f"Elasticity search failed for {material_id}: {e2}")
+                _log.warning(f"Elasticity search failed for {actual_material_id}: {e2}")
                 et_docs = []
         
         if et_docs:
@@ -244,7 +335,6 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
                     if cross_check_note:
                         data.setdefault("notes", []).append(cross_check_note)
                     
-                    born_stable = is_born_stable
                     used_pymatgen = True
                     
                     # Add Born stability details
@@ -252,7 +342,7 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
                         "is_born_stable": is_born_stable
                     }
                 except Exception as tensor_err:
-                    _log.warning(f"Could not recompute VRH from elastic tensor for {material_id}: {tensor_err}")
+                    _log.warning(f"Could not recompute VRH from elastic tensor for {actual_material_id}: {tensor_err}")
             
             # Surface warnings if the API provides them
             et_warnings = getattr(et_doc, "warnings", None)
@@ -262,8 +352,7 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
                 else:
                     data["elasticity_warnings"] = [et_warnings]
         
-        # Prefer Born stability verdict if available, otherwise use heuristic
-        # Heuristic requires: K > 0, G > 0, -1 < ν < 0.5, E > 0, and K/G ≥ 0
+        # Heuristic stability check: K > 0, G > 0, -1 < ν < 0.5, E > 0, and K/G ≥ 0
         likely_stable = (
             K is not None and K > 0 and
             G is not None and G > 0 and
@@ -271,8 +360,6 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
             E is not None and E > 0 and
             pugh is not None and pugh >= 0
         )
-        if born_stable is not None:
-            likely_stable = born_stable
         
         # Add mechanical stability assessment
         data["mechanical_stability"] = {
@@ -308,7 +395,8 @@ def get_elastic_properties(mpr, material_id: str, eps: float = 1e-12) -> Dict[st
         )
         
     except Exception as e:
-        _log.error(f"Error getting elastic properties for {material_id}: {e}", exc_info=True)
+        error_context = material_id if material_id else f"composition/structure search"
+        _log.error(f"Error getting elastic properties for {error_context}: {e}", exc_info=True)
         formatted_error = format_field_error(e)
         return error_result(
             handler="materials",

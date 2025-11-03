@@ -214,11 +214,13 @@ def compute_equilibrium(
         return None
     
     try:
-        # Ensure VA is in elements list (required for many phases)
+        # Normalize all elements to uppercase for pycalphad compatibility
         # Make a copy to avoid modifying the original list
-        elements_with_va = list(elements)
-        if 'VA' not in elements_with_va:
-            elements_with_va.append('VA')
+        elements_upper = [el.upper() for el in elements]
+        
+        # Ensure VA is in elements list (required for many phases)
+        if 'VA' not in elements_upper:
+            elements_upper.append('VA')
         
         # Build conditions
         conditions = {
@@ -233,20 +235,22 @@ def compute_equilibrium(
         if len(comp_elements) > 1:
             # For multicomponent systems, specify all but the first element
             for el in comp_elements[1:]:
-                conditions[v.X(el)] = composition[el]
+                # Normalize to uppercase for pycalphad compatibility
+                el_upper = el.upper()
+                conditions[v.X(el_upper)] = composition[el]
         else:
             # For single element (pure substance), no composition constraint needed
             pass
         
         # Calculate equilibrium
         _log.info(f"Running equilibrium with {len(phases)} phases, T={temperature}K, composition={composition}")
-        eq = equilibrium(db, elements_with_va, phases, conditions)
+        eq = equilibrium(db, elements_upper, phases, conditions)
         
         return eq
         
     except Exception as e:
         _log.error(f"Equilibrium calculation failed: {e}")
-        _log.error(f"  Elements (with VA): {elements_with_va}")
+        _log.error(f"  Elements (with VA): {elements_upper}")
         _log.error(f"  Phases ({len(phases)}): {phases[:10]}...")  # Show first 10
         _log.error(f"  Conditions: {conditions}")
         _log.error(f"  Composition: {composition}")

@@ -813,7 +813,7 @@ It supports three modes:
       geometric/chemical descriptors for a physics-based heuristic.
   (C) Else -> falls back to host-class defaults (still transparent).
 
-Outputs a comparative 'formation-energy proxy' and a verdict.
+Outputs a comparative 'formation-energy proxy' and site preference analysis.
 
 Design choices & physics:
 - Substitutional formation 'cost' ~ bond rehybridization + size mismatch.
@@ -1094,7 +1094,6 @@ class SitePreferenceResult:
     E_int_tet_eV: float
     E_int_hex_eV: float  # hex for diamond, oct for fcc/hcp
     margin_eV: float
-    verdict: str
     notes: Dict[str, Any]
     diagnostics: Optional[Dict[str, Any]] = None
 
@@ -1118,7 +1117,7 @@ def predict_site_preference(
             override heuristics.
 
     Returns:
-      SitePreferenceResult with a clear verdict and margins.
+      SitePreferenceResult with site preference analysis and energy margins.
     """
     host = host.strip().capitalize()
     dopant = dopant.strip().capitalize()
@@ -1175,17 +1174,6 @@ def predict_site_preference(
     others = [v for k, v in site_map.items() if k != preferred]
     margin = min([x - site_map[preferred] for x in others])
 
-    # Craft verdict
-    if preferred == "substitutional":
-        verdict = (
-            f"{dopant} prefers the substitutional site in {host} by ~{margin:.2f} eV "
-            f"(vs interstitial). Interstitial configurations are predicted unstable/higher in energy."
-        )
-    else:
-        verdict = (
-            f"{dopant} tends to occupy {preferred} over substitutional in {host} by ~{margin:.2f} eV."
-        )
-
     # Build notes with warnings from diagnostics
     notes = {"caveats": [
         "Proxies compare relative stabilities; absolute values are not DFT formation energies.",
@@ -1206,7 +1194,6 @@ def predict_site_preference(
         E_int_tet_eV=float(E_tet),
         E_int_hex_eV=float(E_hex),
         margin_eV=float(margin),
-        verdict=verdict,
         notes=notes,
         diagnostics=diagnostics
     )

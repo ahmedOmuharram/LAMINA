@@ -766,7 +766,7 @@ def assess_stronger_magnet(
         - baseline: Estimated properties for host
         - doped: Estimated properties for doped material
         - pull_force: Force calculations for both
-        - verdict: Is doped material stronger?
+        - strength_assessment: Is doped material stronger?
         - assumptions and caveats
     """
     try:
@@ -873,8 +873,8 @@ def assess_stronger_magnet(
                 "error": "Br not available for doped material"
             }
         
-        # 6. Verdict: Is doped material stronger?
-        verdict = assess_verdict(
+        # 6. Strength assessment: Is doped material stronger?
+        strength_assessment = assess_strength(
             baseline_props=baseline_props,
             doped_props=doped_props,
             baseline_force=result.get("baseline_pull_force", {}),
@@ -883,7 +883,7 @@ def assess_stronger_magnet(
             doped_mp=result.get("doped_phase_check", {})  # Use the phase_check we populated
         )
         
-        result["verdict"] = verdict
+        result["strength_assessment"] = strength_assessment
         
         # 7. Collect all assumptions and caveats
         all_assumptions = []
@@ -1196,18 +1196,18 @@ def analyze_doping_effect_on_ms(
                 result["Ms_change_percent"] = float(change_pct)
 
                 if change_pct > 5:
-                    result["verdict"] = "increases"
+                    result["change_direction"] = "increases"
                 elif change_pct < -5:
-                    result["verdict"] = "decreases"
+                    result["change_direction"] = "decreases"
                 else:
-                    result["verdict"] = "maintains (negligible change)"
+                    result["change_direction"] = "maintains (negligible change)"
             else:
                 # AFM / nearly compensated case
                 result["Ms_change_percent"] = None
-                result["verdict"] = "unclear (host Ms near zero)"
+                result["change_direction"] = "unclear (host Ms near zero)"
         else:
             result["Ms_change_percent"] = None
-            result["verdict"] = "insufficient data"
+            result["change_direction"] = "insufficient data"
 
         # 5. Physical interpretation
         result["analysis"] = analyze_magnetic_moment_contribution(
@@ -1522,7 +1522,7 @@ def compare_multiple_dopants_ms(
                     "dopant": dopant,
                     "doped_Ms_kA_per_m": dopant_analysis.get("doped_Ms_kA_per_m"),
                     "Ms_change_percent": dopant_analysis.get("Ms_change_percent"),
-                    "verdict": dopant_analysis.get("verdict"),
+                    "change_direction": dopant_analysis.get("change_direction"),
                     "analysis": dopant_analysis.get("analysis", {}),
                     "phase_changed": dopant_analysis.get("phase_changed", False),
                     "used_heuristic": dopant_analysis.get("used_heuristic", False),
@@ -1734,7 +1734,7 @@ def assess_doping_effect_on_saturation_magnetization(
         }
 
 
-def assess_verdict(
+def assess_strength(
     baseline_props: Dict[str, Any],
     doped_props: Dict[str, Any],
     baseline_force: Dict[str, Any],
@@ -1762,10 +1762,10 @@ def assess_verdict(
         doped_mp: Doped MP data (for ordering and phase)
         
     Returns:
-        Verdict dictionary with decision and reasoning
+        Assessment dictionary with decision and reasoning
     """
     try:
-        verdict = {
+        assessment = {
             "stronger": False,
             "reason": "",
             "confidence": "low",
@@ -1779,47 +1779,47 @@ def assess_verdict(
             doped_sg = doped_mp.get("phase", {}).get("space_group")
             
             if baseline_sg and doped_sg and baseline_sg != doped_sg:
-                verdict["stronger"] = False
-                verdict["reason"] = (
+                assessment["stronger"] = False
+                assessment["reason"] = (
                     f"Doped entry is a different crystal phase (space group {doped_sg} vs {baseline_sg}); "
                     "not substitutional doping. Cannot claim 'stronger magnet by doping'."
                 )
-                verdict["confidence"] = "high"
-                verdict["details"] = {
+                assessment["confidence"] = "high"
+                assessment["details"] = {
                     "baseline_space_group": baseline_sg,
                     "doped_space_group": doped_sg,
                     "phase_changed": True
                 }
-                return verdict
+                return assessment
         
         # Check if we have necessary data
         if not baseline_force.get("success") or not doped_force.get("success"):
-            verdict["reason"] = "Insufficient data to calculate pull forces"
-            return verdict
+            assessment["reason"] = "Insufficient data to calculate pull forces"
+            return assessment
         
         F_baseline = baseline_force["force"]["F_N"]
         F_doped = doped_force["force"]["F_N"]
         
         # Check pull force increase
         force_increase_pct = ((F_doped - F_baseline) / F_baseline) * 100 if F_baseline > 0 else 0
-        verdict["details"]["force_change_percent"] = float(force_increase_pct)
-        verdict["details"]["F_baseline_N"] = float(F_baseline)
-        verdict["details"]["F_doped_N"] = float(F_doped)
+        assessment["details"]["force_change_percent"] = float(force_increase_pct)
+        assessment["details"]["F_baseline_N"] = float(F_baseline)
+        assessment["details"]["F_doped_N"] = float(F_doped)
         
         # Check coercivity
         Hc_baseline = baseline_props.get("Hc_kA_per_m", 0)
         Hc_doped = doped_props.get("Hc_kA_per_m", 0)
         Hc_min_threshold = 0.5  # kA/m (minimum for practical permanent magnet)
         
-        verdict["details"]["Hc_baseline_kA_per_m"] = float(Hc_baseline)
-        verdict["details"]["Hc_doped_kA_per_m"] = float(Hc_doped)
+        assessment["details"]["Hc_baseline_kA_per_m"] = float(Hc_baseline)
+        assessment["details"]["Hc_doped_kA_per_m"] = float(Hc_doped)
         
         # Check magnetic ordering
         baseline_ordering = baseline_mp.get("magnetic_ordering", {}).get("ordering_type", "Unknown")
         doped_ordering = (doped_mp or {}).get("magnetic_ordering", {}).get("ordering_type", "Unknown")
         
-        verdict["details"]["baseline_ordering"] = baseline_ordering
-        verdict["details"]["doped_ordering"] = doped_ordering
+        assessment["details"]["baseline_ordering"] = baseline_ordering
+        assessment["details"]["doped_ordering"] = doped_ordering
         
         # Decision logic
         reasons = []
@@ -1848,31 +1848,31 @@ def assess_verdict(
             reasons.append(f"Magnetic ordering ({doped_ordering}) not ideal for permanent magnet (prefer FM/FiM)")
             ordering_criterion = False
         
-        # Final verdict
+        # Final assessment
         if force_criterion and hc_criterion and ordering_criterion:
-            verdict["stronger"] = True
-            verdict["confidence"] = "medium"
-            verdict["reason"] = "Doped material shows improved pull force with adequate coercivity and suitable magnetic ordering"
+            assessment["stronger"] = True
+            assessment["confidence"] = "medium"
+            assessment["reason"] = "Doped material shows improved pull force with adequate coercivity and suitable magnetic ordering"
         elif force_criterion:
-            verdict["stronger"] = False
-            verdict["confidence"] = "medium"
-            verdict["reason"] = "Pull force improved but coercivity or magnetic ordering concerns remain"
+            assessment["stronger"] = False
+            assessment["confidence"] = "medium"
+            assessment["reason"] = "Pull force improved but coercivity or magnetic ordering concerns remain"
         else:
-            verdict["stronger"] = False
-            verdict["confidence"] = "medium"
-            verdict["reason"] = "Pull force did not improve sufficiently"
+            assessment["stronger"] = False
+            assessment["confidence"] = "medium"
+            assessment["reason"] = "Pull force did not improve sufficiently"
         
-        verdict["detailed_reasoning"] = reasons
+        assessment["detailed_reasoning"] = reasons
         
         # Special case: AFM/WF materials
         if baseline_ordering in ["AFM", "WF"] or doped_ordering in ["AFM", "WF"]:
-            verdict["confidence"] = "low"
-            verdict["reason"] += " (Note: AFM/Weak-FM materials are generally poor permanent magnets)"
+            assessment["confidence"] = "low"
+            assessment["reason"] += " (Note: AFM/Weak-FM materials are generally poor permanent magnets)"
         
-        return verdict
+        return assessment
         
     except Exception as e:
-        _log.error(f"Error in assess_verdict: {e}", exc_info=True)
+        _log.error(f"Error in assess_strength: {e}", exc_info=True)
         return {
             "stronger": False,
             "reason": f"Error in assessment: {str(e)}",

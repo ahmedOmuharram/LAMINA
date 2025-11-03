@@ -22,7 +22,7 @@ class SuperconductorAIFunctionsMixin:
     @ai_function(
         desc=(
             "Analyze how c-axis spacing affects Cu-O octahedral stability in cuprate superconductors "
-            "(e.g., La2CuO4, YBCO). FAMILY-AWARE: returns different verdicts for 214-type (La2CuO4) vs "
+            "(e.g., La2CuO4, YBCO). FAMILY-AWARE: returns different analysis for 214-type (La2CuO4) vs "
             "123-type (YBCO) vs T′/infinite-layer. Use for questions about structural effects on octahedral "
             "coordination, Jahn-Teller distortions, or claims about c-axis expansion stabilizing/destabilizing octahedra. "
             "Default mode answers the general trend question (does increasing c stabilize or destabilize?)."
@@ -43,7 +43,7 @@ class SuperconductorAIFunctionsMixin:
         Returns:
         - Whether increasing c-axis stabilizes or destabilizes octahedral coordination
         - Mechanism (apical Cu-O bond length changes)
-        - Verdict on user's claim
+        - Analysis of stability effects
         - Structural details (typical bond distances, coordination)
         """
         start_time = time.time()

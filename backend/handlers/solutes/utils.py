@@ -289,7 +289,7 @@ def rank_solutes_by_expansion(
       - results: list of per-solute dicts (from compute_substitutional_lattice_effect)
       - sorted_by_expansion: solute symbols sorted by predicted_da_over_a descending
       - largest_expander: first entry in that sorted list (if any)
-      - commentary: human-readable summary you can feed straight into your verdict logic
+      - commentary: human-readable summary of the lattice effects
     """
 
     per_solute_results = []

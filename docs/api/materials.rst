@@ -499,12 +499,22 @@ get_elastic_properties
 
    async def get_elastic_properties(
        self,
-       material_id: str
+       material_id: Optional[str] = None,
+       element: Optional[str] = None,
+       formula: Optional[str] = None,
+       chemsys: Optional[str] = None,
+       spacegroup_number: Optional[int] = None,
+       crystal_system: Optional[str] = None
    ) -> Dict[str, Any]
 
 **Description:**
 
 Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio) for a specific material. Extracts moduli in both Voigt, Reuss, and VRH (Voigt-Reuss-Hill average) forms. **Automatically validates data quality** and flags unphysical values (e.g., negative moduli). Computes **derived properties** from moduli and provides **mechanical stability assessment**. When elastic tensor is available, recomputes VRH values using pymatgen and provides **Born stability verdict**.
+
+**Supports two search modes:**
+
+1. **By material ID**: Provide ``material_id`` only
+2. **By composition + structure**: Provide (``element`` OR ``formula`` OR ``chemsys``) AND ``spacegroup_number`` AND ``crystal_system``. Automatically sets ``theoretical=False`` to search experimental/experimentally-observed entries only.
 
 **When to Use:**
 
@@ -514,6 +524,7 @@ Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ra
 - Designing materials for structural applications
 - Validating elastic data quality (detects problematic entries like negative moduli)
 - Assessing mechanical stability from Born criteria
+- Finding materials by composition and structure when material ID is unknown
 
 **How It Fetches Data:**
 
@@ -624,7 +635,19 @@ The function uses **two separate API endpoints** to fetch elastic properties:
 
 **Parameters:**
 
-- ``material_id`` (str, required): Material ID (e.g., ``'mp-124'`` for Ag, ``'mp-30'`` for Cu, ``'mp-81'`` for Au)
+**Mode 1: By Material ID**
+
+- ``material_id`` (str, optional): Material ID (e.g., ``'mp-124'`` for Ag, ``'mp-30'`` for Cu, ``'mp-81'`` for Au). Required if not using composition+structure mode.
+
+**Mode 2: By Composition + Structure**
+
+- ``element`` (str, optional): Element(s) or comma-separated list (e.g., ``'Si'``, ``'Li,Fe,O'``). Use with ``spacegroup_number`` and ``crystal_system``.
+- ``formula`` (str, optional): Formula (e.g., ``'Si'``, ``'Li2FeO3'``). Use with ``spacegroup_number`` and ``crystal_system``.
+- ``chemsys`` (str, optional): Chemical system (e.g., ``'Si'``, ``'Li-Fe-O'``). Use with ``spacegroup_number`` and ``crystal_system``.
+- ``spacegroup_number`` (int, optional): Spacegroup number (1-230). Required when using composition mode.
+- ``crystal_system`` (str, optional): Crystal system (``'Triclinic'``, ``'Monoclinic'``, ``'Orthorhombic'``, ``'Tetragonal'``, ``'Trigonal'``, ``'Hexagonal'``, ``'Cubic'``). Required when using composition mode.
+
+**Note**: Provide either ``material_id`` OR (composition + structure), not both. When using composition+structure mode, automatically filters for non-theoretical entries (``theoretical=False``).
 
 **Returns:**
 
@@ -647,6 +670,9 @@ Dictionary containing:
            "composition": Dict[str, float],
            "is_stable": bool,  # Thermodynamic stability (on convex hull)
            "energy_above_hull": float,
+           "search_mode": str,  # Present if composition+structure mode used: "composition_structure"
+           "search_criteria": Dict[str, Any],  # Present if composition+structure mode: search parameters used
+           "num_matches_found": int,  # Present if composition+structure mode and multiple matches: number of materials found
            "bulk_modulus": {
                "k_vrh": float,
                "k_voigt": float,
@@ -725,9 +751,23 @@ The function provides two levels of stability assessment:
 
 .. code-block:: python
 
-   # Get elastic properties for silver
+   # Mode 1: Get elastic properties by material ID
    result = await handler.get_elastic_properties(
        material_id="mp-124"  # Ag (silver)
+   )
+   
+   # Mode 2: Get elastic properties by composition + structure
+   result = await handler.get_elastic_properties(
+       element="Si",
+       spacegroup_number=227,
+       crystal_system="Cubic"
+   )
+   
+   # Mode 2: Using formula
+   result = await handler.get_elastic_properties(
+       formula="Fe2O3",
+       spacegroup_number=167,
+       crystal_system="Trigonal"
    )
 
 .. _find_closest_alloy_compositions:

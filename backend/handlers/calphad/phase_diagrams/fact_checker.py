@@ -147,10 +147,9 @@ class ClaimResult:
     """Result of a microstructure claim evaluation."""
     claim_id: str                        # Identifier for the claim
     claim_text: str                      # Natural language claim
-    verdict: bool                        # True if claim is supported
     score: int                           # Score (-2 to +2, where +2 = fully correct)
-    confidence: float                    # Confidence in verdict (0-1)
-    reasoning: str                       # Explanation of verdict
+    confidence: float                    # Confidence in assessment (0-1)
+    reasoning: str                       # Explanation of assessment
     supporting_data: Dict[str, Any]      # Numerical evidence
 
 
@@ -253,7 +252,6 @@ class TwoPhaseChecker(ClaimChecker):
             return ClaimResult(
                 claim_id="two_phase",
                 claim_text=f"Two-phase {self.primary_category.value} + {self.secondary_category.value}",
-                verdict=False,
                 score=-2,
                 confidence=0.0,
                 reasoning="Equilibrium calculation failed",
@@ -281,11 +279,13 @@ class TwoPhaseChecker(ClaimChecker):
         secondary_within_limit = secondary_frac <= self.secondary_max_fraction + 1e-3
         minimal_other = other_frac < self.tolerance
         
-        verdict = all([has_primary, has_secondary, secondary_within_limit, minimal_other])
+        matches_claim = all([has_primary, has_secondary, secondary_within_limit, minimal_other])
         
         # Score based on how well it matches
-        if verdict:
+        if matches_claim:
             score = 2  # Perfect match
+            reasoning = (f"Dominant {self.primary_category.value} ({primary_frac:.1%}) + "
+                        f"{self.secondary_category.value} ({secondary_frac:.1%}) within limits")
         elif has_primary and has_secondary:
             if not secondary_within_limit:
                 score = -1  # Right phases, wrong fraction
@@ -303,16 +303,11 @@ class TwoPhaseChecker(ClaimChecker):
             score = -2  # Neither phase present
             reasoning = "Neither expected phase is present"
         
-        if verdict:
-            reasoning = (f"✓ Dominant {self.primary_category.value} ({primary_frac:.1%}) + "
-                        f"{self.secondary_category.value} ({secondary_frac:.1%}) within limits")
-        
         confidence = 1.0 if (has_primary or has_secondary) else 0.3
         
         return ClaimResult(
             claim_id="two_phase",
             claim_text=f"Two-phase: dominant {self.primary_category.value} + {self.secondary_category.value} <{self.secondary_max_fraction:.0%}",
-            verdict=verdict,
             score=score,
             confidence=confidence,
             reasoning=reasoning,
@@ -351,7 +346,6 @@ class ThreePhaseChecker(ClaimChecker):
             return ClaimResult(
                 claim_id="three_phase",
                 claim_text=f"Three-phase: {', '.join(c.value for c in self.expected_categories)}",
-                verdict=False,
                 score=-2,
                 confidence=0.0,
                 reasoning="Equilibrium calculation failed",
@@ -365,7 +359,7 @@ class ThreePhaseChecker(ClaimChecker):
         expected_counts = Counter(self.expected_categories)
         
         # Check if all expected categories are present with sufficient counts
-        verdict = all(present_counts[cat] >= cnt for cat, cnt in expected_counts.items())
+        all_present = all(present_counts[cat] >= cnt for cat, cnt in expected_counts.items())
         
         supporting_data = {
             "present_category_counts": {c.value: present_counts.get(c, 0) for c in expected_counts},
@@ -377,7 +371,7 @@ class ThreePhaseChecker(ClaimChecker):
         satisfied = sum(min(present_counts.get(cat, 0), cnt) for cat, cnt in expected_counts.items())
         total_needed = sum(expected_counts.values())
         
-        if verdict:
+        if all_present:
             score = 2
             reasoning = " | ".join(
                 f"{cat.value}: need ≥{cnt}, have {present_counts.get(cat, 0)}"
@@ -401,7 +395,6 @@ class ThreePhaseChecker(ClaimChecker):
         return ClaimResult(
             claim_id="three_phase",
             claim_text=f"Three-phase: {', '.join(c.value for c in self.expected_categories)}",
-            verdict=verdict,
             score=score,
             confidence=confidence,
             reasoning=reasoning,
@@ -441,7 +434,6 @@ class PhaseFractionChecker(ClaimChecker):
             return ClaimResult(
                 claim_id="phase_fraction",
                 claim_text=f"{self.target_category.value} fraction check",
-                verdict=False,
                 score=-2,
                 confidence=0.0,
                 reasoning="Equilibrium calculation failed",
@@ -479,8 +471,7 @@ class PhaseFractionChecker(ClaimChecker):
         # Score
         if passes:
             score = 2
-            verdict = True
-            reasoning = f"✓ {self.target_category.value} fraction {target_frac:.1%} passes: " + ", ".join(reasons)
+            reasoning = f"{self.target_category.value} fraction {target_frac:.1%}: " + ", ".join(reasons)
         else:
             # How far off?
             if self.min_fraction and target_frac < self.min_fraction * 0.5:
@@ -489,15 +480,13 @@ class PhaseFractionChecker(ClaimChecker):
                 score = -2
             else:
                 score = -1
-            verdict = False
-            reasoning = f"✗ {self.target_category.value} fraction {target_frac:.1%} fails: " + ", ".join(reasons)
+            reasoning = f"{self.target_category.value} fraction {target_frac:.1%}: " + ", ".join(reasons)
         
         confidence = 1.0 if target_frac > 1e-3 else 0.3
         
         return ClaimResult(
             claim_id="phase_fraction",
             claim_text=f"{self.target_category.value} fraction check",
-            verdict=verdict,
             score=score,
             confidence=confidence,
             reasoning=reasoning,
@@ -557,7 +546,6 @@ class AlloyFactChecker:
                 results.append(ClaimResult(
                     claim_id=checker.__class__.__name__,
                     claim_text="Unknown",
-                    verdict=False,
                     score=-2,
                     confidence=0.0,
                     reasoning=f"Error: {e}",
@@ -605,13 +593,11 @@ class AlloyFactChecker:
         ])
         
         for i, result in enumerate(results, 1):
-            verdict_symbol = "✓" if result.verdict else "✗"
             score_text = f"{result.score:+d}/2"
             
             lines.append(f"\n{i}. {result.claim_text}")
-            lines.append(f"   {verdict_symbol} Verdict: {'SUPPORTED' if result.verdict else 'REJECTED'}")
             lines.append(f"   Score: {score_text} | Confidence: {result.confidence:.0%}")
-            lines.append(f"   Reasoning: {result.reasoning}")
+            lines.append(f"   Details: {result.reasoning}")
             
             # Show supporting data
             if result.supporting_data:
@@ -628,7 +614,7 @@ class AlloyFactChecker:
         lines.extend([
             "",
             "-" * 80,
-            f"SUMMARY: {sum(1 for r in results if r.verdict)}/{len(results)} claims supported",
+            f"SUMMARY: {sum(1 for r in results if r.score >= 1)}/{len(results)} claims with positive scores",
             f"Average score: {np.mean([r.score for r in results]):.2f}/2.0",
             "=" * 80,
         ])

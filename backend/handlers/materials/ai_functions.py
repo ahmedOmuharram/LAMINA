@@ -294,15 +294,28 @@ class MaterialsAIFunctionsMixin:
         self._track_tool_output("mp_get_material_details", result)
         return result
 
-    @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio) for a material. Includes mechanical stability validation, derived properties computed from moduli, and optional tensor-based recomputation with Born stability when elastic tensor is available.", auto_truncate=128000)
+    @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio) for a material. Supports two modes: (1) By material_id, or (2) By composition (element/formula/chemsys) + structure (spacegroup_number + crystal_system) with theoretical=False. Includes mechanical stability validation, derived properties computed from moduli, and optional tensor-based recomputation with Born stability information when elastic tensor is available.", auto_truncate=128000)
     async def get_elastic_properties(
         self,
-        material_id: Annotated[str, AIParam(desc="Material ID (e.g., 'mp-81' for Ag, 'mp-30' for Cu).")]
+        material_id: Annotated[Optional[str], AIParam(desc="Material ID (e.g., 'mp-81' for Ag, 'mp-30' for Cu). Required if not using composition+structure mode.")] = None,
+        element: Annotated[Optional[str], AIParam(desc="Element(s) or comma-separated list (e.g., 'Li,Fe,O'). Use with spacegroup_number and crystal_system.")] = None,
+        formula: Annotated[Optional[str], AIParam(desc="Formula (e.g., 'Li2FeO3', 'Fe2O3'). Use with spacegroup_number and crystal_system.")] = None,
+        chemsys: Annotated[Optional[str], AIParam(desc="Chemical system (e.g., 'Li-Fe-O'). Use with spacegroup_number and crystal_system.")] = None,
+        spacegroup_number: Annotated[Optional[int], AIParam(desc="Spacegroup number. Required when using composition mode (with element/formula/chemsys).")] = None,
+        crystal_system: Annotated[Optional[str], AIParam(desc="Crystal system: 'Triclinic', 'Monoclinic', 'Orthorhombic', 'Tetragonal', 'Trigonal', 'Hexagonal', or 'Cubic'. Required when using composition mode.")] = None
     ) -> Dict[str, Any]:
-        """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio, mechanical stability assessment, and derived properties. Automatically validates data quality and flags unphysical values (e.g., negative moduli). When elastic tensor is available, recomputes VRH values and provides Born stability verdict."""
+        """Get elastic and mechanical properties including bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio, mechanical stability assessment, and derived properties. Supports two modes: (1) Search by material_id, or (2) Search by composition (element/formula/chemsys) + structure (spacegroup_number + crystal_system) with theoretical=False. Automatically validates data quality and flags unphysical values (e.g., negative moduli). When elastic tensor is available, recomputes VRH values and provides Born stability information."""
         start_time = time.time()
         
-        result = get_elastic_properties(self.mpr, material_id)
+        result = get_elastic_properties(
+            self.mpr,
+            material_id=material_id,
+            element=element,
+            formula=formula,
+            chemsys=chemsys,
+            spacegroup_number=spacegroup_number,
+            crystal_system=crystal_system
+        )
         
         # Add duration to metadata if not already present
         duration_ms = (time.time() - start_time) * 1000
