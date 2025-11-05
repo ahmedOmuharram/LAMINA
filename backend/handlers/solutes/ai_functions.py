@@ -67,7 +67,8 @@ def _get_calphad_fcc_composition(
         db = Database(str(db_path))
         
         # Get all phases from database
-        phases = list(db.phases.keys())
+        # Convert phase names to regular Python strings to avoid numpy.str_ issues
+        phases = [str(p) for p in db.phases.keys()]
         
         # Setup elements and conditions
         elements = [mat, sol, 'VA']

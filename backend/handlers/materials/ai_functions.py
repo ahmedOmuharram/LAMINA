@@ -297,7 +297,6 @@ class MaterialsAIFunctionsMixin:
     @ai_function(desc="Get elastic and mechanical properties (bulk modulus, shear modulus, Poisson's ratio, Young's modulus, Pugh ratio) for a material. Supports two modes: (1) By material_id, or (2) By composition (element/formula/chemsys) + structure (spacegroup_number + crystal_system) with theoretical=False. Includes mechanical stability validation, derived properties computed from moduli, and optional tensor-based recomputation with Born stability information when elastic tensor is available.", auto_truncate=128000)
     async def get_elastic_properties(
         self,
-        material_id: Annotated[Optional[str], AIParam(desc="Material ID (e.g., 'mp-81' for Ag, 'mp-30' for Cu). Required if not using composition+structure mode.")] = None,
         element: Annotated[Optional[str], AIParam(desc="Element(s) or comma-separated list (e.g., 'Li,Fe,O'). Use with spacegroup_number and crystal_system.")] = None,
         formula: Annotated[Optional[str], AIParam(desc="Formula (e.g., 'Li2FeO3', 'Fe2O3'). Use with spacegroup_number and crystal_system.")] = None,
         chemsys: Annotated[Optional[str], AIParam(desc="Chemical system (e.g., 'Li-Fe-O'). Use with spacegroup_number and crystal_system.")] = None,
@@ -309,7 +308,6 @@ class MaterialsAIFunctionsMixin:
         
         result = get_elastic_properties(
             self.mpr,
-            material_id=material_id,
             element=element,
             formula=formula,
             chemsys=chemsys,

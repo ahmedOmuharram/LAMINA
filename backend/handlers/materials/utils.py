@@ -37,7 +37,6 @@ def _safe_ratio(K, G, eps=1e-12):
 
 def get_elastic_properties(
     mpr, 
-    material_id: Optional[str] = None,
     element: Optional[str] = None,
     formula: Optional[str] = None,
     chemsys: Optional[str] = None,
@@ -69,24 +68,14 @@ def get_elastic_properties(
     """
     try:
         # Validate input modes
-        has_material_id = material_id is not None
         has_composition = any([element, formula, chemsys])
         has_structure = spacegroup_number is not None and crystal_system is not None
         
-        if not has_material_id and not (has_composition and has_structure):
+        if not (has_composition and has_structure):
             return error_result(
                 handler="materials",
                 function="get_elastic_properties",
-                error="Must provide either material_id OR (element/formula/chemsys + spacegroup_number + crystal_system)",
-                error_type=ErrorType.INVALID_INPUT,
-                citations=["Materials Project"]
-            )
-        
-        if has_material_id and (has_composition or has_structure):
-            return error_result(
-                handler="materials",
-                function="get_elastic_properties",
-                error="Cannot provide both material_id and composition/structure parameters",
+                error="Must provide (element OR formula OR chemsys) AND spacegroup_number AND crystal_system",
                 error_type=ErrorType.INVALID_INPUT,
                 citations=["Materials Project"]
             )
@@ -100,39 +89,33 @@ def get_elastic_properties(
             ]
         }
         
-        if has_material_id:
-            # Mode 1: Search by material ID
-            search_params["material_ids"] = material_id
-        else:
-            # Mode 2: Search by composition + structure (theoretical=False)
-            if element:
-                search_params["elements"] = element
-            if formula:
-                search_params["formula"] = formula
-            if chemsys:
-                search_params["chemsys"] = chemsys
-            search_params["spacegroup_number"] = spacegroup_number
-            search_params["crystal_system"] = crystal_system
-            search_params["theoretical"] = False
+        if element:
+            # Convert comma-separated string to list of elements
+            # MP API expects a list: ['Al', 'Fe'] not a string 'Al,Fe'
+            search_params["elements"] = [e.strip() for e in element.split(',') if e.strip()]
+        if formula:
+            search_params["formula"] = formula
+        if chemsys:
+            search_params["chemsys"] = chemsys
+        search_params["spacegroup_number"] = spacegroup_number
+        search_params["crystal_system"] = crystal_system
+        search_params["theoretical"] = False
         
         docs = mpr.materials.summary.search(**search_params)
         
         if not docs:
-            if has_material_id:
-                error_msg = f"Material {material_id} not found"
-            else:
-                search_desc = []
-                if element:
-                    search_desc.append(f"element={element}")
-                if formula:
-                    search_desc.append(f"formula={formula}")
-                if chemsys:
-                    search_desc.append(f"chemsys={chemsys}")
-                search_desc.append(f"spacegroup={spacegroup_number}")
-                search_desc.append(f"crystal_system={crystal_system}")
-                search_desc.append("theoretical=False")
-                error_msg = f"No materials found matching criteria: {', '.join(search_desc)}"
-            
+            search_desc = []
+            if element:
+                search_desc.append(f"element={element}")
+            if formula:
+                search_desc.append(f"formula={formula}")
+            if chemsys:
+                search_desc.append(f"chemsys={chemsys}")
+            search_desc.append(f"spacegroup={spacegroup_number}")
+            search_desc.append(f"crystal_system={crystal_system}")
+            search_desc.append("theoretical=False")
+            error_msg = f"No materials found matching criteria: {', '.join(search_desc)}"
+        
             return error_result(
                 handler="materials",
                 function="get_elastic_properties",
@@ -142,11 +125,11 @@ def get_elastic_properties(
             )
         
         # If multiple materials found (in composition+structure mode), use the first one
-        if len(docs) > 1 and not has_material_id:
+        if len(docs) > 1:
             _log.info(f"Found {len(docs)} materials matching criteria, using first: {docs[0].material_id}")
         
         doc = docs[0]
-        actual_material_id = doc.material_id if hasattr(doc, 'material_id') else material_id
+        actual_material_id = doc.material_id if hasattr(doc, 'material_id') else None
         
         # Extract bulk modulus data
         bulk_modulus = doc.bulk_modulus if hasattr(doc, 'bulk_modulus') else None
@@ -161,18 +144,17 @@ def get_elastic_properties(
         }
         
         # Add search mode info
-        if not has_material_id:
-            data["search_mode"] = "composition_structure"
-            data["search_criteria"] = {
-                "element": element,
-                "formula": formula,
-                "chemsys": chemsys,
-                "spacegroup_number": spacegroup_number,
-                "crystal_system": crystal_system,
-                "theoretical": False
-            }
-            if len(docs) > 1:
-                data["num_matches_found"] = len(docs)
+        data["search_mode"] = "composition_structure"
+        data["search_criteria"] = {
+            "element": element,
+            "formula": formula,
+            "chemsys": chemsys,
+            "spacegroup_number": spacegroup_number,
+            "crystal_system": crystal_system,
+            "theoretical": False
+        }
+        if len(docs) > 1:
+            data["num_matches_found"] = len(docs)
         
         if bulk_modulus:
             # Handle both dict and object formats
@@ -395,7 +377,7 @@ def get_elastic_properties(
         )
         
     except Exception as e:
-        error_context = material_id if material_id else f"composition/structure search"
+        error_context =f"composition/structure search"
         _log.error(f"Error getting elastic properties for {error_context}: {e}", exc_info=True)
         formatted_error = format_field_error(e)
         return error_result(

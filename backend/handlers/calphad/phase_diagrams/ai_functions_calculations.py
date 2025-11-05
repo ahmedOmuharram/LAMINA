@@ -475,9 +475,9 @@ class CalculationsMixin:
                     if len(fractions) < 3 or len(fractions) == len(temps) // 2:
                         # Collapse instances to base names for debugging
                         base_phases = {}
-                        for k, v in temp_phases.items():
-                            base_name = str(k).split('#')[0].upper()
-                            base_phases[base_name] = base_phases.get(base_name, 0.0) + v
+                        for phase_name, frac in temp_phases.items():
+                            base_name = str(phase_name).split('#')[0].upper()
+                            base_phases[base_name] = base_phases.get(base_name, 0.0) + frac
                         top_phases = sorted(base_phases.items(), key=lambda x: x[1], reverse=True)[:5]
                         _log.info(f"At {T:.0f}K: top phases = {top_phases}, {phase_to_track} fraction = {phase_frac:.4f}")
                     

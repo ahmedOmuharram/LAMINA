@@ -90,14 +90,16 @@ def extract_stable_phases(eq: Any, composition: float, temperature: float) -> Li
             
             # Get phases with non-zero fraction
             for phase in np.unique(phase_array):
-                if phase == '' or not isinstance(phase, str):
+                # Convert numpy.str_ to regular str to avoid type errors
+                phase_str = str(phase)
+                if phase_str == '':
                     continue
                     
                 mask = (phase_array == phase)
                 fractions = phase_fraction[mask]
                 
                 if np.any(fractions > 1e-6):  # Threshold for "present"
-                    stable_phases.append(phase)
+                    stable_phases.append(phase_str)
         
         return stable_phases
         

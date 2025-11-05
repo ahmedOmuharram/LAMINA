@@ -24,12 +24,22 @@ from pathlib import Path
 import numpy as np
 
 try:
-    from pycalphad import Database, equilibrium
+    from pycalphad import Database
     import pycalphad.variables as v
 except ImportError:
     Database = None
-    equilibrium = None
+    _pycalphad_equilibrium_original = None
     v = None
+
+import warnings
+from collections import OrderedDict
+from collections.abc import Iterable
+from datetime import datetime
+from pycalphad.core.workspace import Workspace
+from pycalphad.core.light_dataset import LightDataset
+import numpy as np
+from pycalphad.property_framework import as_property
+
 
 _log = logging.getLogger(__name__)
 
@@ -167,11 +177,216 @@ def load_tdb_database(
     try:
         db = Database(str(db_path))
         _log.info(f"Loaded database: {db_path.name}")
+        
+        # FIX: Convert all phase names in the database to regular Python strings
+        # Pycalphad internally reads from db.phases dict, which may contain numpy.str_ keys
+        # We need to rebuild the phases dict with regular string keys
+        import numpy as np
+        if hasattr(db, 'phases') and isinstance(db.phases, dict):
+            # Log the first few phase names and their types for debugging
+            sample_phases = list(db.phases.keys())[:3]
+            _log.info(f"Sample phase names and types: {[(p, type(p).__name__) for p in sample_phases]}")
+            
+            # Check if any keys are numpy.str_ using multiple detection methods
+            has_numpy_str = False
+            numpy_str_phases = []
+            for k in db.phases.keys():
+                # Check both numpy.str_ and np.str_ (they might be different)
+                if type(k).__name__ == 'str_' or isinstance(k, np.str_) or 'numpy' in str(type(k)):
+                    has_numpy_str = True
+                    numpy_str_phases.append(k)
+            
+            if has_numpy_str:
+                _log.warning(f"Database has {len(numpy_str_phases)} numpy.str_ phase names - converting to regular Python str")
+                # Rebuild phases dict with string keys
+                new_phases = {}
+                for key, value in db.phases.items():
+                    str_key = str(key)  # Convert numpy.str_ to str
+                    new_phases[str_key] = value
+                db.phases = new_phases
+                _log.info(f"Converted {len(new_phases)} phase names to regular Python str")
+                # Verify conversion
+                sample_new = list(db.phases.keys())[:3]
+                _log.info(f"After conversion, sample types: {[(p, type(p).__name__) for p in sample_new]}")
+            else:
+                _log.info(f"All {len(db.phases)} phase names are already regular Python str")
+        
         return db
     except Exception as e:
         _log.error(f"Failed to load database {db_path}: {e}")
         return None
 
+def custom_equilibrium(dbf, comps, phases, conditions, output=None, model=None,
+                verbose=False, calc_opts=None, to_xarray=True,
+                parameters=None, solver=None, phase_records=None, **kwargs):
+    """
+    Calculate the equilibrium state of a system containing the specified
+    components and phases, under the specified conditions.
+
+    Copied from pycalphad.core.equilibrium.equilibrium, but with the numpy.str_ conversion fix.
+
+    Parameters
+    ----------
+    dbf : Database
+        Thermodynamic database containing the relevant parameters.
+    comps : list
+        Names of components to consider in the calculation.
+    phases : list or dict
+        Names of phases to consider in the calculation.
+    conditions : dict or (list of dict)
+        StateVariables and their corresponding value.
+    output : str or list of str, optional
+        Additional equilibrium model properties (e.g., CPM, HM, etc.) to compute.
+        These must be defined as attributes in the Model class of each phase.
+    model : Model, a dict of phase names to Model, or a seq of both, optional
+        Model class to use for each phase.
+    verbose : bool, optional
+        Print details of calculations. Useful for debugging.
+    calc_opts : dict, optional
+        Keyword arguments to pass to `calculate`, the energy/property calculation routine.
+    to_xarray : bool
+        Whether to return an xarray Dataset (True, default) or an EquilibriumResult.
+    parameters : dict, optional
+        Maps SymEngine Symbol to numbers, for overriding the values of parameters in the Database.
+    solver : pycalphad.core.solver.SolverBase
+        Instance of a solver that is used to calculate local equilibria.
+        Defaults to a pycalphad.core.solver.Solver.
+    phase_records : Optional[Mapping[str, PhaseRecord]]
+        Mapping of phase names to PhaseRecord objects with `'GM'` output. Must include
+        all active phases. The `model` argument must be a mapping of phase names to
+        instances of Model objects.
+
+    Returns
+    -------
+    Structured equilibrium calculation
+
+    Examples
+    --------
+    None yet.
+    """
+    # CRITICAL FIX: Monkey-patch PhaseRecordFactory.get() AND __getitem__() to convert numpy.str_ to str
+    # This prevents the Cython PhaseRecord from receiving numpy.str_ which it rejects
+    # NOTE: __getitem__ = get creates a reference at class definition time, so we must patch both!
+    from pycalphad.codegen.phase_record_factory import PhaseRecordFactory
+    original_prf_get = PhaseRecordFactory.get
+    original_prf_getitem = PhaseRecordFactory.__getitem__
+    
+    def patched_prf_get(self, phase_name):
+        phase_name_type = type(phase_name).__name__
+        if phase_name_type == 'str_' or isinstance(phase_name, np.str_):
+            _log.debug(f"custom_equilibrium: Converting numpy.str_ '{phase_name}' to str in .get()")
+            phase_name = str(phase_name)
+        return original_prf_get(self, phase_name)
+    
+    def patched_prf_getitem(self, phase_name):
+        phase_name_type = type(phase_name).__name__
+        if phase_name_type == 'str_' or isinstance(phase_name, np.str_):
+            _log.debug(f"custom_equilibrium: Converting numpy.str_ '{phase_name}' to str in __getitem__()")
+            phase_name = str(phase_name)
+        return original_prf_getitem(self, phase_name)
+    
+    PhaseRecordFactory.get = patched_prf_get
+    PhaseRecordFactory.__getitem__ = patched_prf_getitem
+    _log.debug("custom_equilibrium: Monkey-patched PhaseRecordFactory.get() and __getitem__()")
+    
+    try:
+        if output is None:
+            output = set()
+        elif (not isinstance(output, Iterable)) or isinstance(output, str):
+            output = [output]
+        
+        # CRITICAL FIX: Convert ALL strings to regular Python str to avoid numpy.str_ issues
+        # Convert phases - use list with dtype=object to prevent numpy string conversion
+        _log.debug(f"custom_equilibrium: Input phase types: {[type(p).__name__ for p in (phases if isinstance(phases, (list, tuple)) else phases.keys())][:5]}")
+        
+        if isinstance(phases, (list, tuple)):
+            # Create numpy array with dtype=object to force Python str, not numpy.str_
+            phases_array = np.array([str(p) for p in phases], dtype=object)
+            phases = list(phases_array)  # Convert back to list
+            _log.debug(f"custom_equilibrium: Converted phase types: {[type(p).__name__ for p in phases][:5]}")
+        elif isinstance(phases, dict):
+            phases = {str(k): v for k, v in phases.items()}
+        
+        # Convert components - use list with dtype=object
+        if isinstance(comps, (list, tuple)):
+            comps_array = np.array([str(c) for c in comps], dtype=object)
+            comps = list(comps_array)
+        
+        # AGGRESSIVE FIX: Force convert ALL phase names in the database to regular str
+        # This ensures Workspace doesn't encounter numpy.str_ when it accesses db.phases internally
+        if hasattr(dbf, 'phases') and isinstance(dbf.phases, dict):
+            # Always rebuild to ensure no numpy.str_ sneaks in
+            new_phases = {}
+            for key, value in dbf.phases.items():
+                str_key = str(key)
+                new_phases[str_key] = value
+            dbf.phases = new_phases
+            _log.debug(f"custom_equilibrium: Rebuilt db.phases dict with {len(new_phases)} regular str keys")
+        
+        _log.debug(f"custom_equilibrium: calling Workspace with {len(phases)} phases, {len(comps)} components (all converted to str)")
+        
+        # Call Workspace - this internally may create numpy.str_ in xarray coordinates
+        wks = Workspace(database=dbf, components=comps, phases=phases, conditions=conditions, models=model, parameters=parameters,
+                        verbose=verbose, calc_opts=calc_opts, solver=solver, phase_record_factory=phase_records)
+        
+        # CRITICAL POST-FIX: Immediately after Workspace creation, fix any numpy.str_ in the internal equilibrium result
+        # Access the internal eq property and fix Phase coordinates
+        if hasattr(wks, 'eq') and hasattr(wks.eq, 'Phase'):
+            try:
+                phase_coord = wks.eq.Phase
+                if hasattr(phase_coord, 'values'):
+                    phase_values = phase_coord.values
+                    if any(type(p).__name__ == 'str_' or isinstance(p, np.str_) for p in phase_values):
+                        _log.warning(f"custom_equilibrium: Workspace created numpy.str_ in Phase coords - fixing immediately")
+                        # Fix the Phase coordinate by reassigning with dtype=object
+                        fixed_phases = np.array([str(p) for p in phase_values], dtype=object)
+                        wks.eq.Phase = fixed_phases
+                        _log.debug(f"custom_equilibrium: Fixed Phase coords to regular Python str")
+            except Exception as e:
+                _log.debug(f"custom_equilibrium: Could not pre-fix Phase coords: {e}")
+        
+        # Compute equilibrium values of any additional user-specified properties
+        # We already computed these properties so don't recompute them
+        properties = wks.eq
+        conds_keys = [str(k) for k in properties.coords.keys() if k not in ('vertex', 'component', 'internal_dof')]
+        output = sorted(set(output) - {'GM', 'MU'})
+        for out in output:
+            cprop = as_property(out)
+            out = str(cprop)
+            result_array = np.zeros(properties.GM.shape) # Will not work for non-scalar properties
+            for index, composition_sets in wks.enumerate_composition_sets():
+                cur_conds = OrderedDict(zip(conds_keys,
+                                            [np.asarray(properties.coords[b][a], dtype=np.float64)
+                                            for a, b in zip(index, conds_keys)]))
+                chemical_potentials = properties.MU[index]
+                result_array[index] = cprop.compute_property(composition_sets, cur_conds, chemical_potentials)
+            result = LightDataset({out: (conds_keys, result_array)}, coords=properties.coords)
+            properties.merge(result, inplace=True, compat='equals')
+        if to_xarray:
+            properties = wks.eq.get_dataset()
+        
+        # CRITICAL FIX: Convert any numpy.str_ in Phase coordinates back to regular Python str
+        # This prevents downstream Cython errors when accessing phase data
+        if hasattr(properties, 'coords') and 'Phase' in properties.coords:
+            phase_coords = properties.coords['Phase'].values
+            # Check if any phase coordinates are numpy.str_
+            has_numpy_str = any(isinstance(p, np.str_) or type(p).__name__ == 'str_' for p in phase_coords)
+            if has_numpy_str:
+                _log.warning(f"custom_equilibrium: Found numpy.str_ in result Phase coords, converting to str")
+                # Convert numpy.str_ to regular str
+                new_phase_coords = np.array([str(p) for p in phase_coords], dtype=object)
+                properties = properties.assign_coords(Phase=new_phase_coords)
+                _log.debug(f"custom_equilibrium: Phase coords after conversion: {[type(p).__name__ for p in properties.coords['Phase'].values[:3]]}")
+        
+        properties.attrs['created'] = datetime.now().isoformat()
+        if len(kwargs) > 0:
+            warnings.warn('The following equilibrium keyword arguments were passed, but unused:\n{}'.format(kwargs))
+        return properties
+    finally:
+        # Restore the original PhaseRecordFactory methods
+        PhaseRecordFactory.get = original_prf_get
+        PhaseRecordFactory.__getitem__ = original_prf_getitem
+        _log.debug("custom_equilibrium: Restored original PhaseRecordFactory methods")
 
 # =============================================================================
 # EQUILIBRIUM CALCULATION UTILITIES
@@ -183,79 +398,45 @@ def compute_equilibrium(
     phases: List[str],
     composition: Dict[str, float],
     temperature: float,
-    pressure: float = 101325
+    pressure: float = 101325,
+    calc_opts: Optional[dict] = None,      # <— allow tuning density later
 ) -> Optional[Any]:
-    """
-    Calculate equilibrium at a specific point (single temperature and composition).
-    
-    Unified equilibrium calculation used across multiple handlers.
-    Handles composition constraints correctly for multi-component systems.
-    
-    Args:
-        db: PyCalphad Database instance
-        elements: List of element symbols (VA will be added automatically)
-        phases: List of phase names to consider
-        composition: Dictionary of element: mole_fraction (should sum to 1.0)
-        temperature: Temperature in K
-        pressure: Pressure in Pa (default: 101325)
-        
-    Returns:
-        Equilibrium result xarray Dataset or None if calculation fails
-        
-    Example:
-        >>> eq = compute_equilibrium(
-        ...     db, ['AL', 'ZN'], phases,
-        ...     {'AL': 0.3, 'ZN': 0.7},
-        ...     temperature=700
-        ... )
-    """
-    if equilibrium is None or v is None:
-        _log.error("pycalphad not installed")
-        return None
-    
     try:
-        # Normalize all elements to uppercase for pycalphad compatibility
-        # Make a copy to avoid modifying the original list
-        elements_upper = [el.upper() for el in elements]
-        
-        # Ensure VA is in elements list (required for many phases)
-        if 'VA' not in elements_upper:
-            elements_upper.append('VA')
-        
-        # Build conditions
-        conditions = {
-            v.T: temperature,
-            v.P: pressure,
-            v.N: 1.0
-        }
-        
-        # Add composition conditions (N-1 independent constraints for N components)
-        # Skip the first element as it's the dependent variable
-        comp_elements = list(composition.keys())
-        if len(comp_elements) > 1:
-            # For multicomponent systems, specify all but the first element
-            for el in comp_elements[1:]:
-                # Normalize to uppercase for pycalphad compatibility
-                el_upper = el.upper()
-                conditions[v.X(el_upper)] = composition[el]
-        else:
-            # For single element (pure substance), no composition constraint needed
-            pass
-        
-        # Calculate equilibrium
-        _log.info(f"Running equilibrium with {len(phases)} phases, T={temperature}K, composition={composition}")
-        eq = equilibrium(db, elements_upper, phases, conditions)
-        
+        # Only the requested system elements (uppercase) – *not* all DB elements
+        sys_elems = sorted({el.upper() for el in elements if el.upper() != 'VA'})
+        calc_elements = sys_elems + ['VA']
+
+        # Complete composition over system elements only
+        complete_composition = {el: 0.0 for el in sys_elems}
+        for k, vfrac in composition.items():
+            kU = k.upper()
+            if kU in complete_composition:
+                complete_composition[kU] = float(vfrac)
+
+        # Build conditions (N-1 independent X constraints)
+        conditions = {v.T: temperature, v.P: pressure, v.N: 1.0}
+        if len(sys_elems) > 1:
+            for el in sys_elems[1:]:
+                conditions[v.X(el)] = complete_composition.get(el, 0.0)
+
+        # Reasonable default calc options (you can override via calc_opts)
+        co = {"pdens": 120}
+        if calc_opts:
+            co.update(calc_opts)
+
+        _log.info(f"Running equilibrium with {len(phases)} phases, "
+                  f"T={temperature}K, components={calc_elements}, "
+                  f"X-conds={{...}}")
+        eq = custom_equilibrium(db, calc_elements, phases, conditions, calc_opts=co)
         return eq
-        
+
     except Exception as e:
         _log.error(f"Equilibrium calculation failed: {e}")
-        _log.error(f"  Elements (with VA): {elements_upper}")
-        _log.error(f"  Phases ({len(phases)}): {phases[:10]}...")  # Show first 10
-        _log.error(f"  Conditions: {conditions}")
-        _log.error(f"  Composition: {composition}")
+        _log.error(f"  Components: {calc_elements if 'calc_elements' in locals() else elements}")
+        _log.error(f"  Phases ({len(phases)}): {phases}")
+        _log.error(f"  Conditions: {conditions if 'conditions' in locals() else 'n/a'}")
+        _log.error(f"  Composition: {complete_composition if 'complete_composition' in locals() else composition}")
         return None
-
 
 def extract_phase_fractions(eq: Any, tolerance: float = 1e-4) -> Dict[str, float]:
     """
@@ -306,14 +487,16 @@ def extract_phase_fractions(eq: Any, tolerance: float = 1e-4) -> Dict[str, float
         # Convert to dictionary and filter by tolerance
         phase_fractions = {}
         for phase in frac_by_phase.coords['Phase'].values:
-            if not phase or phase == '':
+            # Convert numpy.str_ to regular str to avoid type errors
+            phase_str = str(phase)
+            if not phase_str or phase_str == '':
                 continue
             
-            frac = float(frac_by_phase.sel(Phase=phase).values)
+            frac = float(frac_by_phase.sel(Phase=phase_str).values)
             
             # Use slightly looser tolerance for reporting (handles boundary noise better)
             if not np.isnan(frac) and frac > tolerance:
-                phase_fractions[str(phase)] = frac
+                phase_fractions[phase_str] = frac
         
         return phase_fractions
         
@@ -326,14 +509,16 @@ def extract_phase_fractions(eq: Any, tolerance: float = 1e-4) -> Dict[str, float
             np_array = eq.NP.values
             
             for phase in np.unique(phase_array):
-                if phase == '' or not isinstance(phase, str):
+                # Convert numpy.str_ to regular str to avoid type errors
+                phase_str = str(phase)
+                if phase_str == '':
                     continue
                     
                 mask = (phase_array == phase)
                 fraction = np.sum(np_array[mask])
                 
                 if not np.isnan(fraction) and fraction > tolerance:
-                    phase_fractions[str(phase)] = float(fraction)
+                    phase_fractions[phase_str] = float(fraction)
             
             return phase_fractions
         except Exception as fallback_error:
@@ -382,15 +567,37 @@ def get_phase_composition(
     """
     try:
         eqp = eq.squeeze()
+        
+        # Find indices where this phase exists
         phase_mask = eqp['Phase'] == phase_name
+        
+        # Check if phase exists at all
+        if not phase_mask.any():
+            _log.warning(f"Phase {phase_name} not found in equilibrium result")
+            return {}
         
         phase_composition = {}
         for elem in elements:
             try:
-                x_data = eqp['X'].sel(component=elem).where(phase_mask, drop=False)
-                x_val = float(x_data.mean().values)
+                # Get composition data for this element
+                x_data = eqp['X'].sel(component=elem)
+                
+                # Extract values only where this phase exists
+                # Use .where() with drop=False to keep dimensions, then compute mean over valid values
+                masked_data = x_data.where(phase_mask)
+                
+                # Get the mean, ignoring NaN values
+                x_val = float(masked_data.mean(skipna=True).values)
+                
+                # Handle case where all values were NaN
+                if np.isnan(x_val):
+                    _log.debug(f"No valid composition data for {elem} in {phase_name}")
+                    continue
+                
                 if x_val > 1e-6:  # Only record non-negligible amounts
                     phase_composition[elem] = x_val
+                    _log.debug(f"Extracted {elem} composition from {phase_name}: {x_val:.4f}")
+                    
             except Exception as e:
                 _log.debug(f"Could not extract {elem} composition from {phase_name}: {e}")
                 continue
@@ -402,11 +609,20 @@ def get_phase_composition(
                 elem: frac / total_comp 
                 for elem, frac in phase_composition.items()
             }
+            _log.info(f"Phase {phase_name} composition (normalized): {phase_composition}")
+        else:
+            # This warning occurs when a phase exists in equilibrium but has no extractable
+            # composition data. Common causes:
+            # 1. Phase is marginally stable (very small fraction, near machine precision)
+            # 2. Numerical issues in equilibrium calculation for this phase
+            # 3. Phase at boundary conditions where composition data is uncertain
+            # This is handled gracefully - we return empty dict and calculations continue.
+            _log.warning(f"No valid composition data extracted for phase {phase_name}. Total composition: {total_comp}")
         
         return phase_composition
         
     except Exception as e:
-        _log.error(f"Error extracting phase composition: {e}")
+        _log.error(f"Error extracting phase composition for {phase_name}: {e}", exc_info=True)
         return {}
 
 
@@ -687,7 +903,8 @@ def compute_equilibrium_microstructure(
             }
         
         # Get all phases (simplified - for more control, use CalPhadHandler)
-        phases = list(db.phases.keys())
+        # Convert phase names to regular Python strings to avoid numpy.str_ issues
+        phases = [str(p) for p in db.phases.keys()]
         
         # Normalize composition
         composition = normalize_composition(composition)

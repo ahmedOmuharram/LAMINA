@@ -213,9 +213,6 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
         completion_tokens = count_tokens(completion_text, model_name)
         total_tokens = prompt_tokens + completion_tokens
         
-        print(f"DEBUG: Token counts - prompt: {prompt_tokens}, completion: {completion_tokens}, total: {total_tokens}", flush=True)
-        print(f"DEBUG: Completion text length: {len(completion_text)} chars", flush=True)
-        
         # Send usage information
         yield usage_event(prompt_tokens, completion_tokens, total_tokens, model_name)
 

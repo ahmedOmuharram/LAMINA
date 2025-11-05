@@ -287,15 +287,36 @@ class AlloyHandler(BaseHandler):
                     self.mpr
                 )
             
-            # Step 3: Assess mechanical effects
-            _log.info("Step 3: Assessing mechanical effects...")
-            mech_assessment = assess_mechanical_effects(matrix_desc, sec_descs, microstructure)
+            # Step 3: Assess mechanical effects (physics-based models: Orowan, Hall-Petch, embrittlement)
+            _log.info("Step 3: Assessing mechanical effects with physics-based models...")
+            
+            # Build phase categories for assessment
+            phase_categories = {}
+            for phase_name in microstructure["phase_fractions"].keys():
+                # Categorize based on phase name patterns
+                phase_lower = phase_name.lower()
+                if "laves" in phase_lower:
+                    phase_categories[phase_name] = "laves"
+                elif "tau" in phase_lower or "τ" in phase_lower:
+                    phase_categories[phase_name] = "tau"
+                elif "gamma" in phase_lower or "γ" in phase_lower:
+                    phase_categories[phase_name] = "gamma"
+            
+            # Compute physics-based assessment (Orowan, coherency, Hall-Petch, embrittlement)
+            mech_assessment = assess_mechanical_effects(
+                matrix_desc=matrix_desc,
+                sec_descs=sec_descs,
+                microstructure=microstructure,
+                phase_categories=phase_categories
+            )
             
             # Step 3b: Assess stiffness (elastic modulus) of matrix phase
             _log.info("Step 3b: Assessing matrix stiffness...")
             stiffness_assessment = estimate_phase_modulus(
-                microstructure["matrix_phase"],
-                microstructure.get("matrix_phase_composition", {})
+                matrix_phase_name=microstructure["matrix_phase"],
+                matrix_phase_composition=microstructure.get("matrix_phase_composition", {}),
+                temperature_K=temperature_K,
+                fallback_to_bulk_composition=comp_dict
             )
             
             # Step 4: Verify claims
@@ -325,9 +346,14 @@ class AlloyHandler(BaseHandler):
                 citations=["pycalphad", "Materials Project"],
                 confidence=Confidence.MEDIUM,
                 notes=[
-                    "Equilibrium phases calculated using CALPHAD thermodynamics",
-                    "Mechanical properties estimated from Materials Project elastic data",
-                    "Stiffness changes assessed using ±10% threshold (engineering practice)"
+                    n for n in [
+                        "Equilibrium phases calculated using CALPHAD thermodynamics",
+                        "Mechanical properties from Materials Project elastic data (VRH averaging)",
+                        "Stiffness changes assessed using ±10% threshold (engineering practice)",
+                        f"Yield strength: {mech_assessment.get('yield_strength_MPa')} MPa" if mech_assessment.get('yield_strength_MPa') is not None else None,
+                        f"Embrittlement risk score: {mech_assessment.get('embrittlement_score'):.3f}" if mech_assessment.get('embrittlement_score') is not None else None,
+                        "Physics-based models: Ashby-Orowan, coherency strengthening, Hall-Petch, Pugh ratio embrittlement"
+                    ] if n is not None
                 ],
                 caveats=[
                     "CALPHAD predictions assume equilibrium conditions",

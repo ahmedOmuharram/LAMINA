@@ -14,6 +14,7 @@ Organization:
     - database.py: Database exclusion patterns and phase name mappings
     - electrochemistry.py: Battery diffusion barriers and structure defaults
     - magnetics.py: Magnetic conversion factors
+    - elasticity.py: Elastic moduli and temperature coefficients
     - api.py: API query parameter constants
     - superconductors.py: Cuprate and other superconductor structural data
 
@@ -84,6 +85,15 @@ from .magnetics import (
     MUB_PER_BOHR3_TO_KA_PER_M as MAGNETICS_MUB_PER_BOHR3_TO_KA_PER_M,
 )
 
+# Elasticity
+from .elasticity import (
+    ELEMENT_MODULUS_GPA,
+    TEMP_COEFFICIENT_PER_K,
+    ROOM_TEMPERATURE_K,
+    KNOWN_MODULUS_ELEMENTS,
+    KNOWN_TEMP_COEFF_ELEMENTS,
+)
+
 # API constants
 from .api import (
     RANGE_KEYS,
@@ -134,6 +144,12 @@ __all__ = [
     # Electrochemistry
     "KNOWN_DIFFUSION_BARRIERS",
     "STRUCTURE_DIFFUSION_DEFAULTS",
+    # Elasticity
+    "ELEMENT_MODULUS_GPA",
+    "TEMP_COEFFICIENT_PER_K",
+    "ROOM_TEMPERATURE_K",
+    "KNOWN_MODULUS_ELEMENTS",
+    "KNOWN_TEMP_COEFF_ELEMENTS",
     # API
     "RANGE_KEYS",
     # Superconductors

@@ -54,7 +54,8 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
     def _filter_phases_for_system(self, db, pair: tuple[str, str], include_metastable: bool=False) -> list[str]:
         """Filter phases to only include those relevant for the given element pair."""
         A, B = pair
-        all_names = list(db.phases.keys())
+        # Convert phase names to regular Python strings to avoid numpy.str_ issues
+        all_names = [str(p) for p in db.phases.keys()]
 
         # 1) exclude helpers/metastables unless explicitly included
         candidates = []
@@ -344,7 +345,8 @@ class CalPhadHandler(PlottingMixin, AnalysisMixin, AIFunctionsMixin, BaseHandler
         Returns:
             List of relevant phase names
         """
-        all_phases = list(db.phases.keys())
+        # Convert phase names to regular Python strings to avoid numpy.str_ issues
+        all_phases = [str(p) for p in db.phases.keys()]
         candidates = []
         
         # Filter out excluded phases unless metastable requested

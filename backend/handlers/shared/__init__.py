@@ -6,6 +6,7 @@ This module contains:
 - result_wrappers: Standardized result formatting for AI functions
 - constants: Physical constants, conversion factors, and reference data
 - calphad_utils: CALPHAD/thermodynamic calculation functions
+- elasticity_utils: Elastic modulus estimation and temperature corrections
 
 These utilities are shared across handlers and don't belong to any specific domain.
 """
@@ -15,6 +16,7 @@ from . import calphad_utils
 from . import converters
 from . import result_wrappers
 from . import constants
+from . import elasticity_utils
 
 # Re-export commonly used CALPHAD functions
 from .calphad_utils import (
@@ -30,6 +32,13 @@ from .calphad_utils import (
     verify_elements_in_database,
     normalize_composition,
     compute_equilibrium_microstructure,
+)
+
+# Re-export elasticity utilities
+from .elasticity_utils import (
+    normalize_matrix_composition,
+    apply_temperature_correction,
+    estimate_phase_modulus,
 )
 
 # Re-export commonly used converters
@@ -77,6 +86,7 @@ __all__ = [
     "converters",
     "result_wrappers",
     "constants",
+    "elasticity_utils",
     
     # CALPHAD utilities
     "find_tdb_database",
@@ -91,6 +101,11 @@ __all__ = [
     "verify_elements_in_database",
     "normalize_composition",
     "compute_equilibrium_microstructure",
+    
+    # Elasticity utilities
+    "normalize_matrix_composition",
+    "apply_temperature_correction",
+    "estimate_phase_modulus",
     
     # Energy conversions
     "kjmol_to_ev",

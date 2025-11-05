@@ -3,39 +3,44 @@ Elastic modulus (stiffness) estimation utilities for alloy phases.
 
 This module provides functions to estimate Young's modulus using rule-of-mixtures
 and assess stiffness changes in alloys.
+
+NOTE: Main implementation moved to shared/elasticity_utils.py for reusability.
+This module now provides a thin wrapper for backward compatibility.
 """
 from __future__ import annotations
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+# Import from shared constants (comprehensive element modulus data)
+from backend.handlers.shared.constants.elasticity import ELEMENT_MODULUS_GPA
+
+# Import robust implementation from shared utilities
+from backend.handlers.shared.elasticity_utils import (
+    estimate_phase_modulus as _estimate_phase_modulus_robust,
+    normalize_matrix_composition,
+    apply_temperature_correction,
+)
 
 _log = logging.getLogger(__name__)
-
-
-# Handbook-ish Young's moduli at room temp (isotropic polycrystal, GPa)
-# Sources: ASM Handbook, CRC Materials Science & Engineering Handbook
-ELEMENT_MODULUS_GPA = {
-    "AL": 70.0,   # Aluminum
-    "MG": 45.0,   # Magnesium
-    "CU": 117.0,  # Copper
-    "ZN": 83.0,   # Zinc
-    "FE": 210.0,  # Iron
-    "NI": 170.0,  # Nickel
-    "TI": 116.0,  # Titanium
-    "CR": 279.0,  # Chromium
-    "MN": 191.0,  # Manganese
-    "SI": 165.0,  # Silicon (approximate for alloys)
-}
 
 
 def estimate_phase_modulus(
     matrix_phase_name: str,
     matrix_phase_composition: Dict[str, float],
+    temperature_K: Optional[float] = None,
+    fallback_to_bulk_composition: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
     """
     Estimate the effective Young's modulus (stiffness) of the matrix phase
-    by simple rule-of-mixtures over its elemental makeup.
+    by rule-of-mixtures over its elemental makeup.
     
-    This provides a first-order estimate of how alloying affects stiffness.
+    This is a robust implementation that:
+    - Normalizes CALPHAD compositions (handles sublattice markers, vacancies)
+    - Falls back to bulk composition if phase composition is empty
+    - Handles unknown elements gracefully (never returns nulls unless unavoidable)
+    - Applies optional temperature corrections
+    - Provides detailed diagnostic notes
+    
     Uses a ±10% threshold to classify changes as "significant" (matching
     engineering practice where commercial Al alloys have ~same stiffness as pure Al).
     
@@ -43,6 +48,8 @@ def estimate_phase_modulus(
         matrix_phase_name: CALPHAD phase label (e.g., "FCC_A1", "BCC_A2")
         matrix_phase_composition: Dict with atomic fractions of elements in the matrix
                                  (e.g., {"AL": 0.96, "MG": 0.04})
+        temperature_K: Temperature in K for temperature correction (optional)
+        fallback_to_bulk_composition: Bulk alloy composition to use if phase comp empty
     
     Returns:
         {
@@ -52,91 +59,125 @@ def estimate_phase_modulus(
           "relative_change": float or None,  # (E_matrix - E_baseline)/E_baseline
           "percent_change": float or None,   # relative_change * 100
           "assessment": "increase" | "decrease" | "no_significant_change" | "unknown",
-          "matrix_composition": Dict[str, float],
+          "matrix_composition": Dict[str, float],  # normalized composition
+          "temperature_K": float or None,
           "notes": str
         }
+        
+    Example:
+        >>> # Room temperature estimation
+        >>> result = estimate_phase_modulus("FCC_A1", {"AL": 0.96, "MG": 0.04})
+        >>> print(result["E_matrix_GPa"])  # ~68.6 GPa
+        
+        >>> # High temperature with fallback
+        >>> result = estimate_phase_modulus(
+        ...     "FCC_A1",
+        ...     {},  # empty phase composition
+        ...     temperature_K=700.0,
+        ...     fallback_to_bulk_composition={"AL": 0.8, "ZN": 0.2}
+        ... )
+        >>> print(result["E_matrix_GPa"])  # ~52.5 GPa (temp-corrected)
     """
-    if not matrix_phase_composition:
-        return {
-            "E_matrix_GPa": None,
-            "E_baseline_GPa": None,
-            "baseline_element": None,
-            "relative_change": None,
-            "percent_change": None,
-            "assessment": "unknown",
-            "matrix_composition": {},
-            "notes": "No matrix composition available."
-        }
-    
-    # Figure out dominant element (highest atomic fraction in matrix phase)
-    dominant_elem = max(matrix_phase_composition.keys(),
-                       key=lambda el: matrix_phase_composition[el])
-    
-    # Need its baseline modulus
-    if dominant_elem not in ELEMENT_MODULUS_GPA:
-        return {
-            "E_matrix_GPa": None,
-            "E_baseline_GPa": None,
-            "baseline_element": dominant_elem,
-            "relative_change": None,
-            "percent_change": None,
-            "assessment": "unknown",
-            "matrix_composition": matrix_phase_composition,
-            "notes": f"No baseline modulus data available for dominant element {dominant_elem}"
-        }
-    
-    E_baseline = ELEMENT_MODULUS_GPA[dominant_elem]
-    
-    # Compute rule-of-mixtures modulus: E ≈ Σ(x_i * E_i)
-    E_matrix = 0.0
-    missing_data = []
-    for el, atfrac in matrix_phase_composition.items():
-        if el in ELEMENT_MODULUS_GPA:
-            E_matrix += atfrac * ELEMENT_MODULUS_GPA[el]
-        else:
-            missing_data.append(el)
-    
-    # Calculate relative change
-    if E_baseline > 0:
-        rel_change = (E_matrix - E_baseline) / E_baseline
-        pct_change = rel_change * 100.0
-    else:
-        rel_change = None
-        pct_change = None
-    
-    # Classify significance
-    # Threshold: ±10% is "significant" change
-    # This is because real commercial alloys (2xxx, 5xxx, 6xxx, 7xxx Al)
-    # all have moduli within ~5% of pure Al despite varying alloying content
-    if rel_change is None:
-        assessment = "unknown"
-    else:
-        if rel_change >= 0.10:
-            assessment = "increase"
-        elif rel_change <= -0.10:
-            assessment = "decrease"
-        else:
-            assessment = "no_significant_change"
-    
-    notes_parts = [
-        f"Dominant element: {dominant_elem} (baseline E = {E_baseline:.1f} GPa).",
-        f"Rule-of-mixtures estimate: E_matrix = {E_matrix:.1f} GPa."
-    ]
-    
-    if missing_data:
-        notes_parts.append(f"Missing modulus data for: {', '.join(missing_data)}.")
-    
-    if rel_change is not None:
-        notes_parts.append(f"Relative change: {pct_change:+.2f}%.")
-    
-    return {
-        "E_matrix_GPa": round(E_matrix, 2),
-        "E_baseline_GPa": E_baseline,
-        "baseline_element": dominant_elem,
-        "relative_change": round(rel_change, 4) if rel_change is not None else None,
-        "percent_change": round(pct_change, 2) if pct_change is not None else None,
-        "assessment": assessment,
-        "matrix_composition": matrix_phase_composition,
-        "notes": " ".join(notes_parts)
-    }
+    return _estimate_phase_modulus_robust(
+        matrix_phase_name=matrix_phase_name,
+        matrix_phase_composition=matrix_phase_composition,
+        temperature_K=temperature_K,
+        fallback_to_bulk_composition=fallback_to_bulk_composition
+    )
 
+
+def estimate_composite_modulus_vrh(
+    phase_fractions: Dict[str, float],
+    phase_mechanical_descriptors: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Estimate composite elastic moduli using Voigt-Reuss-Hill (VRH) averaging.
+    
+    This is a physics-based approach for multi-phase materials that properly
+    accounts for the elastic properties of each phase. More rigorous than
+    simple rule-of-mixtures when dealing with phases of very different stiffness.
+    
+    Args:
+        phase_fractions: Dict mapping phase name to volume fraction
+        phase_mechanical_descriptors: Dict mapping phase name to mechanical descriptors
+                                     (must contain "bulk_modulus_GPa" and "shear_modulus_GPa")
+    
+    Returns:
+        {
+          "B_composite_GPa": float,      # Bulk modulus (VRH average)
+          "G_composite_GPa": float,      # Shear modulus (VRH average)
+          "E_composite_GPa": float,      # Young's modulus
+          "nu_composite": float,         # Poisson ratio
+          "method": "VRH",
+          "notes": str
+        }
+        
+    Example:
+        >>> phase_fractions = {"FCC_A1": 0.85, "AL2FE": 0.15}
+        >>> phase_descs = {
+        ...     "FCC_A1": {"bulk_modulus_GPa": 76.0, "shear_modulus_GPa": 26.0},
+        ...     "AL2FE": {"bulk_modulus_GPa": 170.0, "shear_modulus_GPa": 85.0}
+        ... }
+        >>> result = estimate_composite_modulus_vrh(phase_fractions, phase_descs)
+        >>> print(result["E_composite_GPa"])  # ~82 GPa
+    
+    References:
+        • Watt et al., Phys. Earth Planet. Inter. 10 (1975) — VRH averaging
+    """
+    try:
+        from .mechanical_utils import PhaseElastic, vrh_composite_moduli
+        
+        # Build PhaseElastic objects from descriptors
+        phase_elastic_data = {}
+        for phase_name, desc in phase_mechanical_descriptors.items():
+            B = desc.get("bulk_modulus_GPa")
+            G = desc.get("shear_modulus_GPa")
+            if B is None or G is None:
+                return {
+                    "B_composite_GPa": None,
+                    "G_composite_GPa": None,
+                    "E_composite_GPa": None,
+                    "nu_composite": None,
+                    "method": "VRH",
+                    "notes": f"Missing elastic data for phase {phase_name}"
+                }
+            
+            phase_elastic_data[phase_name] = PhaseElastic(
+                name=phase_name,
+                B_GPa=B,
+                G_GPa=G,
+                source=desc.get("source", "unknown")
+            )
+        
+        # Compute VRH composite moduli
+        B, G, E, nu = vrh_composite_moduli(phase_fractions, phase_elastic_data)
+        
+        return {
+            "B_composite_GPa": round(B, 2),
+            "G_composite_GPa": round(G, 2),
+            "E_composite_GPa": round(E, 2),
+            "nu_composite": round(nu, 4),
+            "method": "VRH",
+            "notes": f"Voigt-Reuss-Hill average over {len(phase_fractions)} phases"
+        }
+        
+    except Exception as e:
+        _log.error(f"Error computing VRH composite modulus: {e}", exc_info=True)
+        return {
+            "B_composite_GPa": None,
+            "G_composite_GPa": None,
+            "E_composite_GPa": None,
+            "nu_composite": None,
+            "method": "VRH",
+            "notes": f"Error: {str(e)}"
+        }
+
+
+# Export additional utilities for advanced use cases
+__all__ = [
+    "estimate_phase_modulus",
+    "estimate_composite_modulus_vrh",
+    "normalize_matrix_composition",
+    "apply_temperature_correction",
+    "ELEMENT_MODULUS_GPA",
+]

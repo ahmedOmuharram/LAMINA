@@ -6,9 +6,10 @@ Contains sophisticated verification and fact-checking functions:
 - sweep_microstructure_claim_over_region: Sweep composition space to evaluate claims
 - fact_check_microstructure_claim: Fact-check microstructure claims
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 import time
+import asyncio
 
 from kani.ai_function import ai_function
 from typing_extensions import Annotated
@@ -58,7 +59,6 @@ class VerificationMixin:
         start_time = time.time()
         
         try:
-            from pycalphad import Database, equilibrium, variables as v
             import numpy as np
             
             # Parse elements from system
@@ -79,7 +79,10 @@ class VerificationMixin:
             
             is_ternary = len(elements) >= 3
             system_str = "-".join(elements)
-            
+            _log.debug(f"System: {system_str}")
+            _log.debug(f"Elements: {elements}")
+            _log.debug(f"Is ternary: {is_ternary}")
+
             # Validate threshold element
             threshold_elem = threshold_element.strip().upper()
             if threshold_elem not in elements:
@@ -134,7 +137,8 @@ class VerificationMixin:
                 # Binary system: one element varies, the other is balance
                 balance_elem = [e for e in elements if e != threshold_elem][0]
                 fixed_elem = None
-            
+            _log.debug(f"Balance element: {balance_elem}")
+            _log.debug(f"Fixed element: {fixed_elem}")
             # Load database
             db = load_tdb_database(elements)
             if db is None:
@@ -153,15 +157,16 @@ class VerificationMixin:
                 phases = self._filter_phases_for_system(db, tuple(elements[:2]))
             else:
                 phases = get_phases_for_elements(db, elements, self._phase_elements)
-            
+            _log.debug(f"Phases: {phases}")
+
             # Normalize phase name and handle category names
             from .fact_checker import PHASE_CLASSIFICATION
-            
+            _log.debug(f"Phase classification: {PHASE_CLASSIFICATION}")
             phase_name_upper = phase_name.upper()
             available_phases = sorted(phases)
             
             # Debug: List all available phases
-            _log.info(f"Available phases in {system_str} database: {available_phases}")
+            _log.debug(f"Available phases in {system_str} database: {available_phases}")
             
             # Check if input is a category name (e.g., "Laves", "tau", "gamma")
             # Map it to actual database phase names
@@ -188,7 +193,7 @@ class VerificationMixin:
                 
                 if candidate_phases:
                     phase_to_check = candidate_phases[0]  # Use first as representative
-                    _log.info(f"Mapped category '{phase_name}' to database phases: {candidate_phases}")
+                    _log.debug(f"Mapped category '{phase_name}' to database phases: {candidate_phases}")
             
             # Final check: did we find any matching phase?
             if not phase_to_check:
@@ -225,9 +230,9 @@ class VerificationMixin:
             pycalphad_elements = elements + ['VA']
             results = []
             
-            _log.info(f"Checking phase '{phase_to_check}' formation across {len(threshold_compositions)} compositions at T={temperature}K")
+            _log.debug(f"Checking phase '{phase_to_check}' formation across {len(threshold_compositions)} compositions at T={temperature}K")
             if is_ternary:
-                _log.info(f"  Ternary: varying {threshold_elem}, fixing {fixed_elem}={fixed_composition}%, balance={balance_elem}")
+                _log.debug(f"  Ternary: varying {threshold_elem}, fixing {fixed_elem}={fixed_composition}%, balance={balance_elem}")
             
             for x_threshold in threshold_compositions:
                 try:
@@ -274,13 +279,13 @@ class VerificationMixin:
                     # Store results with at.% for all elements
                     result = {
                         'phase_present': phase_present,
-                        'phase_fraction': phase_fraction,
-                        'all_phases': phase_fractions
+                        'phase_fraction': float(phase_fraction),
+                        'all_phases': {k: float(v) for k, v in phase_fractions.items()}
                     }
                     
                     # Add at.% for each element
                     for el in elements:
-                        result[f'at_pct_{el}'] = comp_dict[el] * 100
+                        result[f'at_pct_{el}'] = float(comp_dict[el] * 100)
                     
                     results.append(result)
                     
@@ -331,14 +336,14 @@ class VerificationMixin:
                 example_phases = []
                 for p, f in sorted(example['all_phases'].items(), key=lambda x: -x[1]):
                     if f > 0.01:
-                        phase_entry = {"name": p, "fraction": f}
+                        phase_entry = {"name": p, "fraction": float(f)}
                         if p == 'FCC_A1':
                             host_el = max(elements, key=lambda el: example[f'at_pct_{el}'])
                             phase_entry["host_element"] = host_el
                         example_phases.append(phase_entry)
                 
                 below_threshold_example = {
-                    "composition": {el: example[f'at_pct_{el}'] for el in elements},
+                    "composition": {el: float(example[f'at_pct_{el}']) for el in elements},
                     "phases": example_phases
                 }
             
@@ -350,14 +355,14 @@ class VerificationMixin:
                 example_phases = []
                 for p, f in sorted(example['all_phases'].items(), key=lambda x: -x[1]):
                     if f > 0.01:
-                        phase_entry = {"name": p, "fraction": f}
+                        phase_entry = {"name": p, "fraction": float(f)}
                         if p == 'FCC_A1':
                             host_el = max(elements, key=lambda el: example[f'at_pct_{el}'])
                             phase_entry["host_element"] = host_el
                         example_phases.append(phase_entry)
                 
                 above_threshold_example = {
-                    "composition": {el: example[f'at_pct_{el}'] for el in elements},
+                    "composition": {el: float(example[f'at_pct_{el}']) for el in elements},
                     "phases": example_phases
                 }
             
@@ -367,7 +372,7 @@ class VerificationMixin:
                 other_phases_list = []
                 for p, f in sorted(r['all_phases'].items(), key=lambda x: -x[1]):
                     if p != phase_to_check and f > 0.05:
-                        phase_entry = {"name": p, "fraction": f}
+                        phase_entry = {"name": p, "fraction": float(f)}
                         if p == 'FCC_A1':
                             host_el = max(elements, key=lambda el: r[f'at_pct_{el}'])
                             phase_entry["host_element"] = host_el
@@ -376,9 +381,9 @@ class VerificationMixin:
                             break
                 
                 detailed_compositions.append({
-                    "composition": {el: r[f'at_pct_{el}'] for el in elements},
+                    "composition": {el: float(r[f'at_pct_{el}']) for el in elements},
                     "phase_present": r['phase_present'],
-                    "phase_fraction": r['phase_fraction'] if r['phase_fraction'] > 0 else None,
+                    "phase_fraction": float(r['phase_fraction']) if r['phase_fraction'] > 0 else None,
                     "other_major_phases": other_phases_list
                 })
             
@@ -464,7 +469,8 @@ class VerificationMixin:
         grid_points: Annotated[int, AIParam(desc="Number of grid points per element (default: 4 = 16 total points for binary variation)")] = 4,
         composition_type: Annotated[str, AIParam(desc="Composition units: 'atomic' (at.%, DEFAULT) or 'weight' (wt.%)")] = "atomic",
         process_type: Annotated[str, AIParam(desc="Process model: 'as_cast' or 'equilibrium_300K'")] = "as_cast",
-        require_mechanical_desirability: Annotated[bool, AIParam(desc="If true, also require positive mechanical desirability score")] = False
+        require_mechanical_desirability: Annotated[bool, AIParam(desc="If true, also require positive mechanical desirability score")] = False,
+        stop_on_first_violation: Annotated[bool, AIParam(desc="If true, stop as soon as a point contradicts the claim (faster for universal claims)")] = False
     ) -> Dict[str, Any]:
         """
         Sweep over a composition region and test whether a claim holds universally.
@@ -593,7 +599,20 @@ class VerificationMixin:
             if not balance_element:
                 return {"success": False, "error": "Need one balance element not specified in ranges", "citations": ["pycalphad"]}
             
-            _log.info(f"Sweeping {system} with ranges {ranges_dict}, balance={balance_element}")
+            _log.debug(f"Sweeping {system} with ranges {ranges_dict}, balance={balance_element}")
+            
+            # Pre-load database and phases once for the entire grid (performance optimization)
+            _log.debug(f"Pre-loading thermodynamic database for {'-'.join(elements)} system...")
+            db = load_tdb_database(elements)
+            if db is None:
+                return {
+                    "success": False,
+                    "error": f"No thermodynamic database found for {'-'.join(elements)}",
+                    "citations": ["pycalphad"]
+                }
+            
+            phases = get_phases_for_elements(db, elements, self._phase_elements)
+            _log.debug(f"Pre-loaded {len(phases)} phases: {', '.join(phases[:10])}{'...' if len(phases) > 10 else ''}")
             
             # Build grid
             grid_elements = list(ranges_dict.keys())
@@ -605,11 +624,13 @@ class VerificationMixin:
                 grid_compositions = []
                 
                 for v1 in el1_vals:
-                    comp = {balance_element: 100 - v1, el1: v1}
+                    # Normalize all element names to uppercase to avoid case sensitivity issues
+                    comp = {balance_element.upper(): float(100 - v1), el1.upper(): float(v1)}
                     # Add other elements as 0
                     for el in elements:
-                        if el not in comp:
-                            comp[el] = 0.0
+                        el_upper = el.upper()
+                        if el_upper not in comp:
+                            comp[el_upper] = 0.0
                     grid_compositions.append(comp)
                     
             elif len(grid_elements) == 2:
@@ -621,32 +642,57 @@ class VerificationMixin:
                 el1_vals = np.linspace(el1_min, el1_max - 1e-6, grid_points)
                 el2_vals = np.linspace(el2_min, el2_max - 1e-6, grid_points)
                 
+                # Determine if we should skip binary edges
+                # Skip if: (1) ternary system, (2) both ranges start from 0
+                is_ternary = len(elements) >= 3
+                skip_binary_edges = is_ternary and el1_min == 0 and el2_min == 0
+                
+                if skip_binary_edges:
+                    _log.info(f"Ternary system detected: will skip binary edge compositions (where {el1}=0 or {el2}=0)")
+                
                 grid_compositions = []
                 for v1 in el1_vals:
                     for v2 in el2_vals:
                         balance_val = 100 - v1 - v2
                         if balance_val >= 0:  # Valid composition
-                            comp = {balance_element: balance_val, el1: v1, el2: v2}
+                            # Skip binary edges in ternary systems
+                            # (compositions where one varying element is exactly 0)
+                            if skip_binary_edges and (v1 == 0 or v2 == 0):
+                                _log.debug(f"Skipping binary edge: {el1}={v1:.3f}, {el2}={v2:.3f}")
+                                continue
+                            
+                            # Normalize all element names to uppercase to avoid case sensitivity issues
+                            comp = {
+                                balance_element.upper(): float(balance_val), 
+                                el1.upper(): float(v1), 
+                                el2.upper(): float(v2)
+                            }
                             # Add other elements as 0
                             for el in elements:
-                                if el not in comp:
-                                    comp[el] = 0.0
+                                el_upper = el.upper()
+                                if el_upper not in comp:
+                                    comp[el_upper] = 0.0
                             grid_compositions.append(comp)
             else:
                 return {"success": False, "error": "Only supports 1D or 2D sweeps currently", "citations": ["pycalphad"]}
             
             _log.info(f"Generated {len(grid_compositions)} grid points")
             
-            # Evaluate claim at each grid point
-            results_grid = []
+            # Log all generated compositions for debugging
+            for idx, comp in enumerate(grid_compositions):
+                comp_summary = ", ".join([f"{el}={comp[el]:.3f}" for el in elements if comp[el] > 0.001])
+                _log.info(f"Grid point {idx+1}/{len(grid_compositions)}: {comp_summary}")
             
-            for comp_dict in grid_compositions:
+            # Evaluate claim at each grid point - PARALLEL EXECUTION
+            # Create coroutines for all grid points
+            async def process_grid_point(comp_dict):
+                """Process a single grid point and return structured result."""
                 # Format composition string with separators for parser compatibility
                 # Use "-" separator when we have decimals to avoid ambiguity
                 comp_parts = [f"{el}{comp_dict[el]:.1f}" for el in elements if comp_dict[el] > 0.01]
                 comp_str = "-".join(comp_parts)
                 
-                # Call the single-point checker
+                # Call the single-point checker (reuse pre-loaded db and phases)
                 result = await self.fact_check_microstructure_claim(
                     system=system,
                     composition=comp_str,
@@ -657,7 +703,9 @@ class VerificationMixin:
                     max_fraction=max_fraction,
                     process_type=process_type,
                     temperature=None,
-                    composition_constraints=None  # Don't gate - we're generating valid points
+                    composition_constraints=None,  # Don't gate - we're generating valid points
+                    preloaded_db=db,  # Reuse pre-loaded database
+                    preloaded_phases=phases  # Reuse pre-filtered phase list
                 )
                 
                 # Extract phase information from supporting_data (handles both "phases" and "all_phases" keys)
@@ -695,7 +743,42 @@ class VerificationMixin:
                 if error_msg:
                     grid_entry["error"] = error_msg
                 
-                results_grid.append(grid_entry)
+                return grid_entry
+            
+            # Run all grid points in parallel (with optional early stopping)
+            _log.info(f"Starting parallel evaluation of {len(grid_compositions)} grid points...")
+            parallel_start = time.time()
+            
+            if stop_on_first_violation:
+                # Use as_completed for early stopping on first violation (score < 0)
+                tasks = [process_grid_point(comp) for comp in grid_compositions]
+                results_grid = []
+                stopped_early = False
+                
+                for coro in asyncio.as_completed(tasks):
+                    result = await coro
+                    results_grid.append(result)
+                    
+                    # Stop if we find a violation (negative score indicates contradiction)
+                    if result.get("score", 0) < 0:
+                        _log.info(f"Early stop: Found violation at {result.get('composition_str')} (score={result.get('score')})")
+                        stopped_early = True
+                        # Cancel remaining tasks
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        break
+                
+                parallel_duration = time.time() - parallel_start
+                if stopped_early:
+                    _log.info(f"Stopped early after {len(results_grid)}/{len(grid_compositions)} points in {parallel_duration:.2f}s")
+                else:
+                    _log.info(f"Completed all {len(results_grid)} points in {parallel_duration:.2f}s (no violations found)")
+            else:
+                # Standard parallel execution (all points)
+                results_grid = await asyncio.gather(*[process_grid_point(comp) for comp in grid_compositions])
+                parallel_duration = time.time() - parallel_start
+                _log.info(f"Completed parallel evaluation in {parallel_duration:.2f}s ({len(grid_compositions)/parallel_duration:.1f} points/sec)")
             
             # Calculate aggregate statistics (data only)
             total_points = len(results_grid)
@@ -765,7 +848,7 @@ class VerificationMixin:
     async def fact_check_microstructure_claim(
         self,
         system: Annotated[str, AIParam(desc="Chemical system (e.g., 'Al-Mg-Zn', 'Fe-Cr-Ni')")],
-        composition: Annotated[str, AIParam(desc="Composition in at.% (e.g., 'Al88Mg8Zn4', '88Al-8Mg-4Zn', or 'Al-8Mg-4Zn')")],
+        composition: Annotated[str, AIParam(desc="Composition in at.% (e.g., 'Al88Mg8Zn4', '88Al-8Mg-4Zn', or 'Al-8Mg-4Zn'). No wildcards or special characters.")],
         claim_type: Annotated[str, AIParam(desc="Type of claim: 'two_phase', 'three_phase', 'phase_fraction', or 'custom'")],
         expected_phases: Annotated[Optional[str], AIParam(desc="Expected phases (e.g., 'fcc+tau', 'fcc+laves+gamma'). Comma or + separated.")] = None,
         phase_to_check: Annotated[Optional[str], AIParam(desc="Specific phase to check fraction (e.g., 'tau', 'gamma', 'laves')")] = None,
@@ -773,7 +856,9 @@ class VerificationMixin:
         max_fraction: Annotated[Optional[float], AIParam(desc="Maximum allowed phase fraction (0-1, e.g., 0.20 for 20%)")] = None,
         process_type: Annotated[str, AIParam(desc="Process model: 'as_cast' (after solidification, DEFAULT) or 'equilibrium_300K' (infinite-time room-temp equilibrium)")] = "as_cast",
         temperature: Annotated[Optional[float], AIParam(desc="Temperature in K for evaluation (only used if process_type='equilibrium_300K')")] = None,
-        composition_constraints: Annotated[Optional[str], AIParam(desc="Composition constraints as JSON string, For example, if the claim is about an Al-Mg-Zn alloy, and the claim is that the alloy has less than 8% Mg and less than 4% Zn, the composition_constraints would be '{\"MG\": {\"lt\": 8.0}, \"ZN\": {\"lt\": 4.0}}'. Supports: lt, lte, gt, gte, between:[min,max]")] = None
+        composition_constraints: Annotated[Optional[str], AIParam(desc="Composition constraints as JSON string, For example, if the claim is about an Al-Mg-Zn alloy, and the claim is that the alloy has less than 8% Mg and less than 4% Zn, the composition_constraints would be '{\"MG\": {\"lt\": 8.0}, \"ZN\": {\"lt\": 4.0}}'. Supports: lt, lte, gt, gte, between:[min,max]")] = None,
+        preloaded_db: Any = None,  # Internal: pre-loaded Database for performance (not exposed to AI)
+        preloaded_phases: Any = None  # Internal: pre-computed phase list for performance (not exposed to AI)
     ) -> Dict[str, Any]:
         """
         Evaluate microstructure properties using CALPHAD thermodynamic calculations.
@@ -816,10 +901,7 @@ class VerificationMixin:
                 PhaseFractionChecker, interpret_microstructure
             )
             from ...shared.converters import atpct_to_molefrac
-            from .solidification_utils import (
-                simulate_as_cast_microstructure_simple,
-                mechanical_desirability_score
-            )
+            from .solidification_utils import simulate_as_cast_microstructure_simple
             
             # Parse system to get elements
             parsed = self._normalize_system(system, db=None)
@@ -893,13 +975,13 @@ class VerificationMixin:
             # Convert to mole fractions
             comp_molefrac = atpct_to_molefrac(comp_dict)
             
-            # Select database
-            db = load_tdb_database(elements)
+            # Load or reuse database (reuse if provided for performance)
+            db = preloaded_db or load_tdb_database(elements)
             if db is None:
                 return {"success": False, "error": f"No .tdb found for system {system}", "citations": ["pycalphad"]}
             
-            # Get phases
-            phases = get_phases_for_elements(db, elements, self._phase_elements)
+            # Filter or reuse phases (reuse if provided for performance)
+            phases = preloaded_phases or get_phases_for_elements(db, elements, self._phase_elements)
             _log.debug(f"Selected {len(phases)} phases for {'-'.join(elements)} system")
             
             # Determine processing path and phase fractions
@@ -908,7 +990,7 @@ class VerificationMixin:
             
             if process_type.lower() == "as_cast":
                 # Simulate as-cast microstructure (after slow solidification)
-                _log.info("Using as-cast solidification simulation")
+                _log.debug("Using as-cast solidification simulation")
                 
                 # Warn if user passed temperature but it will be ignored
                 if temperature is not None and temperature != 300.0:
@@ -916,7 +998,9 @@ class VerificationMixin:
                                f"As-cast uses the freezing range temperature from solidification simulation. "
                                f"Use process_type='equilibrium_300K' to honor the specified temperature.")
                 
-                precalc_fractions, T_ascast = simulate_as_cast_microstructure_simple(
+                # Offload CPU-bound solidification simulation to thread for true parallelism
+                precalc_fractions, T_ascast = await asyncio.to_thread(
+                    simulate_as_cast_microstructure_simple,
                     db, elements, phases, comp_molefrac
                 )
                 
@@ -1054,18 +1138,109 @@ class VerificationMixin:
                 process_description=process_description
             )
             
-            # Calculate mechanical desirability score (only for as_cast)
+            # Calculate mechanical properties using physics-based models (only for as_cast)
             mech_score = 0.0
+            mech_details = None
             
             if process_type.lower() == "as_cast" and precalc_fractions:
-                # For as-cast, evaluate mechanical properties
+                # For as-cast, evaluate mechanical properties using physics-based assessment
                 # (Only meaningful for as-cast microstructures, not infinite-time equilibrium)
-                microstructure = interpret_microstructure(precalc_fractions)
-                phase_categories = {p.base_name: p.category.value for p in microstructure}
-                mech_score = mechanical_desirability_score(
-                    precalc_fractions, phase_categories
-                )
-                _log.info(f"Mechanical score: {mech_score}")
+                try:
+                    from ...alloys.mechanical_utils import get_phase_mechanical_descriptors
+                    from ...alloys.assessment_utils import assess_mechanical_effects
+                    
+                    microstructure = interpret_microstructure(precalc_fractions)
+                    phase_categories = {p.base_name: p.category.value for p in microstructure}
+                    
+                    # Build microstructure dict for assessment
+                    phase_fractions = {name: frac for name, frac in precalc_fractions.items() if frac > 0.01}
+                    
+                    # Identify matrix phase (highest fraction)
+                    matrix_phase = max(phase_fractions, key=phase_fractions.get) if phase_fractions else None
+                    
+                    if matrix_phase:
+                        # Get mechanical descriptors for all phases
+                        # Note: Using empty composition hint since we don't have per-phase composition here
+                        matrix_desc = get_phase_mechanical_descriptors(
+                            matrix_phase,
+                            comp_dict,  # Use bulk composition as hint
+                            tuple(elements),
+                            None  # No Materials Project client available in verification context
+                        )
+                        
+                        sec_descs = {}
+                        for phase_name in phase_fractions:
+                            if phase_name != matrix_phase:
+                                sec_descs[phase_name] = get_phase_mechanical_descriptors(
+                                    phase_name,
+                                    comp_dict,
+                                    tuple(elements),
+                                    None
+                                )
+                        
+                        # Build microstructure structure for assessment
+                        microstructure_dict = {
+                            "phase_fractions": phase_fractions,
+                            "matrix_phase": matrix_phase,
+                            "secondary_phases": [
+                                {"name": name, "fraction": frac}
+                                for name, frac in phase_fractions.items()
+                                if name != matrix_phase
+                            ]
+                        }
+                        
+                        # Run physics-based assessment
+                        assessment = assess_mechanical_effects(
+                            matrix_desc=matrix_desc,
+                            sec_descs=sec_descs,
+                            microstructure=microstructure_dict,
+                            phase_categories=phase_categories
+                        )
+                        
+                        # Extract embrittlement score and normalize to [-1, 1] range
+                        # Original embrittlement_score is in [0, 1] where 0=ductile, 1=brittle
+                        # We want: positive=desirable(ductile), negative=undesirable(brittle)
+                        emb_score = assessment.get("embrittlement_score", 0.5)
+                        mech_score = 1.0 - 2.0 * emb_score  # Maps [0,1] → [1,-1]
+                        
+                        mech_details = {
+                            "strengthening_likelihood": assessment.get("strengthening_likelihood"),
+                            "embrittlement_risk": assessment.get("embrittlement_risk"),
+                            "yield_strength_MPa": assessment.get("yield_strength_MPa"),
+                            "embrittlement_score": emb_score,
+                            "physics_based": True
+                        }
+                        
+                        _log.info(f"Physics-based mechanical assessment: score={mech_score:.3f}, "
+                                 f"embrittlement={assessment.get('embrittlement_risk')}, "
+                                 f"strengthening={assessment.get('strengthening_likelihood')}")
+                    else:
+                        _log.warning("No matrix phase identified for mechanical assessment")
+                        
+                except Exception as e:
+                    _log.warning(f"Physics-based mechanical assessment failed: {e}")
+                    # Fallback to simple heuristic
+                    microstructure = interpret_microstructure(precalc_fractions)
+                    phase_categories = {p.base_name: p.category.value for p in microstructure}
+                    
+                    # Simple heuristic: penalize high brittle phase fractions
+                    fcc_frac = sum(frac for name, frac in precalc_fractions.items() 
+                                  if 'FCC' in name.upper())
+                    brittle_fracs = sum(frac for name, frac in precalc_fractions.items() 
+                                       if any(cat in phase_categories.get(name, "").upper() 
+                                             for cat in ['LAVES', 'TAU', 'SIGMA']))
+                    
+                    mech_score = (fcc_frac - brittle_fracs * 2.0)
+                    mech_score = max(-1.0, min(1.0, mech_score))
+                    
+                    mech_details = {
+                        "fcc_fraction": fcc_frac,
+                        "brittle_fraction": brittle_fracs,
+                        "physics_based": False,
+                        "error": str(e)
+                    }
+                    
+                    _log.info(f"Fallback mechanical score: {mech_score:.3f}")
             
             # Format response
             if results:
@@ -1106,7 +1281,7 @@ class VerificationMixin:
                             if len(phase_info) >= 3:
                                 phases_list.append({
                                     "name": phase_info[0],
-                                    "fraction": phase_info[1],
+                                    "fraction": float(phase_info[1]),
                                     "category": phase_info[2]
                                 })
                 else:
@@ -1143,14 +1318,20 @@ class VerificationMixin:
                 
                 # Add mechanical score if evaluated (only for as_cast)
                 if process_type.lower() == "as_cast":
-                    response_data["mechanical_analysis"] = {
+                    mechanical_analysis = {
                         "score": mech_score,
                         "scale": {
                             "min": -1.0,
                             "max": 1.0,
-                            "description": "Negative: high intermetallic/brittle network, Positive: ductile FCC matrix"
+                            "description": "Negative: high embrittlement risk, Positive: good ductility"
                         }
                     }
+                    
+                    # Add detailed physics-based results if available
+                    if mech_details:
+                        mechanical_analysis.update(mech_details)
+                    
+                    response_data["mechanical_analysis"] = mechanical_analysis
                     # Backwards-compatible top-level key
                     response_data["mechanical_score"] = mech_score
                 

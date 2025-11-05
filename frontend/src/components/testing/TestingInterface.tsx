@@ -34,7 +34,8 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
   const [extractionError, setExtractionError] = useState('');
   const [extractedData, setExtractedData] = useState<Array<Record<string, string>>>([]);
   const [showExtraction, setShowExtraction] = useState(false);
-  const [extractUniqueOnly, setExtractUniqueOnly] = useState(false);
+  const [extractUniqueOnly, _setExtractUniqueOnly] = useState(false);
+  const [extractedVerdicts, setExtractedVerdicts] = useState<string>('');
 
   // Load test runs from localStorage
   useEffect(() => {
@@ -488,6 +489,43 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
     URL.revokeObjectURL(url);
   };
 
+  // Extract verdicts using the specific pattern
+  const handleExtractVerdicts = () => {
+    if (!currentTestRun) return;
+
+    // Use the specific verdict regex pattern
+    const verdictRegex = /[*]{0,2}\s*Verdict\s*[*]{0,2}\s*:\s*[*]{0,2}\s*(-?\d+)\s*[*]{0,2}/gi;
+    const verdicts: string[] = [];
+
+    // Extract from all filtered questions
+    currentTestRun.questions.filter(matchesFilter).forEach((question) => {
+      const searchText = [
+        question.question,
+        question.answer || '',
+        question.notes || '',
+      ].join('\n');
+
+      // Find all matches
+      let match;
+      while ((match = verdictRegex.exec(searchText)) !== null) {
+        verdicts.push(match[1]);
+      }
+    });
+
+    if (verdicts.length === 0) {
+      setExtractedVerdicts('(No verdicts found)');
+    } else {
+      setExtractedVerdicts(verdicts.join('\n'));
+    }
+  };
+
+  // Copy verdicts to clipboard
+  const handleCopyVerdicts = () => {
+    if (extractedVerdicts && extractedVerdicts !== '(No verdicts found)') {
+      navigator.clipboard.writeText(extractedVerdicts);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -665,6 +703,55 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                         ✓ Valid regex - Matching {currentTestRun.questions.filter(matchesFilter).length} of {currentTestRun.questions.length} results
                       </p>
                     )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Quick Verdict Extraction Card */}
+              <Card className="backdrop-blur-xl bg-white/40 border-gray-200/50 shadow-lg">
+                <CardContent className="p-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-gray-700">
+                        Quick Verdict Extraction
+                      </label>
+                      <Button
+                        onClick={handleExtractVerdicts}
+                        size="sm"
+                        className="bg-gradient-to-br from-[#0b63c1] to-[#47b9ff] hover:to-[#47b9ff]/80 text-white"
+                      >
+                        Extract All Verdicts
+                      </Button>
+                    </div>
+                    
+                    {extractedVerdicts && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs text-gray-600">
+                            Extracted Verdicts ({extractedVerdicts === '(No verdicts found)' ? 0 : extractedVerdicts.split('\n').length})
+                          </label>
+                          {extractedVerdicts !== '(No verdicts found)' && (
+                            <Button
+                              onClick={handleCopyVerdicts}
+                              size="sm"
+                              variant="outline"
+                              className="text-xs h-7"
+                            >
+                              Copy to Clipboard
+                            </Button>
+                          )}
+                        </div>
+                        <div className="bg-gray-50 border border-gray-300 rounded-lg p-3 max-h-60 overflow-auto">
+                          <pre className="text-sm font-mono text-gray-800 whitespace-pre-wrap">
+                            {extractedVerdicts}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="text-xs text-gray-500 bg-blue-50 p-2 rounded">
+                      <strong>Pattern:</strong> <code className="bg-white px-1">[*]{'{0,2}'}\s*Verdict\s*[*]{'{0,2}'}\s*:\s*[*]{'{0,2}'}\s*(-?\d+)\s*[*]{'{0,2}'}</code>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
