@@ -30,7 +30,8 @@ from .comparison_utils import (
 
 # Re-export stability utilities
 from .stability_utils import (
-    check_composition_stability_detailed
+    check_composition_stability_detailed,
+    check_anode_stability_vs_voltage
 )
 
 # Re-export lithiation utilities
@@ -58,6 +59,7 @@ __all__ = [
     
     # Stability utilities
     'check_composition_stability_detailed',
+    'check_anode_stability_vs_voltage',
     
     # Lithiation utilities
     'analyze_lithiation_mechanism_detailed',

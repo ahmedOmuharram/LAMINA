@@ -15,6 +15,12 @@ from kani import AIParam
 from ..shared import success_result, error_result, ErrorType, Confidence
 from . import utils
 from ..shared.constants import KNOWN_DIFFUSION_BARRIERS, STRUCTURE_DIFFUSION_DEFAULTS
+from .ion_hopping_utils import (
+    is_graphitic,
+    graphite_scenarios,
+    expand_variants,
+    evaluate_ion_hopping_scenario,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -603,47 +609,114 @@ class BatteryAIFunctionsMixin:
         desc="Check if a composition is thermodynamically stable (on convex hull). "
              "USE THIS to determine if a material can exist as a stable phase or if it decomposes. "
              "Returns energy above hull (if entry exists) and decomposition products. "
-             "Essential for questions about 'thermodynamically stable', 'can form', 'stable phase'."
+             "Optionally analyzes battery-relevant stability vs voltage (grand-potential phase diagram). "
+             "Essential for questions about 'thermodynamically stable', 'can form', 'stable phase', "
+             "'stable as anode', 'battery stability'."
     )
     async def check_composition_stability(
         self,
         composition: Annotated[
             str,
             AIParam(desc="Chemical composition to check (e.g., 'Cu8LiAl', 'Li3Al2', 'Cu80Li10Al10')")
-        ]
+        ],
+        battery_analysis: Annotated[
+            bool,
+            AIParam(desc="Include battery-relevant voltage-dependent analysis (grand-potential PD). Default: False")
+        ] = False,
+        working_ion: Annotated[
+            Optional[str],
+            AIParam(desc="Working ion for battery analysis (e.g., 'Li', 'Na'). Only used if battery_analysis=True. Default: 'Li'")
+        ] = "Li",
+        vmin: Annotated[
+            Optional[float],
+            AIParam(desc="Minimum voltage (V) for voltage scan. Default: 0.0")
+        ] = 0.0,
+        vmax: Annotated[
+            Optional[float],
+            AIParam(desc="Maximum voltage (V) for voltage scan. Default: 1.0")
+        ] = 1.0,
+        voltage_points: Annotated[
+            Optional[int],
+            AIParam(desc="Number of voltage points to scan. Default: 11")
+        ] = 11
     ) -> Dict[str, Any]:
         """
         Check if a composition is thermodynamically stable.
         
         Returns:
-        - energy_above_hull: How far above the convex hull (0 = stable, None if no entry)
-        - is_stable: Whether an entry exists at this composition and is on the hull
-        - decomposition: What phases it decomposes into if unstable
+        - equilibrium_0K: Standard 0 K convex hull analysis (energy above hull, decomposition)
+        - battery_relevant (optional): Voltage-dependent stability with Li as open species
+        - summary: Combined human-readable assessment
+        
+        The battery_analysis option provides actionable insights for electrode materials:
+        - Stable phases at each voltage vs Li/Li+
+        - Voltage intervals where decomposition is unchanged
+        - Whether single-phase or multiphase equilibrium
+        - Theoretical capacity estimates
         """
         start_time = time.time()
         
-        result = utils.check_composition_stability_detailed(self.mpr, composition)
+        # Always run 0 K analysis first
+        result_0K = utils.check_composition_stability_detailed(self.mpr, composition)
         
-        duration_ms = (time.time() - start_time) * 1000
-        
-        if not result.get("success"):
+        if not result_0K.get("success"):
+            duration_ms = (time.time() - start_time) * 1000
             return error_result(
                 handler="electrochemistry",
                 function="check_composition_stability",
-                error=result.get("error", "Stability check failed"),
-                error_type=ErrorType.NOT_FOUND if "not found" in str(result.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
+                error=result_0K.get("error", "Stability check failed"),
+                error_type=ErrorType.NOT_FOUND if "not found" in str(result_0K.get("error", "")).lower() else ErrorType.COMPUTATION_ERROR,
                 citations=["Materials Project", "pymatgen"],
                 duration_ms=duration_ms
             )
         
-        data = {k: v for k, v in result.items() if k not in ["success", "citations"]}
+        # Prepare response data
+        data = {
+            "equilibrium_0K": {k: v for k, v in result_0K.items() if k not in ["success", "citations"]}
+        }
+        
+        notes = ["0 K convex hull analysis from DFT calculations"]
+        
+        # Optionally run battery-relevant voltage analysis
+        if battery_analysis:
+            _log.info(f"Running battery-relevant voltage analysis for {composition}")
+            result_battery = utils.check_anode_stability_vs_voltage(
+                self.mpr, 
+                composition, 
+                vmin=vmin, 
+                vmax=vmax, 
+                npts=voltage_points,
+                open_element=working_ion
+            )
+            
+            if result_battery.get("success"):
+                data["battery_relevant"] = {k: v for k, v in result_battery.items() if k not in ["success"]}
+                notes.append(f"Battery-relevant analysis with {working_ion} as open species")
+                
+                # Combined summary
+                summary_0K = result_0K.get("notes", [""])[0] if result_0K.get("notes") else ""
+                summary_battery = result_battery.get("summary", "")
+                
+                data["combined_summary"] = (
+                    f"**0 K Equilibrium:** {summary_0K}\n\n"
+                    f"**Battery Context ({working_ion} as open element):** {summary_battery}"
+                )
+            else:
+                _log.warning(f"Battery analysis failed: {result_battery.get('error')}")
+                data["battery_relevant_error"] = result_battery.get("error")
+                notes.append("Battery analysis requested but failed")
+        else:
+            notes.append("For battery-relevant voltage analysis, set battery_analysis=True")
+        
+        duration_ms = (time.time() - start_time) * 1000
+        
         return success_result(
             handler="electrochemistry",
             function="check_composition_stability",
             data=data,
             citations=["Materials Project", "pymatgen"],
             confidence=Confidence.HIGH,
-            notes=["Stability checked against 0 K convex hull from DFT calculations"],
+            notes=notes,
             duration_ms=duration_ms
         )
     
@@ -651,7 +724,8 @@ class BatteryAIFunctionsMixin:
     @ai_function(
         desc="Analyze a composition as a potential battery anode, including stability check and voltage. "
              "USE THIS for questions about whether a material 'can form an anode', 'is suitable as anode'. "
-             "Checks thermodynamic stability and calculates voltage if viable."
+             "Checks thermodynamic stability (0 K and voltage-dependent) and calculates voltage if viable. "
+             "Provides battery-relevant grand-potential analysis automatically."
     )
     async def analyze_anode_viability(
         self,
@@ -662,16 +736,22 @@ class BatteryAIFunctionsMixin:
         working_ion: Annotated[
             str,
             AIParam(desc="Working ion for battery (e.g., 'Li', 'Na'). Default: 'Li'")
-        ] = "Li"
+        ] = "Li",
+        voltage_window: Annotated[
+            Optional[str],
+            AIParam(desc="Voltage window to scan (e.g., '0-1' for 0-1 V). Default: '0-1'")
+        ] = "0-1"
     ) -> Dict[str, Any]:
         """
         Comprehensive analysis of a composition as a battery anode.
         
-        Checks:
-        1. Thermodynamic stability (is it stable or does it decompose?)
-        2. If stable: calculate voltage vs working ion
-        3. If unstable: analyze decomposition products as potential anode
-        4. Overall assessment of viability
+        Automatically includes:
+        1. 0 K thermodynamic stability (convex hull)
+        2. Battery-relevant voltage-dependent stability (grand-potential phase diagram)
+        3. Voltage calculations vs working ion
+        4. Decomposition products and phase evolution
+        5. Theoretical capacity estimates
+        6. Overall viability assessment with actionable insights
         """
         start_time = time.time()
         
@@ -689,8 +769,21 @@ class BatteryAIFunctionsMixin:
             
             from pymatgen.core import Composition
             
-            # First check stability
-            stability = await self.check_composition_stability(composition)
+            # Parse voltage window
+            try:
+                vmin, vmax = [float(v) for v in voltage_window.split('-')]
+            except:
+                vmin, vmax = 0.0, 1.0
+            
+            # Check stability with battery-relevant analysis
+            stability = await self.check_composition_stability(
+                composition, 
+                battery_analysis=True,
+                working_ion=working_ion,
+                vmin=vmin,
+                vmax=vmax,
+                voltage_points=11
+            )
             
             if not stability.get("success"):
                 duration_ms = (time.time() - start_time) * 1000
@@ -703,22 +796,24 @@ class BatteryAIFunctionsMixin:
                     duration_ms=duration_ms
                 )
             
-            result = {
-                "success": True,
-                "composition": composition,
-                "working_ion": working_ion,
-                "stability_analysis": stability,
-                "voltage_analysis": {},
-                "viability_assessment": {}
-            }
+            # Extract stability data
+            stability_data = stability.get("data", {})
+            equilibrium_0K = stability_data.get("equilibrium_0K", {})
+            battery_relevant = stability_data.get("battery_relevant", {})
+            combined_summary = stability_data.get("combined_summary", "")
             
-            # Try to get voltage information
-            is_stable = stability.get("is_stable", False)
-            decomp_phases = stability.get("decomposition", [])
+            is_stable_0K = equilibrium_0K.get("is_stable", False)
+            e_above_hull = equilibrium_0K.get("energy_above_hull")
+            decomp_phases = equilibrium_0K.get("decomposition", [])
             
-            # Extract the non-working-ion composition for voltage calculation
+            # Extract battery-relevant data
+            on_hull_at_any_V = battery_relevant.get("on_hull_at_any_V", False)
+            capacity_estimate = battery_relevant.get("capacity_estimate")
+            voltage_intervals = battery_relevant.get("intervals", [])
+            
+            # Try to get voltage information for host material
             comp = Composition(composition)
-            host_elements = [el.symbol for el in comp.elements if el.symbol != working_ion]
+            voltage_analysis = {}
             
             if working_ion not in [el.symbol for el in comp.elements]:
                 # Composition doesn't contain working ion - this is the host material
@@ -732,51 +827,97 @@ class BatteryAIFunctionsMixin:
                 )
                 
                 if voltage_result.get("success") and voltage_result.get("data", {}).get("electrodes"):
-                    result["voltage_analysis"] = voltage_result["data"]["electrodes"][0]
+                    voltage_analysis = voltage_result["data"]["electrodes"][0]
                 else:
-                    result["voltage_analysis"] = {"error": "No voltage data available for this composition"}
+                    voltage_analysis = {"note": "No curated voltage data available"}
             else:
                 # Composition already contains working ion - it's a lithiated phase
-                result["voltage_analysis"] = {
+                voltage_analysis = {
                     "note": f"Composition contains {working_ion} - this is a lithiated phase, not a host anode material"
                 }
             
-            # Assessment
+            # Enhanced viability assessment using both 0 K and battery-relevant data
             assessment = {
                 "can_form_stable_anode": False,
-                "reasoning": []
+                "anode_type": "unknown",
+                "reasoning": [],
+                "actionable_insights": []
             }
             
-            if is_stable:
-                assessment["reasoning"].append(f"{composition} is thermodynamically stable")
-                if host_elements:
-                    assessment["can_form_stable_anode"] = True
-                    assessment["reasoning"].append(f"Can potentially serve as anode material vs {working_ion}/{working_ion}+")
-                else:
-                    assessment["reasoning"].append(f"Pure {working_ion} - not an anode, but the reference")
-            else:
-                e_above_hull = stability.get("energy_above_hull")
-                assessment["can_form_stable_anode"] = False
+            if on_hull_at_any_V:
+                assessment["can_form_stable_anode"] = True
+                assessment["anode_type"] = "single-phase"
+                assessment["reasoning"].append(
+                    f"{composition} is thermodynamically stable as a single phase at operating voltages ({vmin}-{vmax} V vs {working_ion}/{working_ion}+)"
+                )
+                assessment["actionable_insights"].append("This material can form as a stable single-phase anode")
                 
-                if e_above_hull and e_above_hull < 0.1:
-                    assessment["reasoning"].append(f"Nearly stable ({e_above_hull:.6f} eV/atom above hull)")
-                    assessment["reasoning"].append("May exist as metastable phase under certain conditions")
-                else:
-                    assessment["reasoning"].append(f"Thermodynamically unstable - decomposes into {len(decomp_phases)} phases")
-                
-                # Analyze decomposition products
-                decomp_formulas = [p["formula"] for p in decomp_phases]
-                assessment["reasoning"].append(f"Equilibrium phases: {', '.join(decomp_formulas)}")
-                
-                # Check if decomposition products include working-ion compounds
-                has_working_ion_phases = any(working_ion in formula for formula in decomp_formulas)
-                if has_working_ion_phases:
-                    assessment["reasoning"].append(
-                        f"Decomposition includes {working_ion}-containing phases - a deliberately multiphase composite "
-                        "might be engineered, but this composition is not a single-phase stable anode."
+                if capacity_estimate:
+                    cap = capacity_estimate.get("theoretical_capacity_mAh_g", 0)
+                    assessment["actionable_insights"].append(
+                        f"Theoretical capacity: ~{cap:.0f} mAh/g (equilibrium-based upper bound)"
                     )
             
-            result["viability_assessment"] = assessment
+            elif is_stable_0K:
+                assessment["can_form_stable_anode"] = True
+                assessment["anode_type"] = "single-phase (0 K stable)"
+                assessment["reasoning"].append(
+                    f"{composition} is stable at 0 K but may form multiphase equilibrium at operating voltages"
+                )
+                assessment["actionable_insights"].append(
+                    "Stable in synthesis conditions; check voltage-dependent behavior for cycling stability"
+                )
+            
+            else:
+                # Check if nearly metastable
+                if e_above_hull is not None and e_above_hull < 0.03:
+                    assessment["can_form_stable_anode"] = True
+                    assessment["anode_type"] = "metastable"
+                    assessment["reasoning"].append(
+                        f"Nearly stable ({e_above_hull:.6f} eV/atom above hull - within synthesizable tolerance)"
+                    )
+                    assessment["actionable_insights"].append(
+                        "May be synthesizable as metastable phase; kinetic stabilization possible"
+                    )
+                else:
+                    assessment["can_form_stable_anode"] = False
+                    assessment["anode_type"] = "multiphase composite"
+                    
+                    if decomp_phases:
+                        decomp_formulas = [p["formula"] for p in decomp_phases]
+                        assessment["reasoning"].append(
+                            f"Not thermodynamically stable - decomposes into {len(decomp_phases)} phases: {', '.join(decomp_formulas)}"
+                        )
+                    
+                    # Use battery-relevant data for actionable insights
+                    if voltage_intervals:
+                        first_interval = voltage_intervals[0]
+                        phases = [p["formula"] for p in first_interval.get("phases", [])]
+                        
+                        # Check for inactive backbone elements
+                        inactive_elements = ["Cu", "Ni", "Fe", "Co"]
+                        has_inactive = any(any(el in phase for el in inactive_elements) for phase in phases)
+                        
+                        if has_inactive:
+                            assessment["actionable_insights"].append(
+                                f"Equilibrium at {vmin:.1f}-{vmax:.1f} V: {' + '.join(phases)}"
+                            )
+                            assessment["actionable_insights"].append(
+                                "Forms multiphase composite with inactive backbone (e.g., Cu) - not a single-phase anode but may work as engineered composite"
+                            )
+                        else:
+                            assessment["actionable_insights"].append(
+                                f"Equilibrium phases: {' + '.join(phases)}"
+                            )
+                            assessment["actionable_insights"].append(
+                                "Multiphase composite; performance depends on phase connectivity and Li transport"
+                            )
+                        
+                        if capacity_estimate:
+                            cap = capacity_estimate.get("theoretical_capacity_mAh_g", 0)
+                            assessment["actionable_insights"].append(
+                                f"Composite theoretical capacity: ~{cap:.0f} mAh/g"
+                            )
             
             duration_ms = (time.time() - start_time) * 1000
             
@@ -786,13 +927,20 @@ class BatteryAIFunctionsMixin:
                 data={
                     "composition": composition,
                     "working_ion": working_ion,
-                    "stability_analysis": stability.get("data", stability),
-                    "voltage_analysis": result["voltage_analysis"],
-                    "viability_assessment": assessment
+                    "voltage_window": f"{vmin:.1f}-{vmax:.1f} V",
+                    "stability_0K": equilibrium_0K,
+                    "battery_relevant": battery_relevant,
+                    "voltage_analysis": voltage_analysis,
+                    "viability_assessment": assessment,
+                    "summary": combined_summary if combined_summary else battery_relevant.get("summary", "")
                 },
                 citations=["Materials Project", "pymatgen"],
-                confidence=Confidence.HIGH if is_stable else Confidence.MEDIUM,
-                notes=["Comprehensive analysis of composition as battery anode"],
+                confidence=Confidence.HIGH,
+                notes=[
+                    "Comprehensive anode viability analysis with 0 K and voltage-dependent stability",
+                    "Battery-relevant grand-potential analysis included automatically",
+                    "Actionable insights based on equilibrium phase behavior at operating voltages"
+                ],
                 duration_ms=duration_ms
             )
             
@@ -812,6 +960,7 @@ class BatteryAIFunctionsMixin:
     @ai_function(
         desc="Analyze the lithiation mechanism of a host material. "
              "Reports phase evolution, two-phase vs single-phase reactions, and equilibrium phases at each voltage step. "
+             "Includes both strict 0K classification and effective two-phase classification for near-degenerate cases. "
              "USE THIS for questions about 'two-phase reaction', 'lithiation mechanism', 'phase evolution', "
              "'what phases form', 'initial reaction'."
     )
@@ -832,25 +981,42 @@ class BatteryAIFunctionsMixin:
         room_temp: Annotated[
             bool,
             AIParam(desc="Filter out phases hard to form at room temperature (E_hull > 0.03 eV/atom). Default: True")
-        ] = True
+        ] = True,
+        enforce_ground_states: Annotated[
+            bool,
+            AIParam(desc="Enforce ground-state phases for Al, Cu, Li, LiAl. Default: True")
+        ] = True,
+        prefer_two_phase: Annotated[
+            bool,
+            AIParam(desc="Attempt effective two-phase classification for near-degenerate 3-phase plateaus. Default: True")
+        ] = True,
+        two_phase_energy_tolerance: Annotated[
+            float,
+            AIParam(desc="Energy tolerance (eV/atom) for effective two-phase override. Default: 0.05")
+        ] = 0.05
     ) -> Dict[str, Any]:
         """
-        Analyze the lithiation mechanism by computing the convex hull of G(x) vs x.
+        Analyze the lithiation mechanism by computing the convex hull of G(x) vs x,
+        with optional effective two-phase reclassification.
         
         Reports:
-        - Voltage plateaus based on hull segments (not midpoint phase count)
-        - Equilibrium phases from endpoint decompositions
-        - Whether reactions are two-state plateaus or single-phase regions
-        - Initial reaction mechanism
-        - Full lithiation sequence
+        - Voltage plateaus based on hull segments
+        - Equilibrium phases from decompositions (strict and effective classifications)
+        - Whether reactions are two-phase, three-phase, or effectively two-phase
+        - Initial reaction mechanism (strict vs effective)
+        - Full lithiation sequence with dual classification
         
         Args:
             room_temp: If True, filter out phases with E_hull > 0.03 eV/atom (hard to form at RT)
+            enforce_ground_states: Encourage correct ground states for Al, Cu, Li, LiAl
+            prefer_two_phase: Attempt effective two-phase classification when energetically close
+            two_phase_energy_tolerance: Energy tolerance for effective override (eV/atom)
         """
         start_time = time.time()
         
         result = utils.analyze_lithiation_mechanism_detailed(
-            self.mpr, host_composition, working_ion, max_x, room_temp
+            self.mpr, host_composition, working_ion, max_x, room_temp,
+            enforce_ground_states, prefer_two_phase, two_phase_energy_tolerance
         )
         
         duration_ms = (time.time() - start_time) * 1000
@@ -872,69 +1038,188 @@ class BatteryAIFunctionsMixin:
             data=data,
             citations=["Materials Project", "pymatgen"],
             confidence=Confidence.HIGH,
-            notes=["Lithiation mechanism computed from convex hull analysis"],
+            notes=[
+                "Lithiation mechanism computed from convex hull analysis",
+                "Includes both strict 0K classification and effective two-phase analysis",
+                "Ground-state enforcement ensures reliable phase diagram construction"
+            ],
             duration_ms=duration_ms
         )
 
     @ai_function(
         desc=(
-            "Estimate the ion hopping/diffusion barrier (activation energy, eV) for an intercalating ion "
-            "(e.g., Li, Na, Mg) moving between sites in an electrode material (e.g., graphite, LiFePO4). "
-            "Use this for questions about ion mobility, diffusion barriers, or lithium hopping in electrodes."
+            "Comprehensive ion hopping barrier estimation across many physically distinct scenarios "
+            "(AB-BLG TH↔TH ~0.07 eV, AA-BLG ~0.34 eV, stage-I/II graphite, intra- vs inter-layer, "
+            "dilute vs finite coverage, defect-assisted). Returns ranked scenarios with P10/P50/P90 "
+            "barriers plus Arrhenius kinetics per scenario. Use this for thorough analysis of "
+            "graphite/graphene systems or when you need uncertainty quantification and multiple pathways."
         ),
         auto_truncate=128000,
     )
     async def estimate_ion_hopping_barrier(
         self,
-        host_material: Annotated[str, AIParam(desc="Host electrode material formula, e.g., 'C6' (graphite), 'LiFePO4', 'TiS2'.")],
-        ion: Annotated[str, AIParam(desc="Intercalating ion, e.g., 'Li', 'Na', 'Mg'.")] = "Li",
-        structure_type: Annotated[Optional[str], AIParam(desc="Structure type/dimensionality: 'layered', '1D-channel', '3D', or 'olivine'. Optional.")] = None,
+        host_material: Annotated[str, AIParam(desc="Host (e.g., 'graphite', 'C6', 'LiC6', 'TiS2', 'LiFePO4').")],
+        ion: Annotated[str, AIParam(desc="Ion (Li, Na, Mg).")] = "Li",
+        structure_type: Annotated[Optional[str], AIParam(desc="layered, 1D-channel, 3D, olivine (optional; default is layered).")] = "layered",
+        temperatures_K: Annotated[Optional[str], AIParam(desc="Comma-separated temps, e.g. '298,323'. Default '300'.")] = "300",
+        mc_samples: Annotated[int, AIParam(desc="Samples per scenario for P10/P50/P90.")] = 200,
+        include_generic_variants: Annotated[bool, AIParam(desc="Also add generic structure-type scenarios.")] = True,
+        return_top: Annotated[int, AIParam(desc="How many scenarios to return (sorted by median Ea).")] = 12,
     ) -> Dict[str, Any]:
         """
-        Estimate ion hopping barrier in electrode materials using structure-based heuristics.
+        Comprehensive suite of ion hopping barrier estimates with uncertainty quantification.
+        
+        Enumerates many physically distinct cases:
+        - For graphite/graphene: AB-BLG, AA-BLG, stage-I/II, in-gallery, cross-plane, defects
+        - Modifiers for stacking, coverage, defects, strain, interlayer spacing
+        - Monte Carlo uncertainty → P10/P50/P90 barriers
+        - Arrhenius kinetics and diffusion coefficients at specified temperatures
+        - Falls back to structure heuristics for non-graphite hosts
         """
-        start_time = time.time()
+        t0 = time.time()
         
         try:
-            # Normalize inputs
             ion_sym = ion.strip().capitalize()
             host = host_material.strip()
+            Ts = [float(t.strip()) for t in str(temperatures_K).split(",") if t.strip()] or [300.0]
             
-            # Classify structure type if not provided or normalize user input
-            struct_type = _classify_electrode_structure(host, structure_type)
+            scenarios: List[Dict[str, Any]] = []
+            all_citations = []
             
-            # Get typical barrier ranges and confidence based on structure + known priors
-            barrier_info = _estimate_barrier_from_structure(host, ion_sym, struct_type)
+            # 1) Graphitic rich expansion
+            if is_graphitic(host):
+                base = graphite_scenarios(host)
+                for b in base:
+                    # Collect citations from base scenarios
+                    if "citations" in b:
+                        all_citations.extend(b["citations"])
+                    scenarios.extend(expand_variants(b))
             
-            duration_ms = (time.time() - start_time) * 1000
+            # 2) Optional generic variants for non-graphite (or in addition)
+            struct_type_norm = _classify_electrode_structure(host, structure_type)
+            
+            if include_generic_variants:
+                # Build a couple of generic path families per structure class
+                gen = _estimate_barrier_from_structure(host, ion_sym, struct_type_norm)
+                base_Ea = float(gen["Ea_eV"])
+                lo, hi = gen["range_eV"]
+                hopA = 3.0 if struct_type_norm != "1D-channel" else 3.5
+                
+                # Add generic citations
+                if "citations" in gen:
+                    all_citations.extend(gen["citations"])
+                
+                generic_families = [
+                    {
+                        "key": "generic_easy",
+                        "baseline_ea": max(0.01, 0.8 * base_Ea),
+                        "spread": 1.3,
+                        "hop_A": hopA,
+                        "note": f"{struct_type_norm} easy path",
+                        "citations": gen.get("citations", [])
+                    },
+                    {
+                        "key": "generic_bottleneck",
+                        "baseline_ea": min(1.5, 1.2 * base_Ea),
+                        "spread": 1.4,
+                        "hop_A": hopA * 0.9,
+                        "note": f"{struct_type_norm} bottleneck",
+                        "citations": gen.get("citations", [])
+                    },
+                ]
+                
+                for g in generic_families:
+                    scenarios.extend(expand_variants({
+                        "key": g["key"],
+                        "stacking": "n/a",
+                        "defect": "none",
+                        "theta": 0.1,
+                        "strain_percent": 0.0,
+                        "delta_interlayer_A": 0.0,
+                        "baseline_ea": g["baseline_ea"],
+                        "hop_A": g["hop_A"],
+                        "spread": g["spread"],
+                        "note": g["note"],
+                    }))
+            
+            # 3) Evaluate all scenarios with Monte Carlo + modifiers
+            out_scenarios = []
+            for s in scenarios:
+                evaluated = evaluate_ion_hopping_scenario(
+                    scenario=s,
+                    temperatures_K=Ts,
+                    mc_samples=mc_samples,
+                    attempt_frequency_Hz=1e13
+                )
+                # Add host and ion to context
+                evaluated["context"]["host"] = host
+                evaluated["context"]["ion"] = ion_sym
+                evaluated["context"]["structure_type"] = struct_type_norm
+                out_scenarios.append(evaluated)
+            
+            # 4) Rank and summarize
+            out_scenarios.sort(key=lambda d: d["Ea_eV"]["P50"])
+            top = out_scenarios[:int(return_top)] if return_top else out_scenarios
+            
+            # Global range
+            ea_min = min(s["Ea_eV"]["P10"] for s in out_scenarios) if out_scenarios else None
+            ea_max = max(s["Ea_eV"]["P90"] for s in out_scenarios) if out_scenarios else None
+            
+            # Family minima (by coarse bucket)
+            family_minima: Dict[str, Dict[str, Any]] = {}
+            for s in out_scenarios:
+                fam = s["context"]["key"].split("_")[0]  # AB, AA, Graphite, generic...
+                if fam not in family_minima or s["Ea_eV"]["P50"] < family_minima[fam]["Ea_eV"]["P50"]:
+                    family_minima[fam] = s
+            
+            # Unique citations
+            unique_citations = list(set(all_citations))
+            
+            duration_ms = (time.time() - t0) * 1000
             
             return success_result(
                 handler="electrochemistry",
-                function="estimate_ion_hopping_barrier",
+                function="estimate_ion_hopping_barrier_suite",
                 data={
-                    "host_material": host,
+                    "host": host,
                     "ion": ion_sym,
-                    "structure_type": struct_type,
-                    "activation_energy_eV": barrier_info["Ea_eV"],
-                    "energy_range_eV": barrier_info["range_eV"],
-                    "method": "structure_heuristic_v1",
-                    "descriptors": barrier_info.get("descriptors", {}),
+                    "structure_type": struct_type_norm,
+                    "scenarios_ranked": top,
+                    "family_minima": family_minima,
+                    "consensus_range": {
+                        "Ea_eV_min_P10": round(ea_min, 4) if ea_min is not None else None,
+                        "Ea_eV_max_P90": round(ea_max, 4) if ea_max is not None else None
+                    },
+                    "assumptions": {
+                        "temps_K": Ts,
+                        "attempt_frequency_Hz": 1e13,
+                        "mc_samples": mc_samples,
+                        "theta_definition": "gallery fractional occupancy (stage-relative)",
+                        "notes": [
+                            "Coverage increases barriers modestly; defects/edges lower them.",
+                            "Interlayer expansion lowers gallery barriers; compression raises.",
+                            "For non-graphite, results come from structure-class heuristics + variants.",
+                        ]
+                    }
                 },
-                citations=barrier_info.get("citations", []),
-                confidence=Confidence.MEDIUM if barrier_info["confidence"] == "medium" else (Confidence.LOW if barrier_info["confidence"] == "low" else Confidence.HIGH),
-                caveats=[
-                    "Heuristic estimate based on material class and structure dimensionality",
-                    "Actual barriers depend on crystallographic pathway, site occupancy, lattice strain, and defect concentration",
-                    "Use DFT+NEB or impedance spectroscopy for accuracy"
+                citations=unique_citations if unique_citations else [
+                    "Literature: graphite/BLG Li diffusion pathways (Persson et al., Umegaki et al.)"
+                ],
+                confidence=Confidence.MEDIUM if is_graphitic(host) else Confidence.LOW,
+                notes=[
+                    "This suite enumerates multiple site/topology/stacking/coverage/defect cases.",
+                    "Use DFT+NEB for quantitative barriers along specific paths you care about.",
+                    f"Generated {len(out_scenarios)} total scenarios; returning top {len(top)} by median barrier."
                 ],
                 duration_ms=duration_ms
             )
+            
         except Exception as e:
-            duration_ms = (time.time() - start_time) * 1000
-            _log.error(f"Error estimating ion hopping barrier for {host_material}/{ion}: {e}", exc_info=True)
+            duration_ms = (time.time() - t0) * 1000
+            _log.error(f"Error in ion hopping barrier suite for {host_material}/{ion}: {e}", exc_info=True)
             return error_result(
                 handler="electrochemistry",
-                function="estimate_ion_hopping_barrier",
+                function="estimate_ion_hopping_barrier_suite",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
                 citations=[],

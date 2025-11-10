@@ -18,10 +18,14 @@ from typing_extensions import Annotated
 from kani import AIParam
 
 from .database_utils import map_phase_name
+from .solidification_utils import simulate_scheil_gulliver, find_liquidus_solidus_temperatures
 from ...shared.calphad_utils import (
     extract_phase_fractions_from_equilibrium,
+    extract_phase_fractions,
+    get_phase_composition,
     get_phase_fraction_by_base_name,
-    load_tdb_database
+    load_tdb_database,
+    compute_equilibrium,
 )
 from ...shared.result_wrappers import success_result, error_result, Confidence, ErrorType
 
@@ -41,12 +45,14 @@ class CalculationsMixin:
         """
         Calculate thermodynamic equilibrium at a specific point (temperature + composition).
         
+        Uses compute_equilibrium utility for robust equilibrium calculation.
+        
         Args:
             composition: Element-number pairs (e.g., 'Al30Si55C15'). Numbers are percentages.
             composition_type: 'atomic' (default) or 'weight'. Weight% is converted to mole fractions internally.
         
         Returns:
-            Formatted text with phase fractions and per-phase compositions.
+            JSON result with phase fractions and per-phase compositions.
         """
         start_time = time.time()
         
@@ -89,91 +95,107 @@ class CalculationsMixin:
                 # Multicomponent system (3+ elements)
                 phases = self._filter_phases_for_multicomponent(db, elements)
             
-            # Build conditions
-            elements_with_va = elements + ['VA']
-            conditions = {v.T: temperature, v.P: 101325, v.N: 1}
+            # Calculate equilibrium using robust compute_equilibrium utility
+            _log.info(f"Computing equilibrium at {temperature}K for {system_str} with composition {comp_dict}")
+            eq = compute_equilibrium(
+                db=db,
+                elements=elements,
+                phases=phases,
+                composition=comp_dict,
+                temperature=temperature,
+                pressure=101325
+            )
             
-            # Set composition conditions (N-1 independent compositions)
-            for i, elem in enumerate(elements[1:], 1):
-                conditions[v.X(elem)] = comp_dict[elem]
+            if eq is None:
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="calculate_equilibrium_at_point",
+                    error=f"Equilibrium calculation failed at {temperature}K for {composition}",
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
-            # Calculate equilibrium
-            eq = equilibrium(db, elements_with_va, phases, conditions)
+            # Extract phase fractions using robust utility (handles vertices properly)
+            phase_fractions_dict = extract_phase_fractions(eq, tolerance=1e-4)
             
-            # Extract phase fractions properly (handling multiple vertices in two-phase regions)
-            # Use looser tolerance (1e-4) for better boundary handling
-            phase_fractions_dict = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
+            if not phase_fractions_dict:
+                duration_ms = (time.time() - start_time) * 1000
+                return error_result(
+                    handler="calphad",
+                    function="calculate_equilibrium_at_point",
+                    error=f"No stable phases found at {temperature}K for {composition}",
+                    error_type=ErrorType.COMPUTATION_ERROR,
+                    citations=["pycalphad"],
+                    duration_ms=duration_ms
+                )
             
-            # Extract phase fractions and compositions
+            # Extract phase compositions using robust utility
             phase_info = []
             total_fraction = 0.0
             
             for phase, frac in phase_fractions_dict.items():
                 total_fraction += frac
                 
-                # Get composition of this phase
-                phase_comp = {}
-                try:
-                    # Squeeze and select data for this phase
-                    eqp = eq.squeeze()
-                    phase_mask = eqp['Phase'] == phase
-                    
-                    for elem in elements:
-                        # Extract phase composition for this element (average over vertices)
-                        x_data = eqp['X'].sel(component=elem).where(phase_mask, drop=False)
-                        x_val = float(x_data.mean().values)
-                        if not np.isnan(x_val):
-                            phase_comp[elem] = x_val
-                except Exception as e:
-                    _log.warning(f"Could not extract composition for phase {phase}: {e}")
+                # Use get_phase_composition utility for robust composition extraction
+                phase_comp = get_phase_composition(eq, phase, elements)
                 
                 # Map phase name to readable form (e.g., CSI -> SiC)
                 readable_name = map_phase_name(phase)
                 
+                # Convert composition to percentage
+                phase_comp_percent = {
+                    elem: round(comp * 100, 2)
+                    for elem, comp in phase_comp.items()
+                }
+                
                 phase_info.append({
-                    'phase': readable_name,
-                    'fraction': frac,
-                    'composition': phase_comp
+                    'phase_name': readable_name,
+                    'phase_name_raw': phase,
+                    'fraction': round(frac, 4),
+                    'fraction_percent': round(frac * 100, 2),
+                    'composition_atomic_fraction': phase_comp,
+                    'composition_atomic_percent': phase_comp_percent
                 })
             
             # Sort by fraction (descending)
             phase_info.sort(key=lambda x: x['fraction'], reverse=True)
             
-            # Format response
-            comp_str = " ".join([f"{elem}{comp_dict[elem]*100:.1f}" for elem in elements])
-            response_lines = [
-                f"**Equilibrium at {temperature:.1f} K for {comp_str}**\n",
-                f"**Temperature**: {temperature:.1f} K ({temperature-273.15:.1f} °C)",
-                f"**Composition**: {comp_str} (atomic %)\n",
-                "**Stable Phases**:"
-            ]
+            # Prepare composition info
+            composition_info = {
+                'input_string': composition,
+                'composition_type': composition_type,
+                'atomic_fractions': {elem: round(frac, 4) for elem, frac in comp_dict.items()},
+                'atomic_percent': {elem: round(frac * 100, 2) for elem, frac in comp_dict.items()},
+                'elements': elements,
+                'system': system_str
+            }
             
-            for pinfo in phase_info:
-                phase_name = pinfo['phase']
-                frac = pinfo['fraction']
-                comp = pinfo['composition']
-                
-                comp_str_phase = ", ".join([f"{e}: {comp[e]*100:.2f}%" for e in elements if e in comp])
-                response_lines.append(f"  • **{phase_name}**: {frac*100:.2f}% ({comp_str_phase})")
-            
-            if not phase_info:
-                response_lines.append("  • No stable phases found (calculation may have failed)")
-            
-            response_lines.append(f"\n**Total phase fraction**: {total_fraction*100:.2f}%")
+            # Temperature info
+            temperature_info = {
+                'temperature_K': temperature,
+                'temperature_C': round(temperature - 273.15, 2)
+            }
             
             duration_ms = (time.time() - start_time) * 1000
             return success_result(
                 handler="calphad",
                 function="calculate_equilibrium_at_point",
                 data={
-                    "message": "\n".join(response_lines),
-                    "temperature_K": temperature,
-                    "composition": comp_str,
+                    "temperature": temperature_info,
+                    "composition": composition_info,
                     "phases": phase_info,
-                    "total_fraction": total_fraction
+                    "total_fraction": round(total_fraction, 4),
+                    "n_phases": len(phase_info)
                 },
                 citations=["pycalphad"],
                 confidence=Confidence.HIGH,
+                notes=[
+                    f"Equilibrium calculated using robust compute_equilibrium utility",
+                    f"Found {len(phase_info)} stable phase(s)",
+                    f"Total phase fraction: {total_fraction*100:.2f}%"
+                ],
                 duration_ms=duration_ms
             )
             
@@ -366,31 +388,32 @@ class CalculationsMixin:
                 duration_ms=duration_ms
             )
     
-    @ai_function(desc="Analyze whether a specific phase increases or decreases with temperature. Use to verify statements about precipitation or dissolution behavior.")
+    @ai_function(desc="Analyze how a specific phase fraction changes with temperature. Provides objective data on precipitation/dissolution behavior with equilibrium and non-equilibrium (Scheil) predictions.")
     async def analyze_phase_fraction_trend(
         self,
         composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Al30Si55C15')")],
         phase_name: Annotated[str, AIParam(desc="Name of the phase to analyze (e.g., 'AL4C3', 'SIC', 'FCC_A1')")],
-        min_temperature: Annotated[float, AIParam(desc="Minimum temperature in Kelvin")],
-        max_temperature: Annotated[float, AIParam(desc="Maximum temperature in Kelvin")],
-        expected_trend: Annotated[Optional[str], AIParam(desc="Expected trend: 'increase', 'decrease', or 'stable'. Optional.")] = None
+        start_temperature: Annotated[float, AIParam(desc="Starting temperature in Kelvin (typically lower temperature)")],
+        end_temperature: Annotated[float, AIParam(desc="Ending temperature in Kelvin (typically higher temperature)")],
+        include_scheil: Annotated[Optional[bool], AIParam(desc="Include Scheil-Gulliver solidification analysis for as-cast behavior. Default: False")] = False,
+        composition_type: Annotated[Optional[str], AIParam(desc="'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = "atomic"
     ) -> str:
         """
         Analyze the trend of a specific phase fraction with temperature.
         
-        This tool is designed to verify statements like:
-        - "Phase X increases with decreasing temperature"
-        - "Phase Y precipitates upon cooling"
-        - "Phase Z dissolves upon heating"
+        Provides objective data on:
+        - Equilibrium phase fraction as function of temperature
+        - Trend direction (increases/decreases with temperature)
+        - Temperature ranges where phase is stable
+        - Optional: Scheil-Gulliver solidification prediction for as-cast behavior
         
-        Returns detailed analysis with verification of expected trends.
+        Returns detailed quantitative analysis without subjective verification.
         """
         start_time = time.time()
         
         try:
-            # Parse composition (note: expected_trend doesn't have composition_type, default to atomic)
-            # Always returns atomic/mole fractions
-            comp_dict = self._parse_multicomponent_composition(composition, composition_type="atomic")
+            # Parse composition (always returns atomic/mole fractions)
+            comp_dict = self._parse_multicomponent_composition(composition, composition_type)
             if not comp_dict:
                 duration_ms = (time.time() - start_time) * 1000
                 return error_result(
@@ -450,11 +473,15 @@ class CalculationsMixin:
             
             phase_to_track = phase_name_upper if phase_name_upper in phases else phase_name
             
-            # Calculate over temperature range
-            temps = np.linspace(min_temperature, max_temperature, 50)
+            # Calculate over temperature range with better resolution
+            n_points = 100  # Increased resolution for better trend detection
+            temps = np.linspace(start_temperature, end_temperature, n_points)
             fractions = []
+            successful_calcs = 0
             
             elements_with_va = elements + ['VA']
+            
+            _log.info(f"Calculating phase fraction trend for {phase_to_track} over {n_points} temperature points")
             
             for T in temps:
                 conditions = {v.T: T, v.P: 101325, v.N: 1}
@@ -465,118 +492,205 @@ class CalculationsMixin:
                     eq = equilibrium(db, elements_with_va, phases, conditions)
                     
                     # Extract phase fractions properly (handling multiple vertices)
-                    # Use looser tolerance (1e-4) for better boundary handling
-                    temp_phases = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-4)
+                    # Use looser tolerance (1e-5) to capture trace amounts
+                    temp_phases = extract_phase_fractions_from_equilibrium(eq, tolerance=1e-5)
                     
                     # Find our phase, summing all instances (e.g., SIC#1 + SIC#2)
                     phase_frac = get_phase_fraction_by_base_name(temp_phases, phase_to_track)
                     
-                    # Debug: Log phase fractions at a few sample temperatures
-                    if len(fractions) < 3 or len(fractions) == len(temps) // 2:
+                    # Debug: Log phase fractions at sample temperatures
+                    if len(fractions) < 3 or len(fractions) == n_points // 2 or len(fractions) == n_points - 1:
                         # Collapse instances to base names for debugging
                         base_phases = {}
-                        for phase_name, frac in temp_phases.items():
-                            base_name = str(phase_name).split('#')[0].upper()
+                        for pname, frac in temp_phases.items():
+                            base_name = str(pname).split('#')[0].upper()
                             base_phases[base_name] = base_phases.get(base_name, 0.0) + frac
                         top_phases = sorted(base_phases.items(), key=lambda x: x[1], reverse=True)[:5]
-                        _log.info(f"At {T:.0f}K: top phases = {top_phases}, {phase_to_track} fraction = {phase_frac:.4f}")
+                        _log.info(f"At {T:.0f}K: top phases = {top_phases}, {phase_to_track} fraction = {phase_frac:.6f}")
+                    
+                    if phase_frac > 1e-8:  # Track successful detections
+                        successful_calcs += 1
                     
                     fractions.append(phase_frac)
                     
                 except Exception as e:
-                    _log.warning(f"Calculation failed at {T}K: {e}")
+                    _log.warning(f"Equilibrium calculation failed at {T:.0f}K: {e}")
                     fractions.append(0.0)
             
             # Analyze trend
             fractions = np.array(fractions)
-            frac_low_T = fractions[0]
-            frac_high_T = fractions[-1]
+            frac_start = float(fractions[0])
+            frac_end = float(fractions[-1])
             
-            max_frac = np.max(fractions)
-            min_frac = np.min(fractions)
+            max_frac = float(np.max(fractions))
+            min_frac = float(np.min(fractions))
+            mean_frac = float(np.mean(fractions))
             
-            # Compute overall trend
-            delta = frac_high_T - frac_low_T
+            # Count non-zero points
+            nonzero_count = np.count_nonzero(fractions > 1e-6)
             
-            if abs(delta) < 0.001:
+            _log.info(f"Phase {phase_to_track} statistics: successful_calcs={successful_calcs}, nonzero_count={nonzero_count}, max={max_frac:.6f}, mean={mean_frac:.6f}")
+            
+            # Detect if phase is essentially absent
+            if max_frac < 1e-5:
+                _log.warning(f"Phase {phase_to_track} has negligible presence (max={max_frac:.2e}) - may not be stable in this composition/T range")
+            
+            # Compute overall trend using linear regression for robustness
+            if nonzero_count >= 3:
+                # Use only nonzero points for slope calculation
+                nonzero_mask = fractions > 1e-6
+                temps_nz = temps[nonzero_mask]
+                fracs_nz = fractions[nonzero_mask]
+                
+                if len(temps_nz) >= 2:
+                    # Linear fit
+                    slope, intercept = np.polyfit(temps_nz, fracs_nz, 1)
+                    # Normalize slope by temperature range for interpretation
+                    normalized_slope = slope * (end_temperature - start_temperature)
+                else:
+                    slope = 0
+                    normalized_slope = 0
+            else:
+                slope = 0
+                normalized_slope = 0
+            
+            # Compute change and trend
+            delta = float(frac_end - frac_start)
+            
+            # Determine trend from slope (more robust than endpoints)
+            if abs(normalized_slope) < 0.001:
                 trend = "stable"
-                trend_desc = "remains relatively stable"
-            elif delta > 0.001:
+                trend_desc = "remains relatively stable with temperature"
+            elif normalized_slope > 0.001:
                 trend = "increases"
-                trend_desc = "increases with increasing temperature (decreases upon cooling)"
+                trend_desc = "increases with increasing temperature"
             else:
                 trend = "decreases"
-                trend_desc = "decreases with increasing temperature (increases upon cooling)"
+                trend_desc = "decreases with increasing temperature"
+            
+            # Add interpretation
+            if trend == "decreases":
+                interpretation = f"{phase_to_track} precipitates upon cooling (stable at lower temperatures)"
+            elif trend == "increases":
+                interpretation = f"{phase_to_track} dissolves upon cooling (stable at higher temperatures)"
+            else:
+                interpretation = f"{phase_to_track} fraction is relatively temperature-independent"
+            
+            # Find stability temperature range
+            stable_temps = temps[fractions > 1e-4]
+            if len(stable_temps) > 0:
+                T_stability_start = float(stable_temps[0])
+                T_stability_end = float(stable_temps[-1])
+            else:
+                T_stability_start = None
+                T_stability_end = None
+            
+            # Check if phase is negligible
+            is_negligible = max_frac < 1e-5
             
             comp_str = "".join([f"{elem}{comp_dict[elem]*100:.0f}" for elem in elements])
             
-            response_lines = [
-                f"**Phase Fraction Analysis: {phase_to_track} in {comp_str}**\n",
-                f"**Temperature Range**: {min_temperature:.0f} - {max_temperature:.0f} K ({min_temperature-273.15:.0f} - {max_temperature-273.15:.0f} °C)",
-                f"**Phase**: {phase_to_track}",
-                f"**Composition**: {comp_str} (atomic %)\n",
-                f"**Results**:",
-                f"  • Fraction at {min_temperature:.0f} K: {frac_low_T*100:.3f}%",
-                f"  • Fraction at {max_temperature:.0f} K: {frac_high_T*100:.3f}%",
-                f"  • Change: {delta*100:.3f}% ({'+' if delta > 0 else ''}{delta*100:.3f}%)",
-                f"  • Maximum fraction: {max_frac*100:.3f}%",
-                f"  • Minimum fraction: {min_frac*100:.3f}%\n",
-                f"**Trend**: The phase fraction **{trend_desc}**."
-            ]
-            
-            # Verify against expected trend if provided
-            if expected_trend:
-                expected_lower = expected_trend.lower()
-                matches = False
-                
-                # Check for "increasing/decreasing with temperature" patterns
-                if "decreasing temperature" in expected_lower or "upon cooling" in expected_lower or "with cooling" in expected_lower:
-                    # Phase should be higher at LOW temperature (precipitation upon cooling)
-                    if "increase" in expected_lower:
-                        matches = (frac_low_T > frac_high_T + 0.001)
-                    elif "decrease" in expected_lower:
-                        matches = (frac_low_T < frac_high_T - 0.001)
+            # Scheil-Gulliver analysis for as-cast behavior (optional)
+            scheil_data = None
+            if include_scheil:
+                try:
+                    _log.info(f"Running Scheil-Gulliver solidification analysis for {phase_to_track}")
+                    
+                    # Find liquidus temperature for proper starting point
+                    T_liquidus, T_solidus = find_liquidus_solidus_temperatures(
+                        db, elements, phases, comp_dict, n_points=30
+                    )
+                    
+                    if T_liquidus is not None:
+                        T_start_scheil = T_liquidus + 50.0
+                        T_end_scheil = max(200.0, start_temperature - 50.0)
                         
-                elif "increasing temperature" in expected_lower or "upon heating" in expected_lower or "with heating" in expected_lower:
-                    # Phase should be higher at HIGH temperature
-                    if "increase" in expected_lower:
-                        matches = (frac_high_T > frac_low_T + 0.001)
-                    elif "decrease" in expected_lower:
-                        matches = (frac_high_T < frac_low_T - 0.001)
+                        # Run Scheil-Gulliver simulation
+                        scheil_phases = simulate_scheil_gulliver(
+                            db=db,
+                            elements=elements,
+                            phases=phases,
+                            composition=comp_dict,
+                            T_start=T_start_scheil,
+                            T_end=T_end_scheil,
+                            dT=5.0,
+                            use_cache=True
+                        )
                         
-                # Simple increase/decrease without temperature reference
-                elif "increase" in expected_lower:
-                    matches = (trend == "increases")
-                elif "decrease" in expected_lower:
-                    matches = (trend == "decreases")
-                elif "stable" in expected_lower or "constant" in expected_lower:
-                    matches = (trend == "stable")
-                
-                if matches:
-                    response_lines.append(f"\n✅ **Verification**: The expected trend ('{expected_trend}') **matches** the calculated behavior.")
-                else:
-                    response_lines.append(f"\n❌ **Verification**: The expected trend ('{expected_trend}') **does NOT match** the calculated behavior.")
+                        # Extract our phase fraction from Scheil results
+                        scheil_frac = float(get_phase_fraction_by_base_name(scheil_phases, phase_to_track))
+                        
+                        # Compare to equilibrium at room temperature
+                        room_temp_eq_frac = frac_start if start_temperature < 400 else None
+                        
+                        # Convert all phase fractions to float for JSON serialization
+                        scheil_phases_clean = {str(k): float(v) for k, v in scheil_phases.items()}
+                        
+                        scheil_data = {
+                            "liquidus_K": float(T_liquidus),
+                            "liquidus_C": float(T_liquidus - 273.15),
+                            "solidus_K": float(T_solidus) if T_solidus else None,
+                            "solidus_C": float(T_solidus - 273.15) if T_solidus else None,
+                            "phase_fraction_as_cast": scheil_frac,
+                            "difference_vs_equilibrium": float(scheil_frac - room_temp_eq_frac) if room_temp_eq_frac is not None else None,
+                            "all_phases": scheil_phases_clean,
+                            "note": "Scheil-Gulliver predicts non-equilibrium solidification behavior (as-cast microstructure before heat treatment)"
+                        }
+                    else:
+                        scheil_data = {
+                            "error": "Could not determine liquidus temperature for Scheil-Gulliver analysis"
+                        }
+                        
+                except Exception as e:
+                    _log.warning(f"Scheil-Gulliver analysis failed: {e}")
+                    scheil_data = {
+                        "error": f"Scheil-Gulliver analysis unavailable: {str(e)}"
+                    }
             
             duration_ms = (time.time() - start_time) * 1000
+            
+            # Build clean JSON-serializable output
+            result_data = {
+                "phase": phase_to_track,
+                "composition": comp_str,
+                "system": "-".join(elements),
+                "temperature_range": {
+                    "start_K": float(start_temperature),
+                    "end_K": float(end_temperature),
+                    "start_C": float(start_temperature - 273.15),
+                    "end_C": float(end_temperature - 273.15)
+                },
+                "equilibrium_analysis": {
+                    "fraction_at_start_T": frac_start,
+                    "fraction_at_end_T": frac_end,
+                    "max_fraction": max_frac,
+                    "min_fraction": min_frac,
+                    "mean_fraction": mean_frac,
+                    "fraction_change": delta,
+                    "nonzero_count": int(nonzero_count),
+                    "total_points": int(len(temps))
+                },
+                "trend": {
+                    "direction": trend,
+                    "description": trend_desc,
+                    "interpretation": interpretation
+                },
+                "stability_range": {
+                    "start_K": T_stability_start,
+                    "end_K": T_stability_end,
+                    "start_C": float(T_stability_start - 273.15) if T_stability_start else None,
+                    "end_C": float(T_stability_end - 273.15) if T_stability_end else None
+                } if T_stability_start else None,
+                "is_negligible": is_negligible,
+                "scheil_analysis": scheil_data
+            }
+            
             return success_result(
                 handler="calphad",
                 function="analyze_phase_fraction_trend",
-                data={
-                    "message": "\n".join(response_lines),
-                    "phase": phase_to_track,
-                    "composition": comp_str,
-                    "temperature_range_K": [min_temperature, max_temperature],
-                    "trend": trend,
-                    "fraction_change": delta,
-                    "fraction_at_low_T": frac_low_T,
-                    "fraction_at_high_T": frac_high_T,
-                    "max_fraction": max_frac,
-                    "min_fraction": min_frac,
-                    "expected_trend": expected_trend,
-                    "matches_expectation": matches if expected_trend else None
-                },
+                data=result_data,
                 citations=["pycalphad"],
-                confidence=Confidence.HIGH if matches or expected_trend is None else Confidence.MEDIUM,
+                confidence=Confidence.HIGH if nonzero_count >= 10 else Confidence.MEDIUM,
                 duration_ms=duration_ms
             )
             

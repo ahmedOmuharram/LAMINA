@@ -494,7 +494,7 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
     if (!currentTestRun) return;
 
     // Use the specific verdict regex pattern
-    const verdictRegex = /[*]{0,2}\s*Verdict\s*[*]{0,2}\s*:\s*[*]{0,2}\s*(-?\d+)\s*[*]{0,2}/gi;
+    const verdictRegex = /[*]{0,2}\s*Verdict\s*[*]{0,2}\s*:\s*[*]{0,2}\s*([+-]?\d+)\s*[*]{0,2}/gi;
     const verdicts: string[] = [];
 
     // Extract from all filtered questions
@@ -750,7 +750,7 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                     )}
                     
                     <div className="text-xs text-gray-500 bg-blue-50 p-2 rounded">
-                      <strong>Pattern:</strong> <code className="bg-white px-1">[*]{'{0,2}'}\s*Verdict\s*[*]{'{0,2}'}\s*:\s*[*]{'{0,2}'}\s*(-?\d+)\s*[*]{'{0,2}'}</code>
+                      <strong>Pattern:</strong> <code className="bg-white px-1">[*]{'{0,2}'}\s*Verdict\s*[*]{'{0,2}'}\s*:\s*[*]{'{0,2}'}\s*([+-]?\d+)\s*[*]{'{0,2}'}</code>
                     </div>
                   </div>
                 </CardContent>

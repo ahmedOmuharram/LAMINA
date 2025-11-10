@@ -22,7 +22,13 @@ from ..shared.constants import (
 )
 
 from .atomic_utils import get_cohesive_energy, get_metal_radius
-from .surface_utils import normalize_surface, estimate_diffusion_barrier
+from .surface_utils import (
+    normalize_surface, 
+    estimate_diffusion_barrier,
+    evaluate_scenario,
+    generate_scenarios,
+    generate_warnings
+)
 from .composition_utils import parse_system_string, parse_composition_string
 from .mechanical_utils import get_phase_mechanical_descriptors
 from .stiffness_utils import estimate_phase_modulus
@@ -54,9 +60,11 @@ class AlloyHandler(BaseHandler):
 
     @ai_function(
         desc=(
-            "Estimate the surface diffusion barrier (activation energy, eV) for an adatom on a metal surface. "
-            "Facet (111/100/110) and likely mechanism (hopping vs exchange) are accounted for. "
-            "Intended for rough scoping; use DFT+NEB for quantitative work."
+            "Comprehensive surface diffusion barrier estimation across multiple realistic scenarios "
+            "(facets, mechanisms, defects, coverage), with uncertainty quantification and kinetics. "
+            "Returns ranked scenarios with P10/P50/P90 uncertainty bands, kinetic rates, and "
+            "diffusion coefficients at specified temperature. Use this for thorough analysis of "
+            "all relevant diffusion pathways; use DFT+NEB for quantitative predictions."
         ),
         auto_truncate=128000,
     )
@@ -64,91 +72,164 @@ class AlloyHandler(BaseHandler):
         self,
         adatom_element: Annotated[str, AIParam(desc="Adatom element, e.g., 'Au'.")],
         host_element: Annotated[str, AIParam(desc="Host surface element, e.g., 'Al'.")],
-        surface_miller: Annotated[Optional[str], AIParam(desc="Surface orientation like '111', '100', '110' (optional).")] = None,
+        surface_millers: Annotated[Optional[str], AIParam(desc="Comma-separated surfaces like '111,100,110'. Omit for all three.")] = None,
+        include_defects: Annotated[bool, AIParam(desc="Also evaluate step-edge and vacancy-mediated paths")] = True,
+        coverage_theta: Annotated[float, AIParam(desc="Adatom coverage (ML, 0–1). Influences crowding")] = 0.0,
+        oxide: Annotated[bool, AIParam(desc="If True, apply oxide penalty (e.g., native Al2O3)")] = False,
+        temperature_K: Annotated[Optional[float], AIParam(desc="Temperature for kinetics (Arrhenius)")] = 300.0,
+        attempt_frequency_Hz: Annotated[float, AIParam(desc="Attempt frequency ν, s^-1")] = 1.0e13,
+        jump_distance_A: Annotated[float, AIParam(desc="Jump distance (Å) for D estimate")] = 2.5,
+        mc_samples: Annotated[int, AIParam(desc="Monte Carlo samples for uncertainty quantification (0 disables)")] = 200
     ) -> Dict[str, Any]:
         """
-        Estimate surface diffusion barrier using descriptor-based model.
+        Comprehensive surface diffusion analysis with multi-scenario enumeration.
         
-        This function uses cohesive energies and atomic radii to estimate
-        the activation energy for an adatom diffusing on a metal surface.
-        Facet-specific scaling is applied.
+        This function explores a grid of realistic scenarios:
+        - Facets: (111), (100), (110) surfaces
+        - Mechanisms: hopping vs exchange
+        - Defects: terrace vs step-edge vs vacancy-mediated
+        - Coverage effects: crowding penalties
+        - Surface conditions: clean vs oxide
+        
+        Returns:
+        - Ranked list of all scenarios with P10/P50/P90 energy ranges
+        - Kinetic rates and diffusion coefficients at specified temperature
+        - Per-facet minimum barriers
+        - Consensus range across all scenarios
+        - Warnings for problematic cases (large size mismatch, oxides, etc.)
         """
         start_time = time.time()
         
         try:
             ad = adatom_element.capitalize()
             host = host_element.capitalize()
-
+            
+            # Get atomic descriptors
             ecoh_ad, src_ad = get_cohesive_energy(ad)
             ecoh_host, src_host = get_cohesive_energy(host)
             r_ad = get_metal_radius(ad)
             r_host = get_metal_radius(host)
-
+            
             if ecoh_host is None or r_ad is None or r_host is None:
                 duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="alloys",
-                    function="estimate_surface_diffusion_barrier",
-                    error="Insufficient data for estimate. Missing cohesive energy or atomic radius data.",
+                    function="estimate_surface_diffusion_barrier_suite",
+                    error="Insufficient data: missing cohesive energy or metallic radius for host/adatom.",
                     error_type=ErrorType.NOT_FOUND,
                     citations=["mendeleev", "pymatgen"],
                     diagnostics={
                         "missing": {
-                            "cohesive_energy_host": ecoh_host,
-                            "radius_adatom": r_ad,
-                            "radius_host": r_host,
+                            "E_coh_host": ecoh_host,
+                            "r_ad": r_ad,
+                            "r_host": r_host
                         }
                     },
                     duration_ms=duration_ms
                 )
-
-            facet, facet_mult, mechanism, diff_over_ads = normalize_surface(surface_miller)
-
-            # Choose facet-specific adsorption scaling vs host cohesion
-            if facet == "111":
-                ads_over_coh = ADS_OVER_COH_111
-            elif facet == "100":
-                ads_over_coh = ADS_OVER_COH_100
-            elif facet == "110":
-                ads_over_coh = ADS_OVER_COH_110
+            
+            # Determine which facets to evaluate
+            if surface_millers:
+                facets_req = [s.strip() for s in surface_millers.split(",") if s.strip()]
             else:
-                # unknown facet → mid value
-                ads_over_coh = 0.25
-
-            # Estimate barrier
-            ea_est, ea_low, ea_high = estimate_diffusion_barrier(
-                ecoh_host, r_ad, r_host, facet, facet_mult, diff_over_ads, ads_over_coh
-            )
-
-            # Calculate size mismatch for reporting
-            size_mismatch_rel = abs((r_ad - r_host) / r_host)
-            size_factor = max(0.7, min(1.10, 1.0 - 0.35 * size_mismatch_rel))
-
-            # Confidence: facet specified → medium; unspecified → low
-            confidence = "high" if facet in ("111", "100", "110") else "low"
-
+                facets_req = ["111", "100", "110"]
+            
+            # Facet-specific adsorption/cohesion scaling ratios
+            ads_over_coh_dict = {
+                "111": ADS_OVER_COH_111,
+                "100": ADS_OVER_COH_100,
+                "110": ADS_OVER_COH_110,
+                "unspecified": 0.25
+            }
+            
+            # Generate scenario grid
+            scenario_tuples = generate_scenarios(facets_req, include_defects)
+            
+            # Evaluate all scenarios
+            scenarios = []
+            for facet, mechanism, defect in scenario_tuples:
+                scenario = evaluate_scenario(
+                    ecoh_host=ecoh_host,
+                    r_ad=r_ad,
+                    r_host=r_host,
+                    facet_label=facet,
+                    mechanism=mechanism,
+                    defect=defect,
+                    coverage_theta=coverage_theta,
+                    oxide=oxide,
+                    temperature_K=temperature_K,
+                    attempt_frequency_Hz=attempt_frequency_Hz,
+                    jump_distance_A=jump_distance_A,
+                    mc_samples=mc_samples,
+                    ads_over_coh_dict=ads_over_coh_dict
+                )
+                scenarios.append(scenario)
+            
+            # Sort by median barrier (P50)
+            scenarios.sort(key=lambda s: s["Ea_eV"]["P50"])
+            
+            # Per-facet minima (lowest barrier for each facet)
+            facet_summary = {}
+            for s in scenarios:
+                f = s["facet"]
+                if f not in facet_summary or s["Ea_eV"]["P50"] < facet_summary[f]["Ea_eV"]["P50"]:
+                    facet_summary[f] = s
+            
+            # Consensus range (global P10 to P90)
+            all_p10 = min(s["Ea_eV"]["P10"] for s in scenarios)
+            all_p90 = max(s["Ea_eV"]["P90"] for s in scenarios)
+            consensus = {
+                "Ea_eV_min_P10": round(all_p10, 4),
+                "Ea_eV_max_P90": round(all_p90, 4)
+            }
+            
+            # Generate warnings
+            warnings = generate_warnings(host, r_ad, r_host, oxide)
+            
+            # Confidence rubric
+            confidence = "medium"
+            if surface_millers and all(f in ("111", "100", "110") for f in facets_req):
+                confidence = "high"
+            if oxide and host in ("Al", "Ti", "Mg"):
+                confidence = "medium"  # oxide model is coarse
+            
+            # Assemble notes
+            notes = [
+                "Heuristic: adsorption scales with host cohesion; diffusion scales with adsorption; "
+                "facet/mechanism/defect multipliers applied.",
+                "Exchange often favored on (100)/(110); hopping on (111). Vacancy/step pathways can lower Ea.",
+                "Coverage and oxide increase barriers; uncertainty from ±15% multiplicative noise.",
+                "Kinetics computed via Arrhenius (rate = ν·exp(-Ea/kBT)) and 2D random walk (D ≈ a²·Γ/4).",
+                "Use DFT+NEB for quantitative results; consider site-specific paths (fcc→hcp, bridge, concerted exchange)."
+            ]
+            notes.extend(warnings)
+            
             duration_ms = (time.time() - start_time) * 1000
-
+            
             return success_result(
                 handler="alloys",
-                function="estimate_surface_diffusion_barrier",
+                function="estimate_surface_diffusion_barrier_suite",
                 data={
                     "adatom": ad,
                     "host": host,
-                    "surface": facet,
-                    "surface_input": surface_miller,
-                    "activation_energy_eV": round(ea_est, 4),
-                    "energy_range_eV": [ea_low, ea_high],
-                    "likely_mechanism": mechanism,
-                    "method": "descriptor_model_v2_facetaware",
+                    "scenarios_ranked": scenarios,  # Full table sorted by P50
+                    "facet_minima": facet_summary,  # Best scenario per facet
+                    "consensus_range": consensus,   # Global P10–P90
+                    "assumptions": {
+                        "include_defects": include_defects,
+                        "coverage_theta": coverage_theta,
+                        "oxide": oxide,
+                        "temperature_K": temperature_K,
+                        "attempt_frequency_Hz": attempt_frequency_Hz,
+                        "jump_distance_A": jump_distance_A,
+                        "mc_samples": mc_samples
+                    },
                     "descriptors": {
-                        "cohesive_energy_adatom_eV": round(ecoh_ad, 4) if ecoh_ad is not None else None,
                         "cohesive_energy_host_eV": round(ecoh_host, 4),
-                        "ads_over_coh_fraction": round(ads_over_coh, 3),
-                        "diff_over_ads_fraction": round(diff_over_ads, 3),
-                        "facet_multiplier": round(facet_mult, 2),
-                        "size_mismatch_rel": round(size_mismatch_rel, 4),
-                        "size_factor": round(size_factor, 3),
+                        "cohesive_energy_adatom_eV": round(ecoh_ad, 4) if ecoh_ad is not None else None,
+                        "size_mismatch_rel": round(abs((r_ad - r_host) / r_host), 4),
+                        "adatom_radius_A": round(r_ad, 4),
+                        "host_radius_A": round(r_host, 4)
                     },
                     "data_sources": {
                         "cohesive_energy": {
@@ -160,19 +241,16 @@ class AlloyHandler(BaseHandler):
                 },
                 citations=["mendeleev", "pymatgen"],
                 confidence=confidence,
-                caveats=[
-                    "Heuristic scaling; actual barriers depend on site, mechanism (hopping vs exchange), "
-                    "and reconstruction/segregation.",
-                    "Use DFT+NEB for accuracy; consider alloying tendencies."
-                ],
+                notes=notes,
                 duration_ms=duration_ms
             )
+            
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
-            _log.error(f"Error estimating surface diffusion barrier for {adatom_element} on {host_element}: {e}", exc_info=True)
+            _log.error(f"Error in estimate_surface_diffusion_barrier_suite for {adatom_element} on {host_element}: {e}", exc_info=True)
             return error_result(
                 handler="alloys",
-                function="estimate_surface_diffusion_barrier",
+                function="estimate_surface_diffusion_barrier_suite",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
                 citations=["mendeleev", "pymatgen"],

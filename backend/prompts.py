@@ -13,7 +13,7 @@ KANI_SYSTEM_PROMPT = (
     "IMPORTANT: You are in FUNCTION CALLING MODE. When you need to use tools, call them directly using your function calling capabilities. "
     "Prefer calling tools over free-form answers. Be concise and mindful of the number of results you fetch. "
     "Always output natural language responses except when explicitly asked to output in a specific format. "
-    "For ALL questions, use search_web to find additional information to verify your answers"
+    "For ALL queries, call the search_web tool to find additional information to verify your answers, then call the appropriate tool to answer the question."
     ""
     "═══════════════════════════════════════════════════════════════════════════════════\n"
     "TOOL SELECTION GUIDE - Choose the right tool for each task:\n"

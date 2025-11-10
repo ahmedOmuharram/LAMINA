@@ -5,10 +5,14 @@ This module handles surface-specific calculations including:
 - Surface orientation normalization
 - Facet-dependent diffusion mechanisms
 - Surface diffusion barrier estimation
+- Multi-scenario uncertainty quantification
+- Kinetics (rates and diffusion coefficients)
 """
 from __future__ import annotations
 import logging
-from typing import Optional, Tuple
+import math
+import random
+from typing import Optional, Tuple, Dict, List, Any
 from ..shared.constants import (
     DIFF_OVER_ADS_111,
     DIFF_OVER_ADS_100,
@@ -117,4 +121,250 @@ def estimate_diffusion_barrier(
     ea_high = round(min(2.0, ea_est * spread), 4)
     
     return ea_est, ea_low, ea_high
+
+
+def compute_kinetics(
+    ea_eV: float,
+    temperature_K: float,
+    attempt_frequency_Hz: float = 1.0e13,
+    jump_distance_A: float = 2.5
+) -> Dict[str, float]:
+    """
+    Convert activation energy to kinetic rates and surface diffusion coefficient.
+    
+    Uses Arrhenius equation: k = ν·exp(-Ea/kBT)
+    Surface diffusion coefficient from 2D random walk: D ≈ a²·Γ/4
+    
+    Args:
+        ea_eV: Activation energy (eV)
+        temperature_K: Temperature (K)
+        attempt_frequency_Hz: Attempt frequency ν (s⁻¹), typically 10¹²-10¹⁴ Hz
+        jump_distance_A: Jump distance a (Å), typically nearest-neighbor distance
+        
+    Returns:
+        Dict with rate (s⁻¹) and diffusion coefficient D (m²/s)
+    """
+    kBT = 8.617333262e-5 * temperature_K  # eV (Boltzmann constant in eV/K)
+    rate = attempt_frequency_Hz * math.exp(-ea_eV / kBT)
+    
+    # 2D surface diffusion coefficient (convert Å to m)
+    D_m2_s = (jump_distance_A * 1e-10) ** 2 * rate / 4.0
+    
+    return {
+        "rate_s-1": rate,
+        "D_m2_s": D_m2_s,
+        "T_K": temperature_K,
+        "attempt_frequency_Hz": attempt_frequency_Hz,
+        "jump_distance_A": jump_distance_A
+    }
+
+
+def evaluate_scenario(
+    ecoh_host: float,
+    r_ad: float,
+    r_host: float,
+    facet_label: str,
+    mechanism: str,
+    defect: str,
+    coverage_theta: float,
+    oxide: bool,
+    temperature_K: Optional[float],
+    attempt_frequency_Hz: float,
+    jump_distance_A: float,
+    mc_samples: int,
+    ads_over_coh_dict: Dict[str, float]
+) -> Dict[str, Any]:
+    """
+    Evaluate a single diffusion scenario with uncertainty quantification.
+    
+    Args:
+        ecoh_host: Host cohesive energy (eV)
+        r_ad: Adatom radius (Å)
+        r_host: Host radius (Å)
+        facet_label: Facet string ('111', '100', '110', 'unspecified')
+        mechanism: 'hopping' or 'exchange'
+        defect: 'none', 'step', or 'vacancy'
+        coverage_theta: Adatom coverage (ML, 0-1)
+        oxide: If True, apply oxide penalty
+        temperature_K: Temperature for kinetics (K), None to skip
+        attempt_frequency_Hz: Attempt frequency (Hz)
+        jump_distance_A: Jump distance (Å)
+        mc_samples: Monte Carlo samples for uncertainty (0 to disable)
+        ads_over_coh_dict: Facet-specific adsorption/cohesion ratios
+        
+    Returns:
+        Dict with scenario details, energy ranges (P10/P50/P90), and kinetics
+    """
+    # Mechanism-dependent multipliers (facet-specific)
+    # Exchange often favored on open surfaces (100/110), hopping on close-packed (111)
+    MECH_MULT = {
+        ("111", "exchange"): 1.10,
+        ("111", "hopping"): 1.00,
+        ("100", "exchange"): 0.85,
+        ("100", "hopping"): 1.05,
+        ("110", "exchange"): 0.90,
+        ("110", "hopping"): 1.05,
+        ("unspecified", "exchange"): 0.95,
+        ("unspecified", "hopping"): 1.00,
+    }
+    
+    # Defect-assisted pathways typically lower barriers
+    DEFECT_MULT = {
+        "none": 1.00,
+        "step": 0.80,      # step-edge diffusion often easier
+        "vacancy": 0.70,   # vacancy-mediated exchange can be significantly easier
+    }
+    
+    # Coverage penalty (crowding effects, mild and linear)
+    COV_MULT = 1.0 + 0.4 * max(0.0, min(1.0, coverage_theta))
+    
+    # Oxide penalty for reactive hosts (e.g., Al native oxide)
+    OXIDE_MULT = 1.30 if oxide else 1.00
+    
+    # Monte Carlo uncertainty level (15% std on scaling factors)
+    MC_SIGMA = 0.15
+    
+    # Get facet parameters
+    facet_norm, facet_mult, _, diff_over_ads = normalize_surface(facet_label)
+    
+    # Get adsorption scaling
+    ads_over_coh = ads_over_coh_dict.get(facet_norm, 0.25)
+    
+    # Baseline barrier (no modifiers yet)
+    ea_base, _, _ = estimate_diffusion_barrier(
+        ecoh_host, r_ad, r_host, facet_norm, facet_mult,
+        diff_over_ads, ads_over_coh
+    )
+    
+    # Apply all modifiers
+    mech_mult = MECH_MULT.get((facet_norm, mechanism), 1.0)
+    ea_adj = ea_base * mech_mult * DEFECT_MULT[defect] * COV_MULT * OXIDE_MULT
+    ea_adj = max(0.01, min(2.0, ea_adj))
+    
+    # Monte Carlo uncertainty quantification
+    mc_vals = []
+    if mc_samples > 0:
+        for _ in range(mc_samples):
+            # Lognormal-ish multiplicative noise on each scaling factor
+            mm = mech_mult * math.exp(random.gauss(0.0, MC_SIGMA))
+            dm = DEFECT_MULT[defect] * math.exp(random.gauss(0.0, MC_SIGMA))
+            cm = COV_MULT * math.exp(random.gauss(0.0, MC_SIGMA * 0.5))
+            om = OXIDE_MULT * math.exp(random.gauss(0.0, MC_SIGMA * 0.5))
+            
+            # Small noise on adsorption/diffusion scalings
+            doa = diff_over_ads * math.exp(random.gauss(0.0, MC_SIGMA))
+            aoc = ads_over_coh * math.exp(random.gauss(0.0, MC_SIGMA))
+            
+            # Rebuild baseline with perturbed parameters
+            ea_j_base, _, _ = estimate_diffusion_barrier(
+                ecoh_host, r_ad, r_host, facet_norm, facet_mult, doa, aoc
+            )
+            ea_j = max(0.01, min(2.0, ea_j_base * mm * dm * cm * om))
+            mc_vals.append(ea_j)
+    
+    # Calculate quantiles
+    if mc_vals:
+        mc_vals.sort()
+        q10 = mc_vals[int(0.10 * len(mc_vals))]
+        q50 = mc_vals[int(0.50 * len(mc_vals))]
+        q90 = mc_vals[int(0.90 * len(mc_vals))]
+    else:
+        # Simple ±50% bands if no MC
+        q10 = max(0.01, ea_adj * 0.5)
+        q50 = ea_adj
+        q90 = min(2.0, ea_adj * 1.5)
+    
+    # Compute kinetics if temperature provided
+    kinetics = None
+    if temperature_K and temperature_K > 0:
+        kinetics = {
+            "P10": compute_kinetics(q10, temperature_K, attempt_frequency_Hz, jump_distance_A),
+            "P50": compute_kinetics(q50, temperature_K, attempt_frequency_Hz, jump_distance_A),
+            "P90": compute_kinetics(q90, temperature_K, attempt_frequency_Hz, jump_distance_A),
+        }
+    
+    return {
+        "facet": facet_norm,
+        "mechanism": mechanism,
+        "defect": defect,
+        "Ea_eV": {
+            "P10": round(q10, 4),
+            "P50": round(q50, 4),
+            "P90": round(q90, 4)
+        },
+        "baseline_Ea_eV": round(ea_base, 4),
+        "modifiers": {
+            "mechanism_mult": round(mech_mult, 3),
+            "defect_mult": DEFECT_MULT[defect],
+            "coverage_mult": round(COV_MULT, 3),
+            "oxide_mult": OXIDE_MULT
+        },
+        "kinetics": kinetics
+    }
+
+
+def generate_scenarios(
+    facets_requested: List[str],
+    include_defects: bool
+) -> List[Tuple[str, str, str]]:
+    """
+    Generate list of (facet, mechanism, defect) scenario tuples to evaluate.
+    
+    Args:
+        facets_requested: List of facet strings (e.g., ['111', '100', '110'])
+        include_defects: If True, include step and vacancy scenarios
+        
+    Returns:
+        List of (facet, mechanism, defect) tuples
+    """
+    MECHANISMS = ["hopping", "exchange"]
+    DEFECTS = ["none"]
+    if include_defects:
+        DEFECTS += ["step", "vacancy"]
+    
+    scenarios = []
+    for facet in facets_requested:
+        for mechanism in MECHANISMS:
+            for defect in DEFECTS:
+                scenarios.append((facet, mechanism, defect))
+    
+    return scenarios
+
+
+def generate_warnings(
+    host: str,
+    r_ad: float,
+    r_host: float,
+    oxide: bool
+) -> List[str]:
+    """
+    Generate warnings for potentially problematic scenarios.
+    
+    Args:
+        host: Host element symbol
+        r_ad: Adatom radius (Å)
+        r_host: Host radius (Å)
+        oxide: Whether oxide conditions are considered
+        
+    Returns:
+        List of warning strings
+    """
+    warnings = []
+    
+    # Size mismatch warning
+    size_mismatch_rel = abs((r_ad - r_host) / r_host)
+    if size_mismatch_rel > 0.25:
+        warnings.append(
+            f"Large size mismatch ({size_mismatch_rel*100:.1f}%) — "
+            "mechanism may switch or cluster diffusion may dominate."
+        )
+    
+    # Oxide warning for reactive metals
+    if host in ("Al", "Ti", "Mg") and not oxide:
+        warnings.append(
+            f"{host} oxidizes readily; clean terraces require UHV. "
+            "Consider oxide=True for ambient conditions."
+        )
+    
+    return warnings
 
