@@ -1,4 +1,4 @@
-import type { ChatRequest, ChatResponse, ModelsResponse } from '@/types/api';
+import type { ChatRequest, ChatResponse, ModelsResponse, AIFunctionsListResponse } from '@/types/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -13,6 +13,14 @@ export class ApiClient {
     const response = await fetch(`${this.baseUrl}/v1/models`);
     if (!response.ok) {
       throw new Error(`Failed to fetch models: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async getAIFunctions(): Promise<AIFunctionsListResponse> {
+    const response = await fetch(`${this.baseUrl}/v1/ai_functions`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch AI functions: ${response.statusText}`);
     }
     return response.json();
   }

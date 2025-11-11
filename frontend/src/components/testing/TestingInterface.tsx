@@ -3,10 +3,11 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Checkbox } from '@/components/ui/checkbox';
 import { apiClient } from '@/lib/api';
 import { ToolCallModal } from '@/components/chat/ToolCallModal';
 import { CohenKappaCalculator } from './CohenKappaCalculator';
-import type { TestRun, TestTemplate, ToolCall } from '@/types/api';
+import type { TestRun, TestTemplate, ToolCall, Model } from '@/types/api';
 
 interface TestingInterfaceProps {
   selectedModel: string;
@@ -36,6 +37,26 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
   const [showExtraction, setShowExtraction] = useState(false);
   const [extractUniqueOnly, _setExtractUniqueOnly] = useState(false);
   const [extractedVerdicts, setExtractedVerdicts] = useState<string>('');
+  
+  // New states for multi-model and repeat functionality
+  const [repeatCount, setRepeatCount] = useState(1);
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [useMultipleModels, setUseMultipleModels] = useState(false);
+
+  // Load available models
+  useEffect(() => {
+    apiClient
+      .getModels()
+      .then((response) => {
+        setAvailableModels(response.data);
+        // Initialize with the currently selected model
+        setSelectedModels([selectedModel]);
+      })
+      .catch((error) => {
+        console.error('Failed to fetch models:', error);
+      });
+  }, [selectedModel]);
 
   // Load test runs from localStorage
   useEffect(() => {
@@ -98,21 +119,49 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
       return;
     }
 
+    if (useMultipleModels && selectedModels.length === 0) {
+      alert('Please select at least one model');
+      return;
+    }
+
     const questionList = questions.split('\n').filter(q => q.trim());
     if (questionList.length === 0) {
       alert('Please add at least one question');
       return;
     }
 
+    if (repeatCount < 1) {
+      alert('Repeat count must be at least 1');
+      return;
+    }
+
+    // Determine which models to use
+    const modelsToUse = useMultipleModels ? selectedModels : [selectedModel];
+    
+    // Create expanded question list: each question x repeat count x models
+    const expandedQuestions: TestRun['questions'] = [];
+    
+    questionList.forEach((q, qIdx) => {
+      for (let run = 1; run <= repeatCount; run++) {
+        modelsToUse.forEach((model) => {
+          expandedQuestions.push({
+            id: `q-${qIdx}-run${run}-${model}`,
+            question: q.trim(),
+            model: model,
+            runNumber: run,
+          });
+        });
+      }
+    });
+
     const newTestRun: TestRun = {
       id: `test-${Date.now()}`,
       name: testName.trim(),
       prompt: prompt.trim(),
-      questions: questionList.map((q, idx) => ({
-        id: `q-${idx}`,
-        question: q.trim(),
-      })),
+      questions: expandedQuestions,
       model: selectedModel,
+      models: useMultipleModels ? modelsToUse : undefined,
+      repeatCount: repeatCount > 1 ? repeatCount : undefined,
       createdAt: new Date().toISOString(),
       status: 'draft',
     };
@@ -129,6 +178,9 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
     const fullMessage = `${testRun.prompt}\n\n${question.question}`;
     const startTime = Date.now();
 
+    // Use the model specified in the question, or fall back to the test run's model
+    const modelToUse = question.model || testRun.model;
+
     try {
       let answer = '';
       const toolCalls: ToolCall[] = [];
@@ -139,7 +191,7 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
           role: 'user' as const,
           content: fullMessage
         }],
-        model: testRun.model,
+        model: modelToUse,
         stream: true,
       })) {
         try {
@@ -274,9 +326,11 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
 
   // Export to CSV
   const handleExportCSV = (testRun: TestRun) => {
-    const headers = ['Question', 'Answer', 'Notes', 'Duration (s)', 'Timestamp', 'Error'];
+    const headers = ['Question', 'Model', 'Run', 'Answer', 'Notes', 'Duration (s)', 'Timestamp', 'Error'];
     const rows = testRun.questions.map(q => [
       q.question,
+      q.model || testRun.model,
+      q.runNumber?.toString() || '1',
       q.answer || '',
       q.notes || '',
       q.duration?.toFixed(2) || '',
@@ -287,7 +341,8 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
     const csvContent = [
       `Test Run: ${testRun.name}`,
       `Prompt: ${testRun.prompt}`,
-      `Model: ${testRun.model}`,
+      `Model(s): ${testRun.models ? testRun.models.join(', ') : testRun.model}`,
+      `Repeat Count: ${testRun.repeatCount || 1}`,
       `Created: ${new Date(testRun.createdAt).toLocaleString()}`,
       '',
       headers.join(','),
@@ -421,6 +476,8 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
           const row: Record<string, string> = {
             'Question #': String(currentTestRun.questions.indexOf(question) + 1),
             'Question': question.question,
+            'Model': question.model || currentTestRun.model,
+            'Run': String(question.runNumber || 1),
           };
 
           // Add captured groups
@@ -634,6 +691,73 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                     />
                     <p className="text-xs text-gray-500 mt-1">
                       {questions.split('\n').filter(q => q.trim()).length} question(s)
+                    </p>
+                  </div>
+
+                  {/* Repeat Count */}
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 mb-1.5 block">
+                      Repeat Count
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={repeatCount}
+                      onChange={(e) => setRepeatCount(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Run each question this many times
+                    </p>
+                  </div>
+
+                  {/* Multi-Model Selection */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="use-multiple-models"
+                        checked={useMultipleModels}
+                        onCheckedChange={(checked) => setUseMultipleModels(checked as boolean)}
+                      />
+                      <label
+                        htmlFor="use-multiple-models"
+                        className="text-sm font-medium text-gray-700 cursor-pointer"
+                      >
+                        Use Multiple Models
+                      </label>
+                    </div>
+                    {useMultipleModels && (
+                      <div className="pl-6 space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50">
+                        {availableModels.map((model) => (
+                          <div key={model.id} className="flex items-start gap-2">
+                            <Checkbox
+                              id={`model-${model.id}`}
+                              checked={selectedModels.includes(model.id)}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setSelectedModels([...selectedModels, model.id]);
+                                } else {
+                                  setSelectedModels(selectedModels.filter(m => m !== model.id));
+                                }
+                              }}
+                            />
+                            <label
+                              htmlFor={`model-${model.id}`}
+                              className="text-xs cursor-pointer flex-1"
+                            >
+                              <div className="font-medium">{model.name}</div>
+                              <div className="text-gray-500">{model.description}</div>
+                            </label>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                      {useMultipleModels 
+                        ? `Selected ${selectedModels.length} model(s) - Total runs: ${questions.split('\n').filter(q => q.trim()).length * repeatCount * selectedModels.length}`
+                        : `Using current model (${selectedModel}) - Total runs: ${questions.split('\n').filter(q => q.trim()).length * repeatCount}`
+                      }
                     </p>
                   </div>
 
@@ -874,11 +998,29 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
               <Card className="backdrop-blur-xl bg-white/40 border-gray-200/50 shadow-lg">
                 <CardHeader>
                   <div className="flex items-start justify-between">
-                    <div>
+                    <div className="flex-1">
                       <CardTitle className="text-lg">{currentTestRun.name}</CardTitle>
                       <CardDescription className="mt-1">
                         Prompt: {currentTestRun.prompt}
                       </CardDescription>
+                      <div className="flex items-center gap-2 mt-2 text-xs text-gray-600">
+                        {currentTestRun.models ? (
+                          <>
+                            <span>Models: {currentTestRun.models.join(', ')}</span>
+                            {currentTestRun.repeatCount && (
+                              <span>• Repeat: {currentTestRun.repeatCount}x</span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <span>Model: {currentTestRun.model}</span>
+                            {currentTestRun.repeatCount && (
+                              <span>• Repeat: {currentTestRun.repeatCount}x</span>
+                            )}
+                          </>
+                        )}
+                        <span>• Total: {currentTestRun.questions.length} runs</span>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge
@@ -960,7 +1102,7 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                             <div className="space-y-2">
                               <div className="flex items-start justify-between gap-2">
                                 <div className="flex-1">
-                                  <div className="flex items-center gap-2 mb-1">
+                                  <div className="flex items-center gap-2 mb-1 flex-wrap">
                                     <div className="text-xs font-medium text-gray-500">
                                       Question {originalIdx + 1}
                                       {question.duration && (
@@ -969,6 +1111,16 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                                         </span>
                                       )}
                                     </div>
+                                    {question.model && (
+                                      <Badge variant="secondary" className="text-xs">
+                                        {question.model}
+                                      </Badge>
+                                    )}
+                                    {question.runNumber && question.runNumber > 1 && (
+                                      <Badge variant="outline" className="text-xs">
+                                        Run #{question.runNumber}
+                                      </Badge>
+                                    )}
                                     {question.toolCalls && question.toolCalls.length > 0 && (
                                       <Badge 
                                         variant="outline" 
@@ -1184,8 +1336,13 @@ export function TestingInterface({ selectedModel }: TestingInterfaceProps) {
                                 </div>
                                 <p className="text-xs text-gray-600 mb-2">{run.prompt}</p>
                                 <div className="flex items-center gap-4 text-xs text-gray-500">
-                                  <span>{run.questions.length} questions</span>
-                                  <span>Model: {run.model}</span>
+                                  <span>{run.questions.length} runs</span>
+                                  {run.models ? (
+                                    <span>Models: {run.models.length}</span>
+                                  ) : (
+                                    <span>Model: {run.model}</span>
+                                  )}
+                                  {run.repeatCount && <span>Repeat: {run.repeatCount}x</span>}
                                   <span>{new Date(run.createdAt).toLocaleDateString()}</span>
                                 </div>
                               </div>

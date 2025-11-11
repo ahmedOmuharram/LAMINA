@@ -29,6 +29,7 @@ export interface ChatRequest {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
+  enabled_functions?: string[];
 }
 
 export interface ChatResponse {
@@ -146,6 +147,8 @@ export interface TestQuestion {
   duration?: number;
   error?: string;
   toolCalls?: ToolCall[];
+  model?: string;       // Model used for this specific question
+  runNumber?: number;   // Run number (1, 2, 3, etc.)
 }
 
 export interface TestRun {
@@ -153,7 +156,9 @@ export interface TestRun {
   name: string;
   prompt: string;
   questions: TestQuestion[];
-  model: string;
+  model: string;        // Primary model (for single model runs)
+  models?: string[];    // Models used (for multi-model runs)
+  repeatCount?: number; // Number of times to repeat each question
   createdAt: string;
   completedAt?: string;
   status: 'draft' | 'running' | 'completed' | 'error';
@@ -166,5 +171,16 @@ export interface TestTemplate {
   questions: string[];
   createdAt: string;
   updatedAt?: string;
+}
+
+// AI Function types
+export interface AIFunctionInfo {
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface AIFunctionsListResponse {
+  functions: AIFunctionInfo[];
 }
 

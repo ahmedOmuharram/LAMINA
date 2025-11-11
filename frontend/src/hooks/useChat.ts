@@ -5,6 +5,7 @@ import type { ChatMessage, StreamChunk, ConversationMetrics, ToolCall, ImageData
 export interface UseChatOptions {
   model?: string;
   onError?: (error: Error) => void;
+  enabledFunctions?: string[];
 }
 
 interface StreamingState {
@@ -82,6 +83,7 @@ export function useChat(options: UseChatOptions = {}) {
         messages: newMessages,
         model: options.model || 'gpt-4o-mini',
         stream: true,
+        enabled_functions: options.enabledFunctions,
       })) {
         try {
           const parsed: StreamChunk = JSON.parse(chunk);

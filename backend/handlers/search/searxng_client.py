@@ -155,7 +155,8 @@ class SearXNGClient:
             Dictionary containing scientific search results
         """
         # Configure for scientific search
-        categories = ['general']
+        # Extract categories from kwargs if provided, otherwise use default
+        categories = kwargs.pop('categories', ['general'])
         # Note: Not specifying engines to avoid JSON serialization issues
         # The search will use all available engines and filter results
         
@@ -202,36 +203,4 @@ class SearXNGClient:
             include_scholar=True,
             **kwargs
         )
-    
-    def get_engine_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about available search engines.
-        
-        Returns:
-            Dictionary containing engine statistics
-        """
-        try:
-            response = requests.get(
-                f"{self.searxng_url}/stats",
-                timeout=10,
-                headers={'User-Agent': 'MCP-Materials-Project/1.0'}
-            )
-            response.raise_for_status()
-            data = response.json()
-            return success_result(
-                handler="search",
-                function="get_engine_stats",
-                data=data,
-                citations=["SearXNG"],
-                confidence=Confidence.HIGH
-            )
-        except Exception as e:
-            _log.error(f"Failed to get engine stats: {e}")
-            return error_result(
-                handler="search",
-                function="get_engine_stats",
-                error=f'Failed to get engine stats: {str(e)}',
-                error_type=ErrorType.API_ERROR,
-                citations=["SearXNG"]
-            )
 

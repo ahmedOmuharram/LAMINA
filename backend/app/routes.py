@@ -3,8 +3,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 import logging
 from fastapi.middleware.cors import CORSMiddleware
-from .schemas import ChatRequest, CohenKappaRequest, CohenKappaResponse
+from .schemas import ChatRequest, CohenKappaRequest, CohenKappaResponse, AIFunctionsListResponse
 from .core import do_stream_response
+from ..kani_client import get_all_ai_functions
 from dotenv import load_dotenv
 from pathlib import Path
 from sklearn.metrics import cohen_kappa_score
@@ -46,6 +47,16 @@ async def root():
         "version": APP_VERSION,
         "status": "operational"
     }
+
+@app.get("/v1/ai_functions", response_model=AIFunctionsListResponse)
+async def list_ai_functions():
+    """List all available AI functions for LAMINA."""
+    try:
+        functions = get_all_ai_functions()
+        return AIFunctionsListResponse(functions=functions)
+    except Exception as e:
+        _log.error(f"Error listing AI functions: {e}")
+        raise HTTPException(status_code=500, detail=f"Error listing functions: {str(e)}")
 
 @app.get("/v1/models")
 async def list_models():
@@ -108,10 +119,11 @@ async def chat_completions(request: ChatRequest, raw: Request):
         raise HTTPException(status_code=400, detail="Last message must be from user")
     
     model = request.model or DEFAULT_MODEL
+    enabled_functions = request.enabled_functions
     
     # Use unified streaming path (handles both text and images)
     _log.info("/v1/chat/completions: Unified streaming (Kani + OpenAI engine)")
-    return await do_stream_response(request.messages, model, raw)
+    return await do_stream_response(request.messages, model, raw, enabled_functions)
 
 @app.post("/v1/cohen_kappa", response_model=CohenKappaResponse)
 async def calculate_cohen_kappa(request: CohenKappaRequest):

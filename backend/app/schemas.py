@@ -34,6 +34,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    enabled_functions: Optional[List[str]] = None  # List of function names to enable
 
 class ChatResponse(BaseModel):
     id: str
@@ -50,3 +51,11 @@ class CohenKappaRequest(BaseModel):
 class CohenKappaResponse(BaseModel):
     kappa: float
     agreement: str
+
+class AIFunctionInfo(BaseModel):
+    name: str
+    description: str
+    category: str
+
+class AIFunctionsListResponse(BaseModel):
+    functions: List[AIFunctionInfo]

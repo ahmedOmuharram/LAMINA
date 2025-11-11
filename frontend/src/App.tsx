@@ -4,6 +4,7 @@ import { ModelSelector } from '@/components/layout/ModelSelector';
 import { AnalyticsModal } from '@/components/analytics/AnalyticsModal';
 import { ToolCallModal } from '@/components/chat/ToolCallModal';
 import { TestingInterface } from '@/components/testing/TestingInterface';
+import { SettingsModal } from '@/components/settings/SettingsModal';
 import { useChat } from '@/hooks/useChat';
 import { getToolActualStatus } from '@/lib/toolUtils';
 import type { ToolCall } from '@/types/api';
@@ -50,8 +51,14 @@ function App() {
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCall | null>(null);
   const [isToolModalOpen, setIsToolModalOpen] = useState(false);
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeView, setActiveView] = useState<'chat' | 'testing'>('chat');
-  const chatData = useChat({ model: selectedModel });
+  const [enabledFunctions, setEnabledFunctions] = useState<string[]>([]);
+  
+  const chatData = useChat({ 
+    model: selectedModel,
+    enabledFunctions: enabledFunctions.length > 0 ? enabledFunctions : undefined
+  });
   const { metrics, streamingState, isLoading } = chatData;
   
   const handleToolClick = (tool: ToolCall) => {
@@ -109,6 +116,7 @@ function App() {
         <button 
           className="w-14 h-14 rounded-2xl backdrop-blur-xl bg-white/20 border border-gray-200/30 flex items-center justify-center hover:bg-white/30 transition-colors"
           title="Settings"
+          onClick={() => setIsSettingsOpen(true)}
         >
           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -222,6 +230,13 @@ function App() {
         metrics={metrics}
         open={isAnalyticsOpen}
         onOpenChange={setIsAnalyticsOpen}
+      />
+
+      {/* Settings Modal */}
+      <SettingsModal 
+        open={isSettingsOpen}
+        onOpenChange={setIsSettingsOpen}
+        onSettingsChange={setEnabledFunctions}
       />
     </div>
   );

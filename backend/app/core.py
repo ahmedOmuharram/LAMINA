@@ -8,7 +8,7 @@ from .utils import role_header_chunk, final_stop_chunk, delta_chunk_raw, usage_e
 from .stream_state import StreamState
 from ..kani_client import MPKani
 from kani import ChatRole
-from .utils import to_kani_history, extract_text_from_message_content
+from .utils import to_kani_history, extract_text_from_message_content, process_multimodal_content_to_text
 import os
 try:
     import tiktoken
@@ -74,7 +74,7 @@ def count_message_tokens(messages: List[ChatMessage], model: str) -> int:
         # Fallback
         return sum(len(extract_text_from_message_content(msg.content).split()) * 1.3 for msg in messages)
 
-async def sse_generator(messages: List[ChatMessage], model: str, request: Any = None) -> Iterable[str]:
+async def sse_generator(messages: List[ChatMessage], model: str, request: Any = None, enabled_functions: List[str] = None) -> Iterable[str]:
     """Produce SSE chunks for a single chat round."""
     if not messages:
         _log.error("sse_generator: no messages provided")
@@ -128,14 +128,40 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
             raise asyncio.CancelledError("Client disconnected")
 
     model_name = model or DEFAULT_MODEL
-    # Preserve multimodal content (text + images) for the last message
+    
+    # Get the user's message content
     user_content = messages[-1].content
     prior_api_msgs = messages[:-1]
-    kani_chat_history = to_kani_history(prior_api_msgs)
+    
+    # CRITICAL: Process images before passing to Kani
+    # Kani doesn't support multimodal content, so we need to convert images to text descriptions
+    # Extract text from the content for context
+    user_text_context = extract_text_from_message_content(user_content) if not isinstance(user_content, str) else user_content
+    
+    # Convert multimodal content (text + images) to text-only by describing images with GPT-4o
+    user_content_text = await process_multimodal_content_to_text(user_content, user_text_context)
+    
+    # Also process any images in prior messages (especially important for assistant messages with images from search_web)
+    processed_prior_msgs = []
+    for msg in prior_api_msgs:
+        # Create a copy of the message
+        from .schemas import ChatMessage
+        msg_dict = msg.model_dump()
+        # Process content if it contains images
+        original_content = msg_dict['content']
+        if not isinstance(original_content, str):
+            text_context = extract_text_from_message_content(original_content)
+            msg_dict['content'] = await process_multimodal_content_to_text(original_content, text_context)
+        processed_prior_msgs.append(ChatMessage(**msg_dict))
+    
+    kani_chat_history = to_kani_history(processed_prior_msgs)
 
     _log.info("sse_generator: model=%s messages=%s prior=%s", model_name, 1, len(prior_api_msgs))
     print(f"sse_generator: model={model_name} messages=1 prior={len(prior_api_msgs)}", flush=True)
-    kani_instance = MPKani(model=model_name, chat_history=kani_chat_history)
+    
+    # Convert enabled_functions list to set if provided
+    enabled_functions_set = set(enabled_functions) if enabled_functions else None
+    kani_instance = MPKani(model=model_name, chat_history=kani_chat_history, enabled_functions=enabled_functions_set)
     state = StreamState(model_name=model_name)
     state._kani_instance = kani_instance  # Pass kani instance for image access
     
@@ -144,12 +170,12 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
     completion_tokens = 0
     accumulated_text = ""
     
-    # Count prompt tokens using proper message formatting
+    # Count prompt tokens using proper message formatting (use original messages for accurate count)
     prompt_tokens = count_message_tokens(messages, model_name)
 
     try:
-        # Pass raw content (supports both str and multimodal list)
-        stream_iterator = kani_instance.full_round_stream(user_content)
+        # Pass text-only content (images have been converted to descriptions)
+        stream_iterator = kani_instance.full_round_stream(user_content_text)
         async for stream in stream_iterator:
             # Check cancellation flag (set by background monitor)
             check_cancelled()
@@ -256,7 +282,7 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
     except Exception:
         pass
 
-async def do_stream_response(messages: List[ChatMessage], model: str = DEFAULT_MODEL, request: Any = None) -> StreamingResponse:
+async def do_stream_response(messages: List[ChatMessage], model: str = DEFAULT_MODEL, request: Any = None, enabled_functions: List[str] = None) -> StreamingResponse:
     """Return a StreamingResponse wrapping the SSE generator.
     
     Handles both text-only and multimodal (text + images) messages.
@@ -265,7 +291,7 @@ async def do_stream_response(messages: List[ChatMessage], model: str = DEFAULT_M
     
     async def cancellable_generator():
         """Wrapper to make the generator properly cancellable."""
-        generator = sse_generator(messages, model, request)
+        generator = sse_generator(messages, model, request, enabled_functions)
         try:
             async for chunk in generator:
                 yield chunk
