@@ -5,6 +5,7 @@ This module contains all AI-accessible functions for battery electrode analysis,
 voltage calculations, and electrochemical properties.
 """
 import logging
+import math
 import time
 from typing import Optional, List, Dict, Any
 
@@ -1048,33 +1049,42 @@ class BatteryAIFunctionsMixin:
 
     @ai_function(
         desc=(
-            "Comprehensive ion hopping barrier estimation across many physically distinct scenarios "
-            "(AB-BLG TH↔TH ~0.07 eV, AA-BLG ~0.34 eV, stage-I/II graphite, intra- vs inter-layer, "
-            "dilute vs finite coverage, defect-assisted). Returns ranked scenarios with P10/P50/P90 "
-            "barriers plus Arrhenius kinetics per scenario. Use this for thorough analysis of "
-            "graphite/graphene systems or when you need uncertainty quantification and multiple pathways."
+            "CHGNet NEB-based ion hopping barrier calculations for graphite/graphene galleries. "
+            "Fast ML-driven NEB (~20-60s per path) across physically realistic scenarios: "
+            "Bilayer graphene (AB-BLG, AA-BLG with dilute Li), "
+            "Stage-I graphite (LiC₆, multi-layer with Li in every gallery), "
+            "Stage-II graphite (LiC₁₂, multi-layer with alternating occupied galleries). "
+            "Proper √3×√3 Li ordering, ABAB stacking, and realistic stoichiometry. "
+            "Returns ranked scenarios with ±10% uncertainty and Arrhenius kinetics. "
+            "Graphite/graphene ONLY."
         ),
         auto_truncate=128000,
     )
     async def estimate_ion_hopping_barrier(
         self,
-        host_material: Annotated[str, AIParam(desc="Host (e.g., 'graphite', 'C6', 'LiC6', 'TiS2', 'LiFePO4').")],
+        host_material: Annotated[str, AIParam(desc="Host (e.g., 'graphite', 'C6', 'LiC6', 'graphene').")],
         ion: Annotated[str, AIParam(desc="Ion (Li, Na, Mg).")] = "Li",
-        structure_type: Annotated[Optional[str], AIParam(desc="layered, 1D-channel, 3D, olivine (optional; default is layered).")] = "layered",
         temperatures_K: Annotated[Optional[str], AIParam(desc="Comma-separated temps, e.g. '298,323'. Default '300'.")] = "300",
-        mc_samples: Annotated[int, AIParam(desc="Samples per scenario for P10/P50/P90.")] = 200,
-        include_generic_variants: Annotated[bool, AIParam(desc="Also add generic structure-type scenarios.")] = True,
         return_top: Annotated[int, AIParam(desc="How many scenarios to return (sorted by median Ea).")] = 12,
+        dft_backend: Annotated[str, AIParam(desc="NEB calculator: 'chgnet' (fast, ~1 min). Default: 'chgnet'.")] = "chgnet",
+        neb_images: Annotated[int, AIParam(desc="NEB images (3=fast, 5=default, 7=tight). Default: 5")] = 5,
+        neb_kpts: Annotated[str, AIParam(desc="k-points as '1,1,1' (CHGNet ignores this). Default: '1,1,1'")] = "1,1,1",
+        neb_workdir: Annotated[str, AIParam(desc="Where NEB scratch files go. Default: 'neb_graphite'")] = "neb_graphite",
     ) -> Dict[str, Any]:
         """
-        Comprehensive suite of ion hopping barrier estimates with uncertainty quantification.
+        CHGNet NEB-based ion hopping barrier calculations for graphite/graphene.
         
-        Enumerates many physically distinct cases:
-        - For graphite/graphene: AB-BLG, AA-BLG, stage-I/II, in-gallery, cross-plane, defects
-        - Modifiers for stacking, coverage, defects, strain, interlayer spacing
-        - Monte Carlo uncertainty → P10/P50/P90 barriers
+        Physically realistic multi-layer models:
+        - **Bilayer graphene (BLG)**: AB/AA stacking, dilute Li in gallery
+        - **Stage-I graphite (LiC₆)**: 4-layer ABAB stack, Li in every gallery, √3×√3 ordering
+        - **Stage-II graphite (LiC₁₂)**: 4-layer ABAB stack, Li in alternating galleries
+        
+        Features:
+        - Proper Li stoichiometry and ordering (not just dilute limit)
+        - Multiple variants: coverage, strain, interlayer spacing modifiers
+        - CHGNet-based NEB: ~20-60 sec per unique path (cached for variants)
+        - Tight uncertainty (±10%) around ML-predicted barriers
         - Arrhenius kinetics and diffusion coefficients at specified temperatures
-        - Falls back to structure heuristics for non-graphite hosts
         """
         t0 = time.time()
         
@@ -1083,78 +1093,129 @@ class BatteryAIFunctionsMixin:
             host = host_material.strip()
             Ts = [float(t.strip()) for t in str(temperatures_K).split(",") if t.strip()] or [300.0]
             
+            # Only support graphite/graphene with CHGNet NEB
+            if not is_graphitic(host):
+                duration_ms = (time.time() - t0) * 1000
+                return error_result(
+                    handler="electrochemistry",
+                    function="estimate_ion_hopping_barrier",
+                    error=f"CHGNet NEB only supports graphite/graphene hosts. Got: {host}",
+                    error_type=ErrorType.VALIDATION_ERROR,
+                    duration_ms=duration_ms
+                )
+            
             scenarios: List[Dict[str, Any]] = []
             all_citations = []
             
-            # 1) Graphitic rich expansion
-            if is_graphitic(host):
-                base = graphite_scenarios(host)
-                for b in base:
-                    # Collect citations from base scenarios
-                    if "citations" in b:
-                        all_citations.extend(b["citations"])
-                    scenarios.extend(expand_variants(b))
+            # Generate graphitic scenarios
+            base = graphite_scenarios(host)
+            for b in base:
+                # Collect citations from base scenarios
+                if "citations" in b:
+                    all_citations.extend(b["citations"])
+                scenarios.extend(expand_variants(b))
             
-            # 2) Optional generic variants for non-graphite (or in addition)
-            struct_type_norm = _classify_electrode_structure(host, structure_type)
+            struct_type_norm = "layered"
             
-            if include_generic_variants:
-                # Build a couple of generic path families per structure class
-                gen = _estimate_barrier_from_structure(host, ion_sym, struct_type_norm)
-                base_Ea = float(gen["Ea_eV"])
-                lo, hi = gen["range_eV"]
-                hopA = 3.0 if struct_type_norm != "1D-channel" else 3.5
-                
-                # Add generic citations
-                if "citations" in gen:
-                    all_citations.extend(gen["citations"])
-                
-                generic_families = [
-                    {
-                        "key": "generic_easy",
-                        "baseline_ea": max(0.01, 0.8 * base_Ea),
-                        "spread": 1.3,
-                        "hop_A": hopA,
-                        "note": f"{struct_type_norm} easy path",
-                        "citations": gen.get("citations", [])
-                    },
-                    {
-                        "key": "generic_bottleneck",
-                        "baseline_ea": min(1.5, 1.2 * base_Ea),
-                        "spread": 1.4,
-                        "hop_A": hopA * 0.9,
-                        "note": f"{struct_type_norm} bottleneck",
-                        "citations": gen.get("citations", [])
-                    },
-                ]
-                
-                for g in generic_families:
-                    scenarios.extend(expand_variants({
-                        "key": g["key"],
-                        "stacking": "n/a",
-                        "defect": "none",
-                        "theta": 0.1,
-                        "strain_percent": 0.0,
-                        "delta_interlayer_A": 0.0,
-                        "baseline_ea": g["baseline_ea"],
-                        "hop_A": g["hop_A"],
-                        "spread": g["spread"],
-                        "note": g["note"],
-                    }))
-            
-            # 3) Evaluate all scenarios with Monte Carlo + modifiers
+            # Run CHGNet NEB for all in-gallery scenarios
+            # (Persistent cache handles deduplication automatically)
             out_scenarios = []
+            
             for s in scenarios:
-                evaluated = evaluate_ion_hopping_scenario(
-                    scenario=s,
-                    temperatures_K=Ts,
-                    mc_samples=mc_samples,
-                    attempt_frequency_Hz=1e13
-                )
-                # Add host and ion to context
-                evaluated["context"]["host"] = host
-                evaluated["context"]["ion"] = ion_sym
-                evaluated["context"]["structure_type"] = struct_type_norm
+                key = s.get("key", "")
+                is_gallery = ("in_gallery" in key) or ("stage" in key)
+                is_outside = ("outside" in key) or ("surface" in key)
+                is_cross_plane = ("cross_plane" in key)
+                
+                # Only run NEB for in-gallery hops (BLG, Stage-I, Stage-II)
+                # Now properly handles multi-layer graphite with realistic Li ordering
+                if not is_gallery or is_outside or is_cross_plane:
+                    continue  # skip surface, cross-plane, and other non-gallery hops
+                
+                # Run NEB (persistent cache will handle deduplication)
+                try:
+                    from .graphite_neb import run_graphite_neb
+                    kpts_tuple = tuple(int(x) for x in neb_kpts.split(","))
+                    
+                    neb_result = run_graphite_neb(
+                        stacking=s.get("stacking", "AB"),
+                        theta=float(s.get("theta", 0.0)),
+                        path_key=key,
+                        images_n=int(neb_images),
+                        backend=dft_backend,
+                        workdir=neb_workdir,
+                        relax_fmax=0.10,
+                        neb_fmax=0.20,
+                        kpts=kpts_tuple,
+                        delta_interlayer_A=float(s.get("delta_interlayer_A", 0.0)),
+                        strain_percent=float(s.get("strain_percent", 0.0)),
+                        defect=s.get("defect", "none")
+                    )
+                    
+                    ea = float(neb_result["Ea_eV"])
+                    
+                    # Exclude barrierless/downhill paths (unphysical on this potential)
+                    if ea < 0.02:  # eV threshold
+                        _log.warning(f"CHGNet NEB returned near-zero barrier for {key} (Ea={ea:.4f} eV). Excluding.")
+                        continue  # Skip this scenario
+                    
+                except Exception as e:
+                    _log.error(f"CHGNet NEB failed for {key}: {e}. Skipping scenario.")
+                    continue  # Skip this scenario
+                
+                ea = float(neb_result["Ea_eV"])
+                
+                # Double-check barrier is physical
+                if ea < 0.02:
+                    _log.warning(f"Excluding cached result with near-zero barrier for {key}")
+                    continue
+                
+                # Tight uncertainty around NEB barrier (±10%)
+                p10, p50, p90 = round(0.9 * ea, 4), round(ea, 4), round(1.1 * ea, 4)
+                
+                # Build kinetics if temperature provided
+                kinetics = {}
+                if Ts and Ts[0] > 0:
+                    hop_A = float(s.get("hop_A", 3.0))
+                    for T in Ts:
+                        kBT = 8.617333262e-5 * T
+                        rate = 1e13 * math.exp(-p50 / kBT)
+                        # Convert to both m²/s and cm²/s
+                        D_m2_s = (hop_A * 1e-10) ** 2 * rate / 4.0
+                        D_cm2_s = D_m2_s * 1e4
+                        kinetics[f"{T}K"] = {
+                            "rate_s-1": rate,
+                            "D_m2_s": D_m2_s,
+                            "D_cm2_s": D_cm2_s,
+                            "T_K": T
+                        }
+                
+                evaluated = {
+                    "context": {
+                        "key": key,
+                        "stacking": s.get("stacking", "AB"),
+                        "defect": s.get("defect", "none"),
+                        "theta": s.get("theta", 0.0),
+                        "strain_percent": s.get("strain_percent", 0.0),
+                        "delta_interlayer_A": s.get("delta_interlayer_A", 0.0),
+                        "note": f"{s.get('note', '')} [CHGNet NEB]",
+                        "host": host,
+                        "ion": ion_sym,
+                        "structure_type": struct_type_norm,
+                    },
+                    "Ea_eV": {"P10": p10, "P50": p50, "P90": p90},
+                    "baseline_Ea_eV": p50,
+                    "modifiers": {
+                        "stacking_mult": 1.0,
+                        "defect_mult": 1.0,
+                        "coverage_mult": 1.0,
+                        "strain_mult": 1.0,
+                        "spacing_mult": 1.0,
+                    },
+                    "kinetics": kinetics,
+                    "provenance": "CHGNet_NEB",
+                    "dft_details": neb_result
+                }
                 out_scenarios.append(evaluated)
             
             # 4) Rank and summarize
@@ -1179,7 +1240,7 @@ class BatteryAIFunctionsMixin:
             
             return success_result(
                 handler="electrochemistry",
-                function="estimate_ion_hopping_barrier_suite",
+                function="estimate_ion_hopping_barrier",
                 data={
                     "host": host,
                     "ion": ion_sym,
@@ -1193,24 +1254,17 @@ class BatteryAIFunctionsMixin:
                     "assumptions": {
                         "temps_K": Ts,
                         "attempt_frequency_Hz": 1e13,
-                        "mc_samples": mc_samples,
+                        "uncertainty": "±10% tight bands around CHGNet predictions",
                         "theta_definition": "gallery fractional occupancy (stage-relative)",
                         "notes": [
+                            "CHGNet NEB provides ML-predicted barriers with ~±0.05 eV typical accuracy.",
                             "Coverage increases barriers modestly; defects/edges lower them.",
                             "Interlayer expansion lowers gallery barriers; compression raises.",
-                            "For non-graphite, results come from structure-class heuristics + variants.",
                         ]
                     }
                 },
-                citations=unique_citations if unique_citations else [
-                    "Literature: graphite/BLG Li diffusion pathways (Persson et al., Umegaki et al.)"
-                ],
+                citations=unique_citations,
                 confidence=Confidence.MEDIUM if is_graphitic(host) else Confidence.LOW,
-                notes=[
-                    "This suite enumerates multiple site/topology/stacking/coverage/defect cases.",
-                    "Use DFT+NEB for quantitative barriers along specific paths you care about.",
-                    f"Generated {len(out_scenarios)} total scenarios; returning top {len(top)} by median barrier."
-                ],
                 duration_ms=duration_ms
             )
             

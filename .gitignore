@@ -23,3 +23,6 @@ venv/
 auto_generated/
 interactive_plots/
 scheil_cache/
+neb_cache/
+*.log
+*.traj

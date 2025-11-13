@@ -40,7 +40,8 @@ class CalculationsMixin:
         self,
         composition: Annotated[str, AIParam(desc="Composition as element-number pairs (e.g., 'Al30Si55C15', 'Al80Zn20', 'Fe70Cr20Ni10'). Numbers are percentages.")],
         temperature: Annotated[float, AIParam(desc="Temperature in Kelvin")],
-        composition_type: Annotated[Optional[str], AIParam(desc="'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = "atomic"
+        composition_type: Annotated[Optional[str], AIParam(desc="'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = "atomic",
+        pressure: Annotated[Optional[float], AIParam(desc="Pressure in Pascals. Default: 101325 (1 atm)")] = 101325
     ) -> str:
         """
         Calculate thermodynamic equilibrium at a specific point (temperature + composition).
@@ -96,14 +97,14 @@ class CalculationsMixin:
                 phases = self._filter_phases_for_multicomponent(db, elements)
             
             # Calculate equilibrium using robust compute_equilibrium utility
-            _log.info(f"Computing equilibrium at {temperature}K for {system_str} with composition {comp_dict}")
+            _log.info(f"Computing equilibrium at {temperature}K for {system_str} with composition {comp_dict} and pressure {pressure}Pa")
             eq = compute_equilibrium(
                 db=db,
                 elements=elements,
                 phases=phases,
                 composition=comp_dict,
                 temperature=temperature,
-                pressure=101325
+                pressure=pressure
             )
             
             if eq is None:

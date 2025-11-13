@@ -221,20 +221,31 @@ class SemiconductorAIFunctionsMixin:
             )
     
     @ai_function(
-        desc="Analyze defect formation energy for substitutional or interstitial doping. Useful for comparing stability of different defect configurations.",
+        desc="Analyze defect formation energy for substitutional or interstitial doping. REQUIRED: You must specify the defect composition (e.g., for P-doped Si with 32 atoms, use {'Si': 31, 'P': 1}). Use this to compare stability of different defect configurations.",
         auto_truncate=128000
     )
     async def analyze_defect_stability(
         self,
         host_material_id: Annotated[str, AIParam(desc="Material ID of host material (e.g., 'mp-149' for Si).")],
-        defect_composition: Annotated[Dict[str, float], AIParam(desc="Composition with defect as a dictionary (e.g., {'Si': 31, 'P': 1} for P in Si).")],
-        defect_type: Annotated[str, AIParam(desc="Type of defect: 'substitutional' or 'interstitial'.")] = "substitutional"
+        defect_composition: Annotated[Dict[str, float], AIParam(desc="REQUIRED: Dictionary specifying the doped supercell composition. Format: {element: count}. Examples: {'Si': 31, 'P': 1} for P substituting one Si atom in 32-atom Si cell; {'Si': 32, 'P': 1} for interstitial P in 32-atom Si cell; {'Ga': 31, 'As': 32, 'N': 1} for N substituting one Ga in GaAs.")],
+        defect_type: Annotated[str, AIParam(desc="Type of defect: 'substitutional' (dopant replaces host atom) or 'interstitial' (dopant added between host atoms).")] = "substitutional"
     ) -> Dict[str, Any]:
         """
-        Analyze defect formation energy and stability.
+        Analyze defect formation energy and stability for doped semiconductors.
         
-        Compares energy of doped structure vs undoped host to estimate defect formation energy.
-        Useful for determining whether interstitial or substitutional doping is more stable.
+        This function estimates the defect formation energy by comparing the total energy
+        of a doped structure versus the undoped host material. It's useful for:
+        - Determining whether substitutional or interstitial doping is more stable
+        - Comparing different dopant elements
+        - Understanding doping energetics
+        
+        Args:
+            host_material_id: Materials Project ID of the host material
+            defect_composition: Dictionary with element counts in the doped supercell
+            defect_type: "substitutional" or "interstitial"
+            
+        Returns:
+            Dictionary with defect formation energy and stability analysis
         """
         start_time = time.time()
         

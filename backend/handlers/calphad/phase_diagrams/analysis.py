@@ -81,7 +81,7 @@ class AnalysisMixin:
 
     def _coarse_equilibrium_grid(self, db, A: str, B: str, phases: List[str],
                                  temp_range: Tuple[float, float],
-                                 nx: int = 51, nT: int = 81):
+                                 nx: int = 51, nT: int = 81, pressure: float = 101325):
         """Compute a coarse equilibrium grid for robust, cheap analysis."""
         try:
             from pycalphad import equilibrium
@@ -91,7 +91,7 @@ class AnalysisMixin:
             cond = {
                 v.X(B): np.linspace(0.0, 1.0, max(5, nx)),
                 v.T: np.linspace(T_lo, T_hi, max(10, nT)),
-                v.P: 101325, v.N: 1
+                v.P: pressure, v.N: 1
             }
             eq = equilibrium(db, elements, phases, cond)
             return eq
@@ -488,7 +488,8 @@ class AnalysisMixin:
     # ---------------------------
     def _analyze_phase_diagram(self, db, normalized_system: str,
                                phases: List[str],
-                               temp_range: Tuple[float, float]) -> str:
+                               temp_range: Tuple[float, float],
+                               pressure: float = 101325) -> str:
         """
         Analyze a binary phase diagram generically:
         - Terminal melting points (pure A and pure B)
@@ -511,7 +512,7 @@ class AnalysisMixin:
             eq = getattr(self, '_cached_eq_coarse', None)
             if eq is None:
                 # Fall back to computing a new coarse grid
-                eq = self._coarse_equilibrium_grid(db, A, B, phases, temp_range)
+                eq = self._coarse_equilibrium_grid(db, A, B, phases, temp_range, pressure=pressure)
             else:
                 print(f"DEBUG: Using cached equilibrium data from visualization for analysis")
                 

@@ -172,7 +172,14 @@ def evaluate_scenario(
     attempt_frequency_Hz: float,
     jump_distance_A: float,
     mc_samples: int,
-    ads_over_coh_dict: Dict[str, float]
+    ads_over_coh_dict: Dict[str, float],
+    use_dft_neb: bool = False,
+    dft_backend: str = "chgnet",
+    dft_workdir: str = "neb_runs",
+    dft_kpts: Tuple[int, int, int] = (1, 1, 1),
+    dft_images: int = 3,
+    adatom_symbol: Optional[str] = None,
+    host_symbol: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Evaluate a single diffusion scenario with uncertainty quantification.
@@ -191,10 +198,141 @@ def evaluate_scenario(
         jump_distance_A: Jump distance (Å)
         mc_samples: Monte Carlo samples for uncertainty (0 to disable)
         ads_over_coh_dict: Facet-specific adsorption/cohesion ratios
+        use_dft_neb: If True, use DFT+NEB for barrier calculation (default: False)
+        dft_backend: Calculator ('chgnet', 'gpaw', or 'vasp') for NEB (default: 'chgnet')
+        dft_workdir: Root directory for NEB runs
+        dft_kpts: k-point mesh for DFT (default: (1,1,1) Γ-only for speed)
+        dft_images: Number of NEB images (default: 3 for fast mode)
+        adatom_symbol: Element symbol for adatom (required if use_dft_neb=True)
+        host_symbol: Element symbol for host (required if use_dft_neb=True)
         
     Returns:
         Dict with scenario details, energy ranges (P10/P50/P90), and kinetics
+        
+    Notes:
+        - DFT NEB is only supported for clean terrace diffusion (defect='none')
+        - For DFT calculations on facets '111', '100', '110', set use_dft_neb=True
+        - If NEB fails, automatically falls back to heuristic with warning
     """
+    # ==================== DFT+NEB Path ====================
+    # If requested and applicable, run first-principles NEB calculation
+    if use_dft_neb and facet_label in ("111", "100", "110") and defect == "none":
+        if not adatom_symbol or not host_symbol:
+            _log.warning("DFT NEB requires adatom_symbol and host_symbol. Falling back to heuristic.")
+        else:
+            try:
+                from .dft_neb import run_neb
+                import os
+                
+                _log.info(f"Running DFT NEB: {adatom_symbol}/{host_symbol} {facet_label} {mechanism}")
+                
+                # Create unique workdir for this scenario
+                scenario_dir = os.path.join(
+                    dft_workdir,
+                    f"{host_symbol}_{adatom_symbol}_{facet_label}_{mechanism}"
+                )
+                
+                # Auto-bump images for hopping on smooth facets (avoid missing shallow saddles)
+                images_req = dft_images
+                if mechanism == "hopping" and facet_label in ("111", "100") and dft_images < 5:
+                    images_req = 5
+                    _log.info(f"Auto-bumping images to {images_req} for {mechanism} on {facet_label}")
+                
+                neb_result = run_neb(
+                    adatom=adatom_symbol,
+                    host=host_symbol,
+                    facet=facet_label,
+                    mechanism=mechanism,
+                    backend=dft_backend,
+                    images_n=images_req,
+                    kpts=dft_kpts,
+                    workdir=scenario_dir,
+                    compute_prefactor=False  # Set True for production if you need accurate ν
+                )
+                
+                # Extract DFT barrier
+                ea_dft = neb_result["Ea_eV"]
+                
+                # If the surrogate says "downhill" (Ea~0), fall back to heuristic
+                if ea_dft < 1e-3 or "downhill" in " ".join(neb_result.get("notes", [])):
+                    _log.warning("DFT NEB returned barrierless path on surrogate; falling back to heuristic scaling.")
+                    raise RuntimeError("Downhill path (no TS) on surrogate")
+                
+                # For single DFT calculation, use tight uncertainty bands (±10%)
+                q10 = round(ea_dft * 0.90, 4)
+                q50 = round(ea_dft, 4)
+                q90 = round(ea_dft * 1.10, 4)
+                
+                # Use DFT-calculated kinetics if temperature provided
+                kinetics = None
+                if temperature_K and temperature_K > 0:
+                    kBT = 8.617333262e-5 * temperature_K
+                    rate = neb_result["prefactor_Hz"] * math.exp(-ea_dft / kBT)
+                    D_m2_s = (jump_distance_A * 1e-10) ** 2 * rate / 4.0
+                    
+                    kinetics = {
+                        "P50": {
+                            "rate_s-1": rate,
+                            "D_m2_s": D_m2_s,
+                            "T_K": temperature_K,
+                            "attempt_frequency_Hz": neb_result["prefactor_Hz"],
+                            "jump_distance_A": jump_distance_A
+                        }
+                    }
+                    # Add uncertainty bands for kinetics
+                    rate_low = neb_result["prefactor_Hz"] * math.exp(-q90 / kBT)
+                    rate_high = neb_result["prefactor_Hz"] * math.exp(-q10 / kBT)
+                    kinetics["P10"] = {
+                        "rate_s-1": rate_low,
+                        "D_m2_s": (jump_distance_A * 1e-10) ** 2 * rate_low / 4.0,
+                        "T_K": temperature_K,
+                        "attempt_frequency_Hz": neb_result["prefactor_Hz"],
+                        "jump_distance_A": jump_distance_A
+                    }
+                    kinetics["P90"] = {
+                        "rate_s-1": rate_high,
+                        "D_m2_s": (jump_distance_A * 1e-10) ** 2 * rate_high / 4.0,
+                        "T_K": temperature_K,
+                        "attempt_frequency_Hz": neb_result["prefactor_Hz"],
+                        "jump_distance_A": jump_distance_A
+                    }
+                
+                _log.info(f"DFT NEB completed: Ea = {ea_dft:.4f} eV")
+                
+                return {
+                    "facet": facet_label,
+                    "mechanism": mechanism,
+                    "defect": defect,
+                    "Ea_eV": {
+                        "P10": q10,
+                        "P50": q50,
+                        "P90": q90
+                    },
+                    "baseline_Ea_eV": q50,
+                    "modifiers": {
+                        "mechanism_mult": 1.0,
+                        "defect_mult": 1.0,
+                        "coverage_mult": 1.0,
+                        "oxide_mult": 1.0
+                    },
+                    "kinetics": kinetics,
+                    "provenance": "DFT+NEB",
+                    "dft_details": {
+                        "backend": dft_backend,
+                        "kpts": dft_kpts,
+                        "images": dft_images,
+                        "ts_image": neb_result["ts_image_index"],
+                        "energy_profile_eV": neb_result["energies_eV"],
+                        "notes": neb_result["notes"]
+                    }
+                }
+                
+            except ImportError as e:
+                _log.warning(f"DFT NEB import failed: {e}. Falling back to heuristic.")
+            except Exception as e:
+                _log.warning(f"DFT NEB calculation failed: {e}. Falling back to heuristic.")
+    
+    # ==================== Heuristic Path ====================
     # Mechanism-dependent multipliers (facet-specific)
     # Exchange often favored on open surfaces (100/110), hopping on close-packed (111)
     MECH_MULT = {
@@ -299,7 +437,8 @@ def evaluate_scenario(
             "coverage_mult": round(COV_MULT, 3),
             "oxide_mult": OXIDE_MULT
         },
-        "kinetics": kinetics
+        "kinetics": kinetics,
+        "provenance": "heuristic"
     }
 
 

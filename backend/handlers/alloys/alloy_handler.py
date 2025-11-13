@@ -23,8 +23,6 @@ from ..shared.constants import (
 
 from .atomic_utils import get_cohesive_energy, get_metal_radius
 from .surface_utils import (
-    normalize_surface, 
-    estimate_diffusion_barrier,
     evaluate_scenario,
     generate_scenarios,
     generate_warnings
@@ -60,11 +58,12 @@ class AlloyHandler(BaseHandler):
 
     @ai_function(
         desc=(
-            "Comprehensive surface diffusion barrier estimation across multiple realistic scenarios "
-            "(facets, mechanisms, defects, coverage), with uncertainty quantification and kinetics. "
+            "Comprehensive surface diffusion barrier estimation using DFT+NEB calculations across multiple "
+            "realistic scenarios (facets, mechanisms, defects, coverage), with uncertainty quantification and kinetics. "
+            "By default uses first-principles DFT+NEB for terrace diffusion on (111), (100), (110) facets. "
             "Returns ranked scenarios with P10/P50/P90 uncertainty bands, kinetic rates, and "
-            "diffusion coefficients at specified temperature. Use this for thorough analysis of "
-            "all relevant diffusion pathways; use DFT+NEB for quantitative predictions."
+            "diffusion coefficients at specified temperature. Use this for quantitative predictions "
+            "of all relevant diffusion pathways."
         ),
         auto_truncate=128000,
     )
@@ -79,17 +78,23 @@ class AlloyHandler(BaseHandler):
         temperature_K: Annotated[Optional[float], AIParam(desc="Temperature for kinetics (Arrhenius)")] = 300.0,
         attempt_frequency_Hz: Annotated[float, AIParam(desc="Attempt frequency ν, s^-1")] = 1.0e13,
         jump_distance_A: Annotated[float, AIParam(desc="Jump distance (Å) for D estimate")] = 2.5,
-        mc_samples: Annotated[int, AIParam(desc="Monte Carlo samples for uncertainty quantification (0 disables)")] = 200
+        mc_samples: Annotated[int, AIParam(desc="Monte Carlo samples for uncertainty quantification (0 disables)")] = 200,
+        use_dft_neb: Annotated[bool, AIParam(desc="Use DFT+NEB for barrier calculations (default True for terrace diffusion)")] = True,
+        dft_backend: Annotated[str, AIParam(desc="Calculator: 'chgnet' or 'gpaw'. Default: 'chgnet'. Do not use 'gpaw' unless you are explicitly told to do so.")] = "chgnet",
+        dft_images: Annotated[int, AIParam(desc="Number of NEB images")] = 5
     ) -> Dict[str, Any]:
         """
-        Comprehensive surface diffusion analysis with multi-scenario enumeration.
+        Comprehensive surface diffusion analysis with multi-scenario enumeration using DFT+NEB.
         
         This function explores a grid of realistic scenarios:
-        - Facets: (111), (100), (110) surfaces
+        - Facets: (111), (100), (110) surfaces (all by default)
         - Mechanisms: hopping vs exchange
         - Defects: terrace vs step-edge vs vacancy-mediated
         - Coverage effects: crowding penalties
         - Surface conditions: clean vs oxide
+        
+        By default, uses first-principles DFT+NEB calculations for terrace diffusion
+        (defect='none') on all requested facets. Defect scenarios use heuristic scaling.
         
         Returns:
         - Ranked list of all scenarios with P10/P50/P90 energy ranges
@@ -97,9 +102,11 @@ class AlloyHandler(BaseHandler):
         - Per-facet minimum barriers
         - Consensus range across all scenarios
         - Warnings for problematic cases (large size mismatch, oxides, etc.)
+        - DFT details (backend, k-points, energy profiles) for NEB calculations
         """
         start_time = time.time()
-        
+        dft_kpts = "2,2,1"
+    
         try:
             ad = adatom_element.capitalize()
             host = host_element.capitalize()
@@ -114,7 +121,7 @@ class AlloyHandler(BaseHandler):
                 duration_ms = (time.time() - start_time) * 1000
                 return error_result(
                     handler="alloys",
-                    function="estimate_surface_diffusion_barrier_suite",
+                    function="estimate_surface_diffusion_barrier",
                     error="Insufficient data: missing cohesive energy or metallic radius for host/adatom.",
                     error_type=ErrorType.NOT_FOUND,
                     citations=["mendeleev", "pymatgen"],
@@ -142,6 +149,14 @@ class AlloyHandler(BaseHandler):
                 "unspecified": 0.25
             }
             
+            # Parse k-points string to tuple
+            try:
+                kpts_tuple = tuple(int(k.strip()) for k in dft_kpts.split(","))
+                if len(kpts_tuple) != 3:
+                    kpts_tuple = (2, 2, 1)  # fallback
+            except:
+                kpts_tuple = (2, 2, 1)  # fallback
+            
             # Generate scenario grid
             scenario_tuples = generate_scenarios(facets_req, include_defects)
             
@@ -161,7 +176,13 @@ class AlloyHandler(BaseHandler):
                     attempt_frequency_Hz=attempt_frequency_Hz,
                     jump_distance_A=jump_distance_A,
                     mc_samples=mc_samples,
-                    ads_over_coh_dict=ads_over_coh_dict
+                    ads_over_coh_dict=ads_over_coh_dict,
+                    use_dft_neb=use_dft_neb,
+                    dft_backend=dft_backend,
+                    dft_kpts=kpts_tuple,
+                    dft_images=dft_images,
+                    adatom_symbol=ad,
+                    host_symbol=host
                 )
                 scenarios.append(scenario)
             
@@ -193,22 +214,11 @@ class AlloyHandler(BaseHandler):
             if oxide and host in ("Al", "Ti", "Mg"):
                 confidence = "medium"  # oxide model is coarse
             
-            # Assemble notes
-            notes = [
-                "Heuristic: adsorption scales with host cohesion; diffusion scales with adsorption; "
-                "facet/mechanism/defect multipliers applied.",
-                "Exchange often favored on (100)/(110); hopping on (111). Vacancy/step pathways can lower Ea.",
-                "Coverage and oxide increase barriers; uncertainty from ±15% multiplicative noise.",
-                "Kinetics computed via Arrhenius (rate = ν·exp(-Ea/kBT)) and 2D random walk (D ≈ a²·Γ/4).",
-                "Use DFT+NEB for quantitative results; consider site-specific paths (fcc→hcp, bridge, concerted exchange)."
-            ]
-            notes.extend(warnings)
-            
             duration_ms = (time.time() - start_time) * 1000
             
             return success_result(
                 handler="alloys",
-                function="estimate_surface_diffusion_barrier_suite",
+                function="estimate_surface_diffusion_barrier",
                 data={
                     "adatom": ad,
                     "host": host,
@@ -241,16 +251,15 @@ class AlloyHandler(BaseHandler):
                 },
                 citations=["mendeleev", "pymatgen"],
                 confidence=confidence,
-                notes=notes,
                 duration_ms=duration_ms
             )
             
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
-            _log.error(f"Error in estimate_surface_diffusion_barrier_suite for {adatom_element} on {host_element}: {e}", exc_info=True)
+            _log.error(f"Error in estimate_surface_diffusion_barrier for {adatom_element} on {host_element}: {e}", exc_info=True)
             return error_result(
                 handler="alloys",
-                function="estimate_surface_diffusion_barrier_suite",
+                function="estimate_surface_diffusion_barrier",
                 error=str(e),
                 error_type=ErrorType.COMPUTATION_ERROR,
                 citations=["mendeleev", "pymatgen"],

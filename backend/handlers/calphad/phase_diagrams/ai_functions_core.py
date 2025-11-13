@@ -42,7 +42,8 @@ class CoreVisualizationMixin:
         max_temperature: Annotated[Optional[float], AIParam(desc="Maximum temperature in Kelvin. Default: auto")] = None,
         composition_step: Annotated[Optional[float], AIParam(desc="Composition step size (0-1). Default: 0.02")] = None,
         figure_width: Annotated[Optional[float], AIParam(desc="Figure width in inches. Default: 9")] = None,
-        figure_height: Annotated[Optional[float], AIParam(desc="Figure height in inches. Default: 6")] = None
+        figure_height: Annotated[Optional[float], AIParam(desc="Figure height in inches. Default: 6")] = None,
+        pressure: Annotated[Optional[float], AIParam(desc="Pressure in Pascals. Default: 101325 (1 atm)")] = 101325
     ) -> str:
         """
         Generate a binary phase diagram using CALPHAD thermodynamic data.
@@ -131,7 +132,7 @@ class CoreVisualizationMixin:
                 {
                     v.X(comp_el): (0, 1, comp_step),
                     v.T: (T_lo, T_hi, temp_points),
-                    v.P: 101325, v.N: 1
+                    v.P: pressure, v.N: 1
                 },
                 plot_kwargs={'ax': axes, 'tielines': False},
                 eq_kwargs={'linewidth': 2},
@@ -170,7 +171,7 @@ class CoreVisualizationMixin:
             # Detect and mark eutectic points on the diagram
             # Use the full computation range (T_lo, T_hi) to ensure we capture all features
             _log.info("Detecting eutectic points for visualization...")
-            eq_coarse = self._coarse_equilibrium_grid(db, A, B, phases, (T_lo, T_hi), nx=101, nT=161)
+            eq_coarse = self._coarse_equilibrium_grid(db, A, B, phases, (T_lo, T_hi), nx=101, nT=161, pressure=pressure)
             detected_eutectics = []
             if eq_coarse is not None:
                 ls_data = self._extract_liquidus_solidus(eq_coarse, B)
@@ -208,7 +209,7 @@ class CoreVisualizationMixin:
             _log.info("Plot closed, generating thermodynamic analysis...")
             
             # Generate deterministic analysis (use displayed range for reporting)
-            thermodynamic_analysis = self._analyze_phase_diagram(db, f"{A}-{B}", phases, (T_display_lo, T_display_hi))
+            thermodynamic_analysis = self._analyze_phase_diagram(db, f"{A}-{B}", phases, (T_display_lo, T_display_hi), pressure=pressure)
             _log.info(f"Generated thermodynamic analysis with length: {len(thermodynamic_analysis)}")
             
             # Clean up cached data after analysis is complete
@@ -319,7 +320,8 @@ class CoreVisualizationMixin:
         composition_type: Annotated[Optional[str], AIParam(desc="Composition type: 'atomic' for at% or 'weight' for wt%. Default: 'atomic'")] = None,
         figure_width: Annotated[Optional[float], AIParam(desc="Figure width in inches. Default: 8")] = None,
         figure_height: Annotated[Optional[float], AIParam(desc="Figure height in inches. Default: 6")] = None,
-        interactive: Annotated[Optional[str], AIParam(desc="Interactive output mode: 'html' for interactive Plotly HTML output. Default: 'html'")] = "html"
+        interactive: Annotated[Optional[str], AIParam(desc="Interactive output mode: 'html' for interactive Plotly HTML output. Default: 'html'")] = "html",
+        pressure: Annotated[Optional[float], AIParam(desc="Pressure in Pascals. Default: 101325 (1 atm)")] = 101325
     ) -> str:
         """
         Generate a temperature vs phase stability plot for a specific composition.
@@ -420,7 +422,7 @@ class CoreVisualizationMixin:
                 try:
                     # Calculate equilibrium at this temperature using shared utility
                     composition_dict = {A: 1-xB, B: xB}
-                    eq = compute_equilibrium(db, [A, B], phases, composition_dict, T)
+                    eq = compute_equilibrium(db, [A, B], phases, composition_dict, T, pressure=pressure)
                     
                     # Extract phase fractions properly (handling multiple vertices in two-phase regions)
                     # Use looser tolerance (1e-4) for better boundary handling
