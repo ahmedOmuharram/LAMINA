@@ -1,3 +1,4 @@
+
 # Python
 __pycache__/
 *.py[cod]
@@ -24,5 +25,11 @@ auto_generated/
 interactive_plots/
 scheil_cache/
 neb_cache/
+neb_cache_graphite/
+neb_cache_alloys/
+benchmarks/
 *.log
 *.traj
+
+# External
+searxng-docker/
