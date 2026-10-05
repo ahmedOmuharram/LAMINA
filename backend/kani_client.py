@@ -87,6 +87,21 @@ def materials_project_client(api_key: Optional[str]):
         return search(*args, **kwargs)
 
     summary.search = search_readable_fields
+
+    get_entries = client.get_entries
+
+    @functools.wraps(get_entries)
+    def get_entries_with_dict_potcars(*args, **kwargs):
+        entries = get_entries(*args, **kwargs)
+        for entry in entries:
+            if isinstance(entry.entry_id, dict):
+                entry.entry_id = f"{entry.entry_id['identifier']}-{entry.entry_id['suffix']}"
+            spec = entry.parameters.get("potcar_spec")
+            if spec:
+                entry.parameters["potcar_spec"] = [item if isinstance(item, dict) else item.model_dump() for item in spec]
+        return entries
+
+    client.get_entries = get_entries_with_dict_potcars
     return client
 
 # --------------------------------------------------------------------------------------

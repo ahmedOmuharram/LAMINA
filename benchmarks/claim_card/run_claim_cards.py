@@ -209,6 +209,9 @@ def run_path(mode: str, claim_id: str, rep: int) -> Path:
 
 
 def frozen_card(claim_id: str) -> dict[str, Any] | None:
+    stored = RUNS / "cards" / f"{claim_id}.json"
+    if stored.exists():
+        return json.loads(stored.read_text())
     for path in (run_path("frozen", claim_id, 1), run_path("full", claim_id, 1)):
         if path.exists():
             return json.loads(path.read_text())["card"]
