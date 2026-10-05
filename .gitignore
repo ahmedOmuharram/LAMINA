@@ -30,6 +30,7 @@ neb_cache_alloys/
 neb_graphite/
 neb_runs/
 archive/
+benchmarks/claim_card/runs/
 *.log
 *.traj
 

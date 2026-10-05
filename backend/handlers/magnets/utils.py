@@ -741,7 +741,8 @@ def assess_stronger_magnet(
     mpr,
     geometry: Optional[Dict[str, float]] = None,
     baseline_literature: Optional[Dict[str, Any]] = None,
-    doped_literature: Optional[Dict[str, Any]] = None
+    doped_literature: Optional[Dict[str, Any]] = None,
+    allow_fallbacks: bool = True,
 ) -> Dict[str, Any]:
     """
     Complete assessment: is doped material a stronger permanent magnet than host?
@@ -810,13 +811,23 @@ def assess_stronger_magnet(
             max_x=min(0.15, doping_fraction + 0.05)  # Allow slightly above requested fraction
         )
         
+        if not allow_fallbacks:
+            baseline_literature = None
+            doped_literature = None
+
         # 3. Estimate baseline properties
         baseline_props = estimate_material_properties(
             baseline_mp,
             literature_hint=baseline_literature
         )
         result["baseline_properties"] = baseline_props
-        
+
+        if not doped_mp and not allow_fallbacks:
+            return {
+                "success": False,
+                "error": f"No same-phase doped entry for {dopant} in {host_formula} in the Materials Project, and heuristic estimates are disabled in single-source mode",
+            }
+
         # 4. Handle doped material: use MP entry if found, else use substitutional heuristic
         if not doped_mp:
             # No same-phase doped entry found; use substitutional heuristic
