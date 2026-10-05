@@ -209,8 +209,10 @@ def run_path(mode: str, claim_id: str, rep: int) -> Path:
 
 
 def frozen_card(claim_id: str) -> dict[str, Any] | None:
-    path = run_path("full", claim_id, 1)
-    return json.loads(path.read_text())["card"] if path.exists() else None
+    for path in (run_path("frozen", claim_id, 1), run_path("full", claim_id, 1)):
+        if path.exists():
+            return json.loads(path.read_text())["card"]
+    return None
 
 
 async def edited_card(mode: str, claim_id: str, claim: dict[str, Any], client: AsyncOpenAI) -> dict[str, Any] | None:
