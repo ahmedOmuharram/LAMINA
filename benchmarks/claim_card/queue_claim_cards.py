@@ -32,9 +32,9 @@ def done(mode: str, claim: str, rep: int) -> bool:
     return (RUNS / mode / claim / f"r{rep}.json").exists()
 
 
-def jobs_for(claims: list[str], reps: int) -> list[tuple[str, str, int]]:
+def jobs_for(claims: list[str], reps: int, modes: list[str]) -> list[tuple[str, str, int]]:
     first = [("full", claim, 1) for claim in claims]
-    rest = [(mode, claim, rep) for claim in claims for mode in ("full", "none", "frozen") for rep in range(1, reps + 1) if (mode, rep) != ("full", 1)]
+    rest = [(mode, claim, rep) for rep in range(1, reps + 1) for claim in claims for mode in modes if (mode, rep) != ("full", 1)]
     return first + rest
 
 
@@ -44,11 +44,12 @@ def main() -> None:
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--parallel", type=int, default=6)
     parser.add_argument("--budget", type=float, required=True)
+    parser.add_argument("--modes", nargs="+", default=["full", "none", "frozen"])
     parser.add_argument("--logs", type=Path, required=True)
     args = parser.parse_args()
     args.logs.mkdir(parents=True, exist_ok=True)
 
-    pending = [job for job in jobs_for(args.claims, args.reps) if not done(*job)]
+    pending = [job for job in jobs_for(args.claims, args.reps, args.modes) if not done(*job)]
     running: dict[tuple[str, str, int], subprocess.Popen] = {}
     attempts: dict[tuple[str, str, int], int] = {}
     stopped = False

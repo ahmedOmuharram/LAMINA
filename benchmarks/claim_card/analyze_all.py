@@ -78,7 +78,9 @@ def main() -> None:
     pairs = [c for c in claims if kind[c] == "computed" and verdicts("frozen-search", c)]
     diff_sd, rows = [], []
     for c in pairs:
-        a, b = verdicts("frozen", c), verdicts("frozen-search", c)
+        a, b = verdicts("frozen", c, None), verdicts("frozen-search", c, None)
+        n = min(len(a), len(b))
+        a, b = a[:n], b[:n]
         sa, sb = spread(a), spread(b)
         diff_sd.append(sb[0] - sa[0])
         acc_a = st.fmean(sign(v) == sign(gold[c]) for v in a)
