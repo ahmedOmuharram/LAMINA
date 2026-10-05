@@ -36,3 +36,4 @@ benchmarks/claim_card/runs/
 
 # External
 searxng-docker/
+benchmarks/claim_card/edits.json

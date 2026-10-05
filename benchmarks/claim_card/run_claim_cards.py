@@ -36,7 +36,8 @@ CLAIM_IDS = [
     "computational_tools_0028",
     "computational_tools_0036",
 ]
-MODES = ("full", "none", "frozen", "edit-quantifier", "edit-threshold")
+MODES = ("full", "none", "frozen", "frozen-search", "edit-quantifier", "edit-threshold", "edit")
+SEARCH_ONLY = {"search_web"}
 VERDICT = re.compile(r"\*{0,2}VERDICT\*{0,2}:\s*\*{0,2}([+-]?\d)\*{0,2}", re.IGNORECASE)
 TOOL_RESULT_CHARS = 6000
 
@@ -64,6 +65,11 @@ Write only the Claim Card now. Do not call tools and do not give a verdict yet."
 
 ASSESS_STEP = """Now assess the claim under the Claim Card you wrote, without changing its interpretation, quantifier, threshold, or defaults. Use computational tools to verify the claim if appropriate. Provide your reasoning, then end your response with exactly this format on its own line:
 VERDICT: <integer from -2 to 2>"""
+
+
+def load_drop4() -> dict[str, dict[str, Any]]:
+    rows = json.loads((ROOT / "benchmarks" / "data" / "drop4_claims.json").read_text())
+    return {row["id"]: {"claim": row["text"], "gold": row["gold_label"]} for row in rows}
 
 
 def load_claims() -> dict[str, dict[str, Any]]:
@@ -162,13 +168,15 @@ async def run_one(
     card: dict[str, Any] | None,
     client: AsyncOpenAI,
 ) -> dict[str, Any]:
-    kani = MPKani(model=BACKBONE_MODEL, system_prompt=KANI_SYSTEM_PROMPT)
+    enabled = SEARCH_ONLY if mode == "frozen-search" else None
+    kani = MPKani(model=BACKBONE_MODEL, system_prompt=KANI_SYSTEM_PROMPT, enabled_functions=enabled)
     record: dict[str, Any] = {
         "claim_id": claim_id,
         "claim": claim["claim"],
         "gold": claim["gold"],
         "mode": mode,
         "rep": rep,
+        "tools_enabled": sorted(enabled) if enabled else "all",
         "model": BACKBONE_MODEL,
         "hyperparams": kani.get_hyperparams(),
         "card_text": None,
@@ -244,20 +252,48 @@ async def main() -> None:
     parser.add_argument("--claims", nargs="+", default=CLAIM_IDS)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--rep", type=int, default=None)
+    parser.add_argument("--edit-file", type=Path, default=None)
+    parser.add_argument("--source", choices=("claimspy", "drop4"), default="claimspy")
     args = parser.parse_args()
 
-    claims = load_claims()
+    claims = load_drop4() if args.source == "drop4" else load_claims()
+    if args.source == "drop4" and args.claims == CLAIM_IDS:
+        args.claims = sorted(claims)
     client = AsyncOpenAI()
     reps = 1 if args.mode.startswith("edit") else args.reps
     rep_numbers = [args.rep] if args.rep is not None else list(range(1, reps + 1))
     semaphore = asyncio.Semaphore(args.concurrency)
+
+    if args.mode == "edit":
+        edits = [e for e in json.loads(args.edit_file.read_text()) if e["claim"] in args.claims]
+
+        async def edit_job(edit: dict[str, Any]) -> None:
+            mode = f"edit-{edit['name']}"
+            path = run_path(mode, edit["claim"], 1)
+            base = frozen_card(edit["claim"])
+            if path.exists() or base is None:
+                return
+            card = {**base, **edit["fields"]}
+            async with semaphore:
+                try:
+                    record = await run_one(edit["claim"], claims[edit["claim"]], mode, 1, card, client)
+                except Exception as error:
+                    print(f"fail {mode} {edit['claim']}: {type(error).__name__}: {error}")
+                    return
+            record["edit_fields"] = edit["fields"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(record, indent=2))
+            print(f"done {mode} {edit['claim']} r1: verdict={record['verdict']} gold={record['gold']} tools={len(record['tool_calls'])} {record['seconds']}s usage={record['usage']}")
+
+        await asyncio.gather(*(edit_job(e) for e in edits))
+        return
 
     async def job(claim_id: str, rep: int) -> None:
         path = run_path(args.mode, claim_id, rep)
         if path.exists():
             return
         card = None
-        if args.mode == "frozen":
+        if args.mode in ("frozen", "frozen-search"):
             card = frozen_card(claim_id)
         elif args.mode.startswith("edit"):
             card = await edited_card(args.mode, claim_id, claims[claim_id], client)

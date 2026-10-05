@@ -7,8 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 
 RUNS = Path(__file__).resolve().parent / "runs"
-REPEAT_MODES = ("full", "none", "frozen")
-EDIT_MODES = ("edit-quantifier", "edit-threshold")
+REPEAT_MODES = ("full", "none", "frozen", "frozen-search")
 BOOT = 10_000
 PRICE_INPUT = 2.50
 PRICE_CACHED = 0.25
@@ -91,7 +90,8 @@ def main() -> None:
         print(f"{claim:28} gold={gold:+d}  " + "  ".join(cells))
 
     print("\nEdits (frozen mode, vs mean of unedited frozen runs)")
-    for mode in EDIT_MODES:
+    edit_modes = sorted(m for m in runs if m.startswith("edit-"))
+    for mode in edit_modes:
         shifts, below, above = [], 0, 0
         for claim, records in runs.get(mode, {}).items():
             base = [r["verdict"] for r in runs.get("frozen", {}).get(claim, []) if r["verdict"] is not None]
@@ -104,7 +104,9 @@ def main() -> None:
             print(f"  {mode:16} {claim:28} edited={edited:+d} unedited={base}")
         if shifts:
             lo, hi = boot_ci(shifts)
-            print(f"  {mode}: n={len(shifts)} mean shift {statistics.fmean(shifts):+.2f} [{lo:+.2f},{hi:+.2f}] below range {below} above range {above}")
+            if len(shifts) > 1:
+                print(f"  {mode}: n={len(shifts)} mean shift {statistics.fmean(shifts):+.2f} [{lo:+.2f},{hi:+.2f}] below range {below} above range {above}")
+    print(f"\nTotal cost of saved runs: ${cost([r for m in runs.values() for rs in m.values() for r in rs]):.2f}")
 
 
 if __name__ == "__main__":
