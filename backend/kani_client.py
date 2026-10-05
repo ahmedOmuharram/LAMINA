@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 from typing import Any, Optional, List, Dict, Set
 import logging as _log
 import inspect
@@ -63,6 +64,12 @@ def _build_engine(model: str = BACKBONE_MODEL) -> OpenAIEngine:
 
 
 UNREADABLE_SUMMARY_FIELDS = ("dos", "bandstructure")
+
+import pymatgen.entries.compatibility
+import pymatgen.entries.computed_entries
+
+sys.modules.setdefault("pymatgen.core.entries", pymatgen.entries.computed_entries)
+sys.modules.setdefault("pymatgen.analysis.compatibility", pymatgen.entries.compatibility)
 
 
 def materials_project_client(api_key: Optional[str]):

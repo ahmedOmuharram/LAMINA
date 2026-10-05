@@ -45,17 +45,7 @@ def build_electrode_query_params(
     if elements:
         element_list = [e.strip() for e in elements.split(',')]
         
-        # For small element sets (binary/ternary), use chemsys to enforce exact system
-        # This avoids OR-logic where elements=['Al','Mg'] returns Mg-only materials
-        if len(element_list) <= 3:
-            # Sort elements for standard chemsys format (e.g., "Al-Mg")
-            chemsys = "-".join(sorted(element_list))
-            query_params['chemsys'] = chemsys
-            _log.info(f"Using chemsys='{chemsys}' for exact {len(element_list)}-component system")
-        else:
-            # For larger systems, still use elements list
-            query_params['elements'] = element_list
-            _log.warning(f"Using elements list for {len(element_list)}-component system; consider post-filtering")
+        query_params['elements'] = element_list
     
     if working_ion:
         query_params['working_ion'] = working_ion

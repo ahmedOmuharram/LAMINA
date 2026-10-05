@@ -419,7 +419,7 @@ class BatteryAIFunctionsMixin:
             if hasattr(self.mpr, 'insertion_electrodes'):
                 try:
                     # Search by material_id or battery_id
-                    results = self.mpr.insertion_electrodes.search(battery_id=material_id)
+                    results = self.mpr.insertion_electrodes.search(battery_ids=[material_id])
                     
                     if not results:
                         # Try as a formula
