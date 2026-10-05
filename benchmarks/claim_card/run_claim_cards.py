@@ -243,11 +243,13 @@ async def main() -> None:
     parser.add_argument("--reps", type=int, default=5)
     parser.add_argument("--claims", nargs="+", default=CLAIM_IDS)
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--rep", type=int, default=None)
     args = parser.parse_args()
 
     claims = load_claims()
     client = AsyncOpenAI()
     reps = 1 if args.mode.startswith("edit") else args.reps
+    rep_numbers = [args.rep] if args.rep is not None else list(range(1, reps + 1))
     semaphore = asyncio.Semaphore(args.concurrency)
 
     async def job(claim_id: str, rep: int) -> None:
@@ -272,7 +274,7 @@ async def main() -> None:
         path.write_text(json.dumps(record, indent=2))
         print(f"done {args.mode} {claim_id} r{rep}: verdict={record['verdict']} gold={record['gold']} tools={len(record['tool_calls'])} {record['seconds']}s usage={record['usage']}")
 
-    await asyncio.gather(*(job(claim_id, rep) for claim_id in args.claims for rep in range(1, reps + 1)))
+    await asyncio.gather(*(job(claim_id, rep) for claim_id in args.claims for rep in rep_numbers))
 
 
 if __name__ == "__main__":
