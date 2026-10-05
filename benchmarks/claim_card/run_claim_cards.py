@@ -36,7 +36,7 @@ CLAIM_IDS = [
     "computational_tools_0028",
     "computational_tools_0036",
 ]
-MODES = ("full", "none", "frozen", "frozen-search", "edit-quantifier", "edit-threshold", "edit")
+MODES = ("full", "none", "frozen", "frozen-search", "edit-quantifier", "edit-quantifier-search", "edit-threshold", "edit")
 SEARCH_ONLY = {"search_web"}
 VERDICT = re.compile(r"\*{0,2}VERDICT\*{0,2}:\s*\*{0,2}([+-]?\d)\*{0,2}", re.IGNORECASE)
 TOOL_RESULT_CHARS = 6000
@@ -168,7 +168,7 @@ async def run_one(
     card: dict[str, Any] | None,
     client: AsyncOpenAI,
 ) -> dict[str, Any]:
-    enabled = SEARCH_ONLY if mode == "frozen-search" else None
+    enabled = SEARCH_ONLY if mode.endswith("-search") else None
     kani = MPKani(model=BACKBONE_MODEL, system_prompt=KANI_SYSTEM_PROMPT, enabled_functions=enabled)
     record: dict[str, Any] = {
         "claim_id": claim_id,
@@ -223,7 +223,7 @@ async def edited_card(mode: str, claim_id: str, claim: dict[str, Any], client: A
     if card is None:
         return None
     edited = dict(card)
-    if mode == "edit-quantifier":
+    if mode.startswith("edit-quantifier"):
         if card.get("Quantifier") == "universal":
             return None
         edited["Quantifier"] = "universal"
