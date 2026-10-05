@@ -1,6 +1,7 @@
 # kani_client.py
 from __future__ import annotations
 
+import functools
 import os
 from typing import Any, Optional, List, Dict, Set
 import logging as _log
@@ -59,6 +60,27 @@ def _build_engine(model: str = BACKBONE_MODEL) -> OpenAIEngine:
         eng = OpenAIEngineNoFuncReserve(api_key, model=model, api_type="chat_completions")
     _log.info(f"[kani_client] Initialized OpenAIEngineNoFuncReserve(model={model})")
     return eng
+
+
+UNREADABLE_SUMMARY_FIELDS = ("dos", "bandstructure")
+
+
+def materials_project_client(api_key: Optional[str]):
+    from mp_api.client import MPRester
+
+    client = MPRester(api_key)
+    summary = client.materials.summary
+    search = summary.search
+    readable = [field for field in summary.available_fields if field not in UNREADABLE_SUMMARY_FIELDS]
+
+    @functools.wraps(search)
+    def search_readable_fields(*args, **kwargs):
+        if kwargs.get("fields") is None and kwargs.get("all_fields", True):
+            kwargs["fields"] = readable
+        return search(*args, **kwargs)
+
+    summary.search = search_readable_fields
+    return client
 
 # --------------------------------------------------------------------------------------
 # Utility functions for AI function management
@@ -150,9 +172,8 @@ class MPKani(MaterialHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandl
         """
         # Initialize MPRester and handlers
         import os
-        from mp_api.client import MPRester
         api_key = os.getenv("MP_API_KEY")
-        mpr = MPRester(api_key)
+        mpr = materials_project_client(api_key)
         
         # Store function filtering
         self._enabled_functions = enabled_functions

@@ -206,7 +206,7 @@ class BaseHandler:
         raw_kwargs["elements"] = _as_list("elements")
         raw_kwargs["exclude_elements"] = _as_list("exclude_elements")
         # Map 'formula' parameter to 'formula_pretty' for API compatibility
-        raw_kwargs["formula_pretty"] = _list_or_str("formula_pretty") or _list_or_str("formula")
+        raw_kwargs["formula"] = _list_or_str("formula_pretty") or _list_or_str("formula")
         raw_kwargs["material_ids"] = self._parse_csv_list(_params.get("material_ids"))
         raw_kwargs["possible_species"] = _as_list("possible_species")
 
