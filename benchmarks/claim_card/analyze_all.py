@@ -109,12 +109,13 @@ def main() -> None:
         base = st.fmean(verdicts("frozen", c, None))
         shifts.extend(abs(v - base) for v in now)
         fr_now.append(pairwise_flip(now))
-        if all(t is not None for t in then):
-            fr_then.append(pairwise_flip(then))
+        both = [k for k in sorted(edits) if h3_by.get(c, {}).get(k) is not None]
+        if len(both) >= 2:
+            fr_then.append((pairwise_flip([edits[k] for k in both]), pairwise_flip([h3_by[c][k] for k in both])))
         print(f"  {c:30} gold {gold[c]:+d}  now {now} (frozen base {base:+.1f})  thesis {then}")
     m, lo, hi = boot_mean_ci(fr_now)
-    print(f"  flip rate across readings: GPT-5.4 cards {m:.2f} [{lo:.2f},{hi:.2f}] over {len(fr_now)} claims; thesis gpt-4o {st.fmean(fr_then):.2f} over {len(fr_then)} claims; mean |shift| from frozen base {st.fmean(shifts):.2f}")
-    summary["readings"] = {"claims": len(fr_now), "flip_rate_now": round(m, 3), "ci": [round(lo, 3), round(hi, 3)], "flip_rate_thesis": round(st.fmean(fr_then), 3)}
+    print(f"  flip rate across readings: GPT-5.4 cards {m:.2f} [{lo:.2f},{hi:.2f}] over {len(fr_now)} claims; on the readings both scored, {st.fmean(a for a, _ in fr_then):.2f} vs gpt-4o {st.fmean(b for _, b in fr_then):.2f} over {len(fr_then)} claims; mean |shift| from frozen base {st.fmean(shifts):.2f}")
+    summary["readings"] = {"claims": len(fr_now), "flip_rate_now": round(m, 3), "ci": [round(lo, 3), round(hi, 3)], "matched": [round(st.fmean(a for a, _ in fr_then), 3), round(st.fmean(b for _, b in fr_then), 3), len(fr_then)]}
 
     print("\nSign accuracy against gold (first runs per condition)")
     for mode in ("full", "none", "frozen"):
