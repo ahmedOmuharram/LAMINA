@@ -324,6 +324,9 @@ class CalculationsMixin:
                 "**Phase Evolution**:"
             ]
             
+            # Define known carbide phases for clarity
+            CARBIDE_PHASES = {'CSI', 'SIC', 'AL4C3', 'AL4SIC4', 'AL8SIC7', 'C_SIC', 'TIC', 'WC', 'CR3C2', 'CR7C3', 'CR23C6', 'FE3C', 'CEMENTITE'}
+            
             # Analyze each phase
             for phase, fractions in sorted(phase_fractions.items()):
                 max_frac = max(fractions)
@@ -347,8 +350,24 @@ class CalculationsMixin:
                     trend = "stable"
                     change = "~0%"
                 
+                # Map phase name to readable form and mark carbides
+                readable_name = map_phase_name(phase)
+                phase_upper = phase.upper()
+                
+                # Add carbide label if applicable
+                if phase_upper in CARBIDE_PHASES or phase_upper == 'CSI':
+                    carbide_note = " [CARBIDE]"
+                else:
+                    carbide_note = ""
+                
+                # Show both database name and readable name if different
+                if readable_name != phase:
+                    display_name = f"{readable_name} ({phase}){carbide_note}"
+                else:
+                    display_name = f"{phase}{carbide_note}"
+                
                 response_lines.append(
-                    f"  • **{phase}**: {frac_start*100:.2f}% → {frac_end*100:.2f}% "
+                    f"  • **{display_name}**: {frac_start*100:.2f}% → {frac_end*100:.2f}% "
                     f"({trend}, {change})"
                 )
             
@@ -456,8 +475,25 @@ class CalculationsMixin:
             
             _log.info(f"Filtered phases for calculation: {sorted(phases)}")
             
-            # Normalize phase name
+            # Normalize phase name with common aliases
             phase_name_upper = phase_name.upper()
+            
+            # Phase name aliases - map common names to database phase names
+            PHASE_ALIASES = {
+                "SIC": "CSI",           # Silicon carbide
+                "CARBIDE": "CSI",       # Generic carbide -> SiC in Al-Si-C systems
+                "SILICON_CARBIDE": "CSI",
+                "TAU": "ALMGZN_TAU",    # Common tau phase alias
+                "LAVES": "LAVES_C14",   # Common Laves alias
+            }
+            
+            # Try alias if direct match fails
+            if phase_name_upper not in phases and phase_name not in phases:
+                if phase_name_upper in PHASE_ALIASES:
+                    alias = PHASE_ALIASES[phase_name_upper]
+                    if alias in phases:
+                        _log.info(f"Mapped phase alias '{phase_name}' -> '{alias}'")
+                        phase_name_upper = alias
             
             # Check if phase exists in database
             if phase_name_upper not in phases and phase_name not in phases:

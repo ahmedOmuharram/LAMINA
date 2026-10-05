@@ -1,0 +1,124 @@
+{
+  "per_run": {
+    "h2_gpt-4o_no-policy": {
+      "router": "no-policy",
+      "source": "H2",
+      "kappa": 0.3664880407789831,
+      "accuracy": 0.35135135135135137,
+      "mae": 1.3243243243243243,
+      "n_examples": 37,
+      "miss_rate": 0.08108108108108109,
+      "miss_rate_ci": {
+        "miss_rate": 0.08108108108108109,
+        "ci_lower": 0.0,
+        "ci_upper": 0.1891891891891892,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "avg_latency_ms": 70293.07663762891,
+      "avg_tool_calls": 1.027027027027027
+    },
+    "h2_gpt-4o_policy": {
+      "router": "policy",
+      "source": "H1",
+      "kappa": 0.5176736024066182,
+      "accuracy": 0.40540540540540543,
+      "mae": 1.135135135135135,
+      "n_examples": 37,
+      "miss_rate": 0.0,
+      "miss_rate_ci": {
+        "miss_rate": 0.0,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "avg_latency_ms": 136895.62838141984,
+      "avg_tool_calls": 1.4594594594594594
+    },
+    "h2_gpt-4o_oracle": {
+      "router": "oracle",
+      "source": "H2",
+      "kappa": 0.6096835271842035,
+      "accuracy": 0.3783783783783784,
+      "mae": 1.027027027027027,
+      "n_examples": 37,
+      "miss_rate": 0.0,
+      "miss_rate_ci": {
+        "miss_rate": 0.0,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "avg_latency_ms": 68329.64499576672,
+      "avg_tool_calls": 1.2972972972972974
+    }
+  },
+  "comparisons": {
+    "policy_vs_no_policy": {
+      "baseline_run": "h2_gpt-4o_no-policy",
+      "comparison_run": "h2_gpt-4o_policy",
+      "bootstrap": {
+        "kappa_a": 0.3664880407789831,
+        "kappa_b": 0.5176736024066182,
+        "delta_hat": 0.15118556162763508,
+        "std_error_delta_hat": 0.1287441154442379,
+        "ci_lower": -0.08532745113995872,
+        "ci_upper": 0.41874342263467723,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "conditions": {
+        "ci_positive": {
+          "criterion": "95% CI lower bound > 0",
+          "value": -0.08532745113995872,
+          "passed": false
+        },
+        "threshold_met": {
+          "criterion": "\u0394\u03ba \u2265 0.25",
+          "value": 0.15118556162763508,
+          "threshold": 0.25,
+          "passed": false
+        },
+        "miss_rate_ok": {
+          "criterion": "Policy miss-rate upper CI < 5%",
+          "value": 0.0,
+          "threshold": 0.05,
+          "passed": true
+        }
+      },
+      "hypothesis_supported": false,
+      "interpretation": "No effect: \u0394\u03ba=0.15 < 0.20, indistinguishable from noise"
+    },
+    "oracle_vs_policy": {
+      "baseline_run": "h2_gpt-4o_policy",
+      "comparison_run": "h2_gpt-4o_oracle",
+      "bootstrap": {
+        "kappa_a": 0.5176736024066182,
+        "kappa_b": 0.6096835271842035,
+        "delta_hat": 0.0920099247775853,
+        "std_error_delta_hat": 0.06266447190336742,
+        "ci_lower": -0.021450247335483338,
+        "ci_upper": 0.22379690315542722,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "conditions": {
+        "ci_positive": {
+          "criterion": "95% CI lower bound > 0 (headroom exists)",
+          "value": -0.021450247335483338,
+          "passed": false
+        }
+      },
+      "has_headroom": false,
+      "headroom_small": false,
+      "interpretation": "No headroom: \u0394\u03ba=0.09 < 0.20, routing likely not the main bottleneck"
+    }
+  },
+  "overall_verdict": {
+    "h2_policy_supported": false,
+    "h2_oracle_headroom": false,
+    "notes": "H2 tests whether policy router improves over no-policy, with oracle as upper bound"
+  }
+}

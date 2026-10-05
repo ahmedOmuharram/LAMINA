@@ -470,7 +470,7 @@ def run_neb(
     images = [ini]
     images += [ini.copy() for _ in range(images_n - 2)]
     images += [fin]
-    interpolate(images)  # Linear interpolation first
+    interpolate(images, apply_constraint=True)  # Linear interpolation first
     
     # Try IDPP interpolation for better initial path (fewer NEB steps)
     try:

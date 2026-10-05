@@ -1,0 +1,150 @@
+
+\section{Hypotheses (Pre-registered)}
+
+Drop-4 is small ($N=37$ claims), so raw $\kappa$ estimates are noisy. Under uniform random choice over the 5 labels, the expected $\kappa$ is $0 \pm 0.165$ with a 95\% interval of approximately $[-0.32, 0.33]$ on this label distribution. This means that, for two system configurations on the same data, we typically need a difference in $\kappa$ in the range of roughly $0.25$--$0.35$ to obtain clear 95\% confidence that one is better than the other.
+
+For all hypotheses that involve comparing two configurations (e.g., with-tools vs.\ no-tools), we therefore:
+
+\begin{itemize}[leftmargin=1em]
+  \item Compute the per-claim contributions to QWK and form a vector of $\kappa$-like scores (one per claim), then
+  \item Estimate the distribution of $\Delta\kappa$ (difference between configurations) using a non-parametric bootstrap with $10{,}000$ resamples over claims, and
+  \item Report the point estimate $\widehat{\Delta\kappa}$ and its 95\% bootstrap confidence interval.
+\end{itemize}
+
+We interpret effect sizes using the following heuristic for Drop-4:
+
+\begin{itemize}[leftmargin=1em]
+  \item $\lvert \Delta\kappa \rvert < 0.20$: indistinguishable from noise;
+  \item $0.20 \le \lvert \Delta\kappa \rvert < 0.35$: borderline; requires careful CI inspection;
+  \item $\lvert \Delta\kappa \rvert \ge 0.35$: very likely a real effect.
+\end{itemize}
+
+Unless otherwise noted, a hypothesis is considered \emph{supported} when the 95\% bootstrap CI for the relevant $\Delta\kappa$ has its lower bound $> 0$ and the point estimate $\widehat{\Delta\kappa}$ is at least $0.25$ (i.e., clearly outside the "noise" regime for this dataset).
+
+\subsection*{Hypothesis 1: Tools improve agreement}
+
+\textit{Claim:} Adding tools (same base model and prompt) increases QWK on Drop-4.
+
+\noindent\textit{Test:} For each model $m \in \{\texttt{gpt-4o-mini}, \texttt{gpt-4o}, \texttt{gpt-5.1}\}$, compare \emph{with-tools} vs.\ \emph{no-tools} using one-shot predictions on all 37 claims. Let
+\[
+\Delta\kappa_m = \kappa_{m,\text{tools}} - \kappa_{m,\text{no-tools}}.
+\]
+
+\noindent\textit{Support if:}
+\begin{itemize}[leftmargin=1em]
+  \item For $\texttt{gpt-4o-mini}$ and $\texttt{gpt-4o}$, the 95\% bootstrap CI for $\Delta\kappa_m$ has lower bound $> 0$ and $\widehat{\Delta\kappa}_m \ge 0.25$; and
+  \item For $\texttt{gpt-5.1}$, the 95\% bootstrap CI for $\Delta\kappa_{5.1}$ has lower bound $> 0$ (we do not enforce a minimum effect size for the largest model, but still require a statistically positive effect).
+\end{itemize}
+
+\noindent\textit{Interpretation:} If these conditions are not met, we interpret the tools as not providing a clearly measurable improvement in agreement at this dataset size and examine routing, parameterization, and tool implementation via the secondary hypotheses.
+
+\subsection*{Hypothesis 2: Better routing helps}
+
+\textit{Claim:} A policy router improves agreement vs.\ a minimal router; an oracle router provides an upper bound.
+
+\noindent\textit{Conditions (all using the same base model, \texttt{gpt-4o}):}
+\begin{itemize}[leftmargin=1em]
+  \item \textbf{No-Policy Router:} Minimal system prompt (task description only); tools visible but no decision rules.
+  \item \textbf{Policy Router:} Hand-engineered decision rules for when to call each tool family.
+  \item \textbf{Oracle Router:} Manually specified and pre-called tools with a specific tool ordering and key parameters per claim (used as an upper bound on routing quality).
+\end{itemize}
+
+Let
+\[
+\Delta\kappa_{\text{Policy}} = \kappa_{\text{Policy}} - \kappa_{\text{No-Policy}}\]\[
+\Delta\kappa_{\text{Oracle}} = \kappa_{\text{Oracle}} - \kappa_{\text{Policy}}
+\]
+
+We also define a \emph{tool miss-rate} as the proportion of claims where a manually required tool family (tagged per claim) is never invoked under a given router.
+
+\noindent\textit{Support if:}
+\begin{itemize}[leftmargin=1em]
+  \item \textbf{Policy vs.\ No-Policy:} The 95\% bootstrap CI for $\Delta\kappa_{\text{Policy}}$ has lower bound $> 0$ and $\widehat{\Delta\kappa}_{\text{Policy}} \ge 0.25$, \emph{and} the upper 95\% CI bound for the Policy miss-rate is $< 5\%$; and
+  \item \textbf{Oracle vs.\ Policy:} The 95\% bootstrap CI for $\Delta\kappa_{\text{Oracle}}$ has lower bound $> 0$ (indicating headroom from perfect routing).
+\end{itemize}
+
+\noindent\textit{Interpretation:} If $\Delta\kappa_{\text{Oracle}}$ is small (e.g., $\widehat{\Delta\kappa}_{\text{Oracle}} < 0.05$) and/or its CI overlaps $0$, routing is unlikely to be the main bottleneck on Drop-4, and we turn to ambiguity and tool implementation (H3–H4).
+
+\subsection*{Hypothesis 3: Ambiguity induces flips and lowers agreement}
+
+We partition Drop-4 into:
+\begin{itemize}[leftmargin=1em]
+  \item \textbf{Crisp} claims: explicit numbers and comparators, no vague quantifiers; and
+  \item \textbf{Ambiguous} claims: contain vague quantifiers or approximations (e.g., ``a few\%'', ``$\approx 0.5$~V'') that require numeric mapping before tool calls.
+\end{itemize}
+The classification and explanations are given in Appendix~A.
+
+For an ambiguous claim $c$, we pre-define a mapping set $M(c)=\{m_1,\dots,m_n\}$ (e.g., ``a few\%'' $\to \{2,3,5\}$). Running the same system (fixed model + Policy router) once per mapping yields labels
+\[
+\hat{y}_i = f(c,m_i) \in \{-2,-1,0,1,2\}, \ \ \ i=1,\dots,n
+\]
+
+\noindent\textbf{Flip-rate (FR).}
+\[
+\mathrm{FR}(c) = \frac{2}{n(n-1)} \sum_{i<j} \mathbbm{1}\!\left[\hat{y}_i \neq \hat{y}_j\right], \  \mathrm{FR}(c)\in[0,1]
+\]
+and for the ambiguous subset $D_A$,
+\[
+\mathrm{FR} = \frac{1}{|D_A|}\sum_{c\in D_A}\mathrm{FR}(c).
+\]
+
+\noindent\textbf{Quadratic-weighted flip-rate (QWFR).} Re-index labels $\tilde y_i = \hat y_i + 2 \in \{0,\dots,4\}$ for a $K{=}5$-level scale and define
+\[
+\mathrm{QWFR}(c) = \frac{2}{n(n-1)} \sum_{i<j} \left(\frac{|\tilde y_i - \tilde y_j|}{K-1}\right)^2,
+\]
+with dataset-level
+\[
+\mathrm{QWFR} = \frac{1}{|D_A|}\sum_{c\in D_A}\mathrm{QWFR}(c).
+\]
+
+\noindent\textit{Claim:} Ambiguous claims have higher FR/QWFR and lower QWK than crisp ones under identical settings.
+
+\noindent\textit{Support if:} using the same model (\texttt{gpt-4o}) and Policy router,
+\begin{itemize}[leftmargin=1em]
+  \item Either
+    \begin{itemize}
+      \item $\mathrm{QWFR}(\text{Amb}) - \mathrm{QWFR}(\text{Crisp}) \ge 0.05$ with 95\% bootstrap CI lower bound $> 0$, or
+      \item $\mathrm{FR}(\text{Amb}) - \mathrm{FR}(\text{Crisp}) \ge 0.20$ with 95\% bootstrap CI lower bound $> 0$,
+    \end{itemize}
+  \item \emph{and} $\kappa(\text{Crisp}) - \kappa(\text{Amb}) \ge 0.25$ with 95\% bootstrap CI lower bound $> 0$.
+\end{itemize}
+
+\noindent\textit{Interpretation:} Higher FR/QWFR and lower QWK for ambiguous claims indicate that vague quantifiers degrade reliability, not just single-run variance.
+
+\subsection*{Hypothesis 4: Multiple tool calls help}
+
+\textit{Claim:} Allowing multiple tool calls yields better QWK than restricting the model to a single tool call.
+
+\noindent\textit{Test:} Compare a \emph{multi-call} setting (where the model can invoke tools repeatedly until it is satisfied) against a \emph{single-call} setting (the model is limited to exactly one tool invocation per claim) using the same model and Policy router. Let
+\[
+\Delta\kappa_{\text{multi}} = \kappa_{\text{multi-call}} - \kappa_{\text{single-call}}.
+\]
+
+\noindent\textit{Support if:} the 95\% bootstrap CI for $\Delta\kappa_{\text{multi}}$ has lower bound $> 0$ and $\widehat{\Delta\kappa}_{\text{multi}} \ge 0.25$.
+
+\noindent\textit{Interpretation:} If $\Delta\kappa_{\text{multi}}$ is small and/or the CI overlaps $0$, then a single well-chosen tool call is sufficient for most claims in Drop-4, and iterative refinement provides little additional signal.
+
+\subsection*{Hypothesis 5: With tools enabled, bigger models have diminishing returns}
+
+\textit{Claim:} Tools narrow the gap between small and large models; the scale advantage shrinks once tool use is available.
+
+\noindent\textit{Test:} Compare \texttt{gpt-4o-mini} vs.\ \texttt{gpt-5.1} with and without tools (Policy router). Define
+\[
+\text{Gap}_{\text{no-tools}} = \kappa_{5.1,\text{no-tools}} - \kappa_{4\text{o-mini},\text{no-tools}},
+\]
+\[
+\text{Gap}_{\text{tools}} = \kappa_{5.1,\text{tools}} - \kappa_{4\text{o-mini},\text{tools}},
+\]
+and
+\[
+\Delta_{\text{gap}} = \text{Gap}_{\text{no-tools}} - \text{Gap}_{\text{tools}}.
+\]
+
+\noindent\textit{Support if:}
+\begin{itemize}[leftmargin=1em]
+  \item The 95\% bootstrap CI for $\text{Gap}_{\text{no-tools}}$ has lower bound $\ge 0.25$ (a clear scale gap without tools); and
+  \item The point estimate for $\text{Gap}_{\text{tools}}$ is $\le 0.10$ and its 95\% bootstrap CI includes $0$ (i.e., we cannot rule out equal performance once tools are available); and
+  \item The 95\% bootstrap CI for $\Delta_{\text{gap}}$ has lower bound $> 0$.
+\end{itemize}
+
+\noindent\textit{Interpretation:} If $\text{Gap}_{\text{no-tools}}$ is large but $\text{Gap}_{\text{tools}}$ is small and statistically compatible with $0$, then tools effectively compress the performance gap between small and large models on Drop-4. If not, base-model capability remains the dominant factor even with tools enabled.

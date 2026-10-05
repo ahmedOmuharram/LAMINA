@@ -23,6 +23,18 @@ class BaseHandler:
         self.mpr = mpr
         self.recent_tool_outputs = []
     
+    @property
+    def allow_fallbacks(self) -> bool:
+        """
+        Check if fallback/secondary sources are allowed.
+        
+        In H4 single-source mode, this returns False to disable literature
+        values, heuristic models, and empirical correlations.
+        
+        The _allow_fallbacks attribute is set by MPKani based on source_mode.
+        """
+        return getattr(self, '_allow_fallbacks', True)
+    
     def _get_pagination(self, params: Mapping[str, Any]) -> tuple[int, int]:
         """Return (page, per_page) with defaults and safety caps.
 

@@ -116,25 +116,42 @@ class MPKani(MaterialHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandl
         client: Optional[object] = None,
         model: str = "gpt-4.1",
         *,
+        system_prompt: str = KANI_SYSTEM_PROMPT,
         chat_history: Optional[list[KChatMessage]] = None,
         always_included_messages: Optional[list[KChatMessage]] = None,
         enabled_functions: Optional[Set[str]] = None,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        seed: Optional[int] = None,
     ) -> None:
+        """
+        Initialize MPKani with optional function filtering.
+        
+        Args:
+            enabled_functions: Explicit set of function names to enable. If provided,
+                only these functions will be available.
+            temperature, top_p, seed: LLM hyperparameters
+        """
         # Initialize MPRester and handlers
         import os
         from mp_api.client import MPRester
         api_key = os.getenv("MP_API_KEY")
         mpr = MPRester(api_key)
         
-        # Store enabled functions filter
+        # Store function filtering
         self._enabled_functions = enabled_functions
+        
+        # Store hyperparameters for use in requests
+        self._temperature = temperature
+        self._top_p = top_p
+        self._seed = seed
         
         # Initialize Kani first
         engine = _build_engine(model)
         Kani.__init__(
             self,
             engine,
-            system_prompt=KANI_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             chat_history=chat_history,
             always_included_messages=always_included_messages,
         )
@@ -152,10 +169,24 @@ class MPKani(MaterialHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandl
         
         self.recent_tool_outputs: list[dict[str, Any]] = []
         
-        # Apply function filtering if enabled_functions is provided
+        # Apply function filtering if enabled_functions is set
         if self._enabled_functions is not None:
             # Filter the functions dict that was set by Kani.__init__
+            original_count = len(self.functions)
             self.functions = {
                 name: func for name, func in self.functions.items()
                 if name in self._enabled_functions
             }
+            filtered_count = len(self.functions)
+            if filtered_count < original_count:
+                _log.info(f"[MPKani] Function filtering: {filtered_count}/{original_count} functions enabled")
+    
+    def get_hyperparams(self) -> Dict[str, Any]:
+        """Get hyperparameters to pass to the engine for each request."""
+        params = {
+            "temperature": self._temperature,
+            "top_p": self._top_p,
+        }
+        if self._seed is not None:
+            params["seed"] = self._seed
+        return params

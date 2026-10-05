@@ -38,19 +38,25 @@ def parse_composition_string(comp_str: str, elements: List[str]) -> Optional[Dic
     comp_str = comp_str.replace(' ', '').replace('_', '').upper()
     _log.debug(f"Cleaned composition string: '{comp_str}'")
     
-    # Try pattern like "AL88MG8ZN4" or "88AL8MG4ZN"
-    for element in elements:
-        el_upper = element.upper()
-        # Look for patterns like "AL88" or "88AL"
-        pattern1 = rf"{el_upper}(\d+\.?\d*)"  # AL88
-        pattern2 = rf"(\d+\.?\d*){el_upper}"  # 88AL
-        
-        match = re.search(pattern1, comp_str)
-        if not match:
-            match = re.search(pattern2, comp_str)
-        
-        if match:
-            comp_dict[el_upper] = float(match.group(1))
+    # Check if this is hyphen-separated format (Al-8Mg-4Zn)
+    is_hyphen_format = '-' in comp_str or ',' in comp_str
+    
+    # Try pattern like "AL88MG8ZN4" - Element followed by Number
+    # The number must have at least one digit
+    for match in re.finditer(r'([A-Z][A-Z]?)(\d+(?:\.\d+)?)', comp_str):
+        el, num = match.group(1), match.group(2)
+        if el in [e.upper() for e in elements]:
+            if el not in comp_dict:  # First match wins
+                comp_dict[el] = float(num)
+    
+    # If not hyphen format and we're missing elements that appear in string, fail
+    # (This catches "Al65.5Mg34.5Zn" where Zn has no number)
+    if not is_hyphen_format:
+        missing = [e.upper() for e in elements if e.upper() not in comp_dict]
+        for el in missing:
+            if el in comp_str:
+                _log.warning(f"Element '{el}' found in composition string but has no associated value")
+                return None
     
     # If we found some but not all elements, it might be hyphen-separated format
     # Clear and try the split method instead

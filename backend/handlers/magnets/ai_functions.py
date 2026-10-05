@@ -76,7 +76,8 @@ class MagnetAIFunctionsMixin:
                 mpr=self.mpr,
                 geometry=geometry,
                 baseline_literature=None,
-                doped_literature=None
+                doped_literature=None,
+                allow_fallbacks=self.allow_fallbacks,  # H4: disable heuristics in single-source mode
             )
             
             duration_ms = (time.time() - start_time) * 1000

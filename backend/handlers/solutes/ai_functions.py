@@ -45,19 +45,21 @@ def _get_calphad_fcc_composition(
         Dict of element mole fractions in FCC_A1 phase, or None if failed
     """
     try:
-        from pycalphad import Database, equilibrium
-        import pycalphad.variables as v
-        import numpy as np
+        from pycalphad import Database
         
         mat = matrix_element.upper()
         sol = solute_element.upper()
         
         # Convert at.% to mole fraction
         x_solute = solute_atpct / 100.0
-        x_matrix = 1.0 - x_solute
         
-        # Find TDB file using shared utility
-        from ..shared.calphad_utils import find_tdb_database
+        # Use shared utilities for database loading and equilibrium calculation
+        from ..shared.calphad_utils import (
+            find_tdb_database, 
+            compute_equilibrium, 
+            extract_phase_fractions,
+            get_phase_composition
+        )
         
         db_path = find_tdb_database([mat, sol])
         if not db_path:
@@ -66,51 +68,44 @@ def _get_calphad_fcc_composition(
         
         db = Database(str(db_path))
         
-        # Get all phases from database
-        # Convert phase names to regular Python strings to avoid numpy.str_ issues
+        # Get all phases from database (convert to str to avoid numpy.str_ issues)
         phases = [str(p) for p in db.phases.keys()]
         
-        # Setup elements and conditions
-        elements = [mat, sol, 'VA']
-        conditions = {
-            v.T: temperature_K,
-            v.P: 101325,
-            v.N: 1.0,
-            v.X(sol): x_solute
-        }
+        # Setup composition
+        composition = {sol: x_solute}
+        elements = [mat, sol]
         
-        # Calculate equilibrium
-        eq = equilibrium(db, elements, phases, conditions)
+        # Calculate equilibrium using shared utility (has numpy.str_ fix)
+        eq = compute_equilibrium(
+            db=db,
+            elements=elements,
+            phases=phases,
+            composition=composition,
+            temperature=temperature_K
+        )
         
-        # Extract FCC_A1 phase composition
-        eq_squeezed = eq.squeeze()
+        if eq is None:
+            _log.warning(f"Equilibrium calculation failed for {mat}-{sol} at {temperature_K}K")
+            return None
         
-        # Find FCC_A1 phase
-        phase_array = eq_squeezed.Phase.values
-        np_array = eq_squeezed.NP.values
+        # Check if FCC_A1 phase exists with non-negligible fraction
+        phase_fractions = extract_phase_fractions(eq, tolerance=1e-4)
         
-        fcc_composition = {}
+        fcc_fraction = phase_fractions.get('FCC_A1', 0.0)
+        if fcc_fraction < 1e-4:
+            _log.warning(f"FCC_A1 phase not stable for {mat}-{sol} at {temperature_K}K "
+                        f"(fraction: {fcc_fraction:.6f})")
+            return None
         
-        for idx, phase in enumerate(phase_array):
-            if phase and 'FCC_A1' in str(phase):
-                frac = float(np_array[idx])
-                if frac > 1e-4:  # Phase is present
-                    # Extract composition of this phase
-                    # Get X values for this phase
-                    for elem in [mat, sol]:
-                        try:
-                            x_elem = float(eq_squeezed.X.sel(component=elem).values[idx])
-                            if not np.isnan(x_elem):
-                                fcc_composition[elem] = x_elem
-                        except:
-                            pass
-                    
-                    if fcc_composition:
-                        return fcc_composition
+        # Extract FCC_A1 composition using shared utility
+        fcc_composition = get_phase_composition(eq, 'FCC_A1', [mat, sol])
         
-        # If we didn't find FCC_A1, return None
-        _log.warning(f"FCC_A1 phase not found in equilibrium for {mat}-{sol} at {temperature_K}K")
-        return None
+        if not fcc_composition:
+            _log.warning(f"Could not extract FCC_A1 composition for {mat}-{sol} at {temperature_K}K")
+            return None
+        
+        _log.info(f"FCC_A1 composition for {mat}-{sol} at {temperature_K}K: {fcc_composition}")
+        return fcc_composition
         
     except Exception as e:
         _log.error(f"Error getting CALPHAD composition: {e}", exc_info=True)
@@ -183,11 +178,12 @@ class SolutesAIFunctionsMixin:
             
             duration_ms = (time.time() - start_time) * 1000
             
-            if not util_result.get("success"):
+            # util_result uses "ok" field, not "success"
+            if not util_result.get("ok"):
                 result = error_result(
                     handler="solutes",
                     function="analyze_solute_lattice_effect",
-                    error=util_result.get("error", "Computation failed"),
+                    error=util_result.get("reason", "Computation failed"),
                     error_type=ErrorType.COMPUTATION_ERROR,
                     citations=[
                         "Vegard's law for dilute substitutional alloys",
@@ -197,7 +193,7 @@ class SolutesAIFunctionsMixin:
                     duration_ms=duration_ms
                 )
             else:
-                data = {k: v for k, v in util_result.items() if k != "success"}
+                data = {k: v for k, v in util_result.items() if k != "ok"}
                 result = success_result(
                     handler="solutes",
                     function="analyze_solute_lattice_effect",
@@ -292,11 +288,24 @@ class SolutesAIFunctionsMixin:
             
             duration_ms = (time.time() - start_time) * 1000
             
-            if not util_result.get("success"):
+            # Check if we have valid results (at least one solute with ok=True)
+            has_valid_results = any(
+                r.get("ok", False) for r in util_result.get("results", [])
+            )
+            
+            if not has_valid_results:
+                # Build error message from failed solutes
+                failed_reasons = [
+                    f"{r.get('solute', '?')}: {r.get('reason', 'unknown')[:100]}"
+                    for r in util_result.get("results", [])
+                    if not r.get("ok", False)
+                ]
+                error_msg = "No valid solute comparisons. " + "; ".join(failed_reasons)
+                
                 result = error_result(
                     handler="solutes",
                     function="compare_solute_lattice_effects",
-                    error=util_result.get("error", "Comparison failed"),
+                    error=error_msg,
                     error_type=ErrorType.COMPUTATION_ERROR,
                     citations=[
                         "Vegard's law for dilute substitutional alloys",
@@ -306,11 +315,10 @@ class SolutesAIFunctionsMixin:
                     duration_ms=duration_ms
                 )
             else:
-                data = {k: v for k, v in util_result.items() if k != "success"}
                 result = success_result(
                     handler="solutes",
                     function="compare_solute_lattice_effects",
-                    data=data,
+                    data=util_result,
                     citations=[
                         "Vegard's law for dilute substitutional alloys",
                         "Hume-Rothery rules for solid solutions",
@@ -397,11 +405,12 @@ class SolutesAIFunctionsMixin:
             
             duration_ms = (time.time() - start_time) * 1000
             
-            if not util_result.get("success"):
+            # util_result uses "ok" field, not "success"
+            if not util_result.get("ok"):
                 result = error_result(
                     handler="solutes",
                     function="calculate_solute_lattice_effect",
-                    error=util_result.get("error", "Calculation failed"),
+                    error=util_result.get("reason", "Calculation failed"),
                     error_type=ErrorType.COMPUTATION_ERROR,
                     citations=[
                         "Vegard's law for dilute substitutional alloys",
@@ -410,7 +419,7 @@ class SolutesAIFunctionsMixin:
                     duration_ms=duration_ms
                 )
             else:
-                data = {k: v for k, v in util_result.items() if k != "success"}
+                data = {k: v for k, v in util_result.items() if k != "ok"}
                 result = success_result(
                     handler="solutes",
                     function="calculate_solute_lattice_effect",

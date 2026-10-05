@@ -1,0 +1,139 @@
+{
+  "per_run": {
+    "h1_gpt-4o-mini_with-tools_policy": {
+      "kappa": 0.534502478078536,
+      "accuracy": 0.5135135135135135,
+      "mae": 1.0,
+      "n_examples": 37,
+      "avg_latency_ms": 19860.683963105486,
+      "avg_tool_calls": 1.3513513513513513
+    },
+    "h1_gpt-4o-mini_no-tools_policy": {
+      "kappa": 0.22712201591511927,
+      "accuracy": 0.24324324324324326,
+      "mae": 1.4054054054054055,
+      "n_examples": 37,
+      "avg_latency_ms": 7431.043843965273,
+      "avg_tool_calls": 0.0
+    },
+    "h1_gpt-4o_with-tools_policy": {
+      "kappa": 0.5176736024066182,
+      "accuracy": 0.40540540540540543,
+      "mae": 1.135135135135135,
+      "n_examples": 37,
+      "avg_latency_ms": 136895.62838141984,
+      "avg_tool_calls": 1.4594594594594594
+    },
+    "h1_gpt-4o_no-tools_policy": {
+      "kappa": 0.4641293364769282,
+      "accuracy": 0.2972972972972973,
+      "mae": 1.135135135135135,
+      "n_examples": 37,
+      "avg_latency_ms": 5978.9867207810685,
+      "avg_tool_calls": 0.0
+    },
+    "h1_gpt-5.1_with-tools_policy": {
+      "kappa": 0.6153025859770729,
+      "accuracy": 0.5135135135135135,
+      "mae": 0.918918918918919,
+      "n_examples": 37,
+      "avg_latency_ms": 150224.10135011416,
+      "avg_tool_calls": 2.5675675675675675
+    },
+    "h1_gpt-5.1_no-tools_policy": {
+      "kappa": 0.4618368195040865,
+      "accuracy": 0.43243243243243246,
+      "mae": 1.162162162162162,
+      "n_examples": 37,
+      "avg_latency_ms": 79996.1414594908,
+      "avg_tool_calls": 0.0
+    }
+  },
+  "comparisons": {
+    "gpt-4o-mini": {
+      "baseline_run": "h1_gpt-4o-mini_no-tools_policy",
+      "tools_run": "h1_gpt-4o-mini_with-tools_policy",
+      "bootstrap": {
+        "kappa_a": 0.22712201591511927,
+        "kappa_b": 0.534502478078536,
+        "delta_hat": 0.30738046216341675,
+        "std_error_delta_hat": 0.16096455110317298,
+        "ci_lower": -0.012481109963305951,
+        "ci_upper": 0.6224079731790493,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "conditions": {
+        "ci_positive": {
+          "criterion": "95% CI lower bound > 0",
+          "value": -0.012481109963305951,
+          "passed": false
+        },
+        "threshold_met": {
+          "criterion": "\u0394\u03ba \u2265 0.25",
+          "value": 0.30738046216341675,
+          "threshold": 0.25,
+          "passed": true
+        }
+      },
+      "hypothesis_supported": false,
+      "interpretation": "Borderline effect: \u0394\u03ba=0.31 in [0.20, 0.35), CI includes 0 - inconclusive for gpt-4o-mini"
+    },
+    "gpt-4o": {
+      "baseline_run": "h1_gpt-4o_no-tools_policy",
+      "tools_run": "h1_gpt-4o_with-tools_policy",
+      "bootstrap": {
+        "kappa_a": 0.4641293364769282,
+        "kappa_b": 0.5176736024066182,
+        "delta_hat": 0.05354426592968997,
+        "std_error_delta_hat": 0.1777439334490279,
+        "ci_lower": -0.29268318554575373,
+        "ci_upper": 0.402027428623741,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "conditions": {
+        "ci_positive": {
+          "criterion": "95% CI lower bound > 0",
+          "value": -0.29268318554575373,
+          "passed": false
+        },
+        "threshold_met": {
+          "criterion": "\u0394\u03ba \u2265 0.25",
+          "value": 0.05354426592968997,
+          "threshold": 0.25,
+          "passed": false
+        }
+      },
+      "hypothesis_supported": false,
+      "interpretation": "No effect: \u0394\u03ba=0.05 < 0.20, indistinguishable from noise for gpt-4o"
+    },
+    "gpt-5.1": {
+      "baseline_run": "h1_gpt-5.1_no-tools_policy",
+      "tools_run": "h1_gpt-5.1_with-tools_policy",
+      "bootstrap": {
+        "kappa_a": 0.4618368195040865,
+        "kappa_b": 0.6153025859770729,
+        "delta_hat": 0.15346576647298638,
+        "std_error_delta_hat": 0.12458868280864457,
+        "ci_lower": -0.07674833649793965,
+        "ci_upper": 0.40541173484771015,
+        "n_boot": 10000,
+        "ci": 0.95
+      },
+      "conditions": {
+        "ci_positive": {
+          "criterion": "95% CI lower bound > 0",
+          "value": -0.07674833649793965,
+          "passed": false
+        }
+      },
+      "hypothesis_supported": false,
+      "interpretation": "No effect: \u0394\u03ba=0.15 < 0.20, indistinguishable from noise for gpt-5.1"
+    }
+  },
+  "overall_verdict": {
+    "h1_supported": false,
+    "notes": "H1 is supported if tools improve QWK for all tested models"
+  }
+}

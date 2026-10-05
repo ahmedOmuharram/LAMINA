@@ -1,0 +1,33 @@
+{
+  "model": "gpt-4o",
+  "multi_call": {
+    "source": "H1 with-tools run",
+    "kappa": 0.5176736024066182,
+    "accuracy": 0.40540540540540543,
+    "mae": 1.135135135135135,
+    "n_claims": 37,
+    "avg_tool_calls": 1.4594594594594594,
+    "avg_successful_calls": 1.4594594594594594
+  },
+  "single_call": {
+    "source": "H4 single-call run",
+    "kappa": 0.4535445757250268,
+    "accuracy": 0.35135135135135137,
+    "mae": 1.2432432432432432,
+    "n_claims": 37,
+    "avg_tool_calls": 1.0,
+    "avg_successful_calls": 1.0
+  },
+  "comparison": {
+    "delta_hat": 0.06412902668159137,
+    "ci_lower": -0.12765812581282615,
+    "ci_upper": 0.28188214644484877,
+    "std_error": 0.10561712092910411
+  },
+  "conditions": {
+    "ci_lower_positive": false,
+    "delta_sufficient": false
+  },
+  "hypothesis_supported": false,
+  "interpretation": "No effect: \u0394\u03ba=0.06 < 0.20, single call likely sufficient"
+}

@@ -1,0 +1,80 @@
+{
+  "per_run": {
+    "h1_gpt-4o-mini_no-tools_policy": {
+      "model": "gpt-4o-mini",
+      "tools_enabled": false,
+      "kappa": 0.22712201591511927,
+      "n_examples": 37
+    },
+    "h1_gpt-4o-mini_with-tools_policy": {
+      "model": "gpt-4o-mini",
+      "tools_enabled": true,
+      "kappa": 0.534502478078536,
+      "n_examples": 37
+    },
+    "h1_gpt-5.1_no-tools_policy": {
+      "model": "gpt-5.1",
+      "tools_enabled": false,
+      "kappa": 0.4618368195040865,
+      "n_examples": 37
+    },
+    "h1_gpt-5.1_with-tools_policy": {
+      "model": "gpt-5.1",
+      "tools_enabled": true,
+      "kappa": 0.6153025859770729,
+      "n_examples": 37
+    }
+  },
+  "analysis": {
+    "small_model": "gpt-4o-mini",
+    "large_model": "gpt-5.1",
+    "gap_no_tools": 0.23471480358896724,
+    "gap_no_tools_ci": {
+      "lower": -0.09351373575117608,
+      "upper": 0.5630368388410459
+    },
+    "gap_tools": 0.08080010789853687,
+    "gap_tools_ci": {
+      "lower": -0.1282656405427003,
+      "upper": 0.319880772974121
+    },
+    "delta_gap": 0.15391469569043037,
+    "delta_gap_ci": {
+      "lower": -0.17016588009989744,
+      "upper": 0.4784310390293061
+    },
+    "conditions": {
+      "gap_no_tools_large": {
+        "criterion": "Gap(no-tools) CI lower \u2265 0.25 (clear scale gap)",
+        "value": -0.09351373575117608,
+        "threshold": 0.25,
+        "passed": false
+      },
+      "gap_tools_small": {
+        "criterion": "Gap(tools) \u2264 0.10",
+        "value": 0.08080010789853687,
+        "threshold": 0.1,
+        "passed": true
+      },
+      "gap_tools_includes_zero": {
+        "criterion": "Gap(tools) CI includes 0",
+        "value": "[-0.128, 0.320]",
+        "passed": true
+      },
+      "gap_shrinks": {
+        "criterion": "\u0394_gap CI lower > 0 (gap shrinks)",
+        "value": -0.17016588009989744,
+        "passed": false
+      }
+    },
+    "condition_1_met": false,
+    "condition_2_met": true,
+    "condition_3_met": false,
+    "hypothesis_supported": false,
+    "interpretation": "Borderline scale gap without tools: \u0394\u03ba=0.23 in [0.20, 0.35); Gap closed with tools: \u0394\u03ba=0.08 \u2264 0.10, CI includes 0; Gap shrinkage not statistically significant: \u0394=0.15"
+  },
+  "overall_verdict": {
+    "h5_supported": false,
+    "notes": "H5 tests whether tools narrow the performance gap between small and large models"
+  }
+}

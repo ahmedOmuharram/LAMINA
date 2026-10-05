@@ -165,6 +165,23 @@ class VerificationMixin:
             phase_name_upper = phase_name.upper()
             available_phases = sorted(phases)
             
+            # Phase name aliases - map common names to database phase names
+            PHASE_ALIASES = {
+                "SIC": "CSI",           # Silicon carbide
+                "CARBIDE": "CSI",       # Generic carbide -> SiC in Al-Si-C systems
+                "SILICON_CARBIDE": "CSI",
+                "EUTECTIC": None,       # Not a phase - needs different handling
+                "FEAL2": "AL2FE",       # Common naming variant
+                "AL2FE": "AL2FE",
+            }
+            
+            # Try alias mapping first
+            if phase_name_upper in PHASE_ALIASES:
+                alias = PHASE_ALIASES[phase_name_upper]
+                if alias and alias in phases:
+                    _log.info(f"Mapped phase alias '{phase_name}' -> '{alias}'")
+                    phase_name_upper = alias
+            
             # Debug: List all available phases
             _log.debug(f"Available phases in {system_str} database: {available_phases}")
             
@@ -751,7 +768,8 @@ class VerificationMixin:
             
             if stop_on_first_violation:
                 # Use as_completed for early stopping on first violation (score < 0)
-                tasks = [process_grid_point(comp) for comp in grid_compositions]
+                # Must wrap coroutines in create_task() to enable cancellation
+                tasks = [asyncio.create_task(process_grid_point(comp)) for comp in grid_compositions]
                 results_grid = []
                 stopped_early = False
                 

@@ -151,6 +151,7 @@ KANI_SYSTEM_PROMPT = (
     "- IMAGES: Never include base64 image data in responses. Refer to images descriptively.\n"
     "- CITATIONS: Always include citations from tool outputs in your responses.\n"
     "- WILDCARDS: Pass wildcards (e.g., '*' in formulas) verbatim to tool arguments.\n"
+    "- CARBIDES: Remember that CSI (or SIC) is a carbide."
     "- Be persistent but thoughtful - don't repeat the same failed approach.\n"
     "- The best answer is the one backed by data. If the question asks to check for a 'few percent' or for 'up to' and the data supports it, then that is the best answer. If the data does not support it, then the answer is 'no'.\n"
     "  In other words, any data that shows above or below a certain threshold means that the hypothesis is supported.\n"

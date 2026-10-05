@@ -1,0 +1,80 @@
+{
+  "crisp": {
+    "n_claims": 15,
+    "n_examples": 15,
+    "kappa": 0.6347607052896725,
+    "accuracy": 0.5333333333333333,
+    "mae": 0.8666666666666667,
+    "FR": 0.0,
+    "QWFR": 0.0
+  },
+  "ambiguous": {
+    "n_claims": 22,
+    "n_examples_h1": 22,
+    "n_examples_h3": 65,
+    "kappa": 0.3114241001564946,
+    "kappa_best": 0.7900146842878121,
+    "kappa_worst": 0.09810791871058155,
+    "accuracy": 0.3181818181818182,
+    "mae": 1.3181818181818181,
+    "FR": 0.4303030303030303,
+    "QWFR": 0.1365530303030303
+  },
+  "comparisons": {
+    "qwk_diff": {
+      "kappa_crisp": 0.6347607052896725,
+      "kappa_ambiguous": 0.3114241001564946,
+      "delta_hat": 0.32333660513317797,
+      "std_error": 0.2917784928823123,
+      "ci_lower": -0.3370955102687587,
+      "ci_upper": 0.8256483479659529
+    },
+    "fr_diff": {
+      "FR_crisp": 0.0,
+      "FR_ambiguous": 0.4303030303030303,
+      "delta_hat": 0.4303030303030303,
+      "ci_lower": 0.27121212121212124,
+      "ci_upper": 0.5893939393939394
+    },
+    "qwfr_diff": {
+      "QWFR_crisp": 0.0,
+      "QWFR_ambiguous": 0.1365530303030303,
+      "delta_hat": 0.1365530303030303,
+      "ci_lower": 0.059846117424242444,
+      "ci_upper": 0.22651515151515153
+    },
+    "conditions": {
+      "qwfr": {
+        "criterion": "QWFR(Amb) - QWFR(Crisp) \u2265 0.05 with CI > 0",
+        "delta": 0.1365530303030303,
+        "threshold": 0.05,
+        "threshold_met": true,
+        "ci_lower": 0.059846117424242444,
+        "ci_positive": true,
+        "passed": true
+      },
+      "fr": {
+        "criterion": "FR(Amb) - FR(Crisp) \u2265 0.20 with CI > 0",
+        "delta": 0.4303030303030303,
+        "threshold": 0.2,
+        "threshold_met": true,
+        "ci_lower": 0.27121212121212124,
+        "ci_positive": true,
+        "passed": true
+      },
+      "qwk": {
+        "criterion": "\u03ba(Crisp) - \u03ba(Amb) \u2265 0.25 with CI > 0",
+        "delta": 0.32333660513317797,
+        "threshold": 0.25,
+        "threshold_met": true,
+        "ci_lower": -0.3370955102687587,
+        "ci_positive": false,
+        "passed": false
+      }
+    },
+    "flip_condition_met": true,
+    "qwk_condition_met": false,
+    "hypothesis_supported": false,
+    "interpretation": "Crisp > Ambiguous QWK by 0.32 (borderline, CI includes 0); Ambiguous FR higher by 0.43; Ambiguous QWFR higher by 0.14"
+  }
+}

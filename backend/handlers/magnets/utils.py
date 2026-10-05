@@ -1743,15 +1743,16 @@ def assess_strength(
     doped_mp: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Determine if doped material is a "stronger" permanent magnet.
+    Comprehensive assessment of whether doped material is a "stronger" magnet.
     
-    "Stronger" = more pull force (↑Br → ↑F), NOT just ↑Hc.
+    IMPORTANT: "Stronger magnet" can mean different things in physics:
+    1. Higher PULL FORCE (↑Br → ↑F) - practical strength, ability to lift objects
+    2. Higher COERCIVITY (Hc) - resistance to demagnetization, "harder" magnet
+    3. Higher SATURATION MAGNETIZATION (Ms) - maximum magnetic moment
+    4. Higher MAGNETIC ANISOTROPY (MAE) - energy barrier for moment rotation
     
-    Criteria:
-    1. Pull force (F) must increase by at least 5%
-    2. Coercivity (Hc) must remain above a minimum threshold (e.g., 0.5 kA/m)
-    3. Magnetic ordering should be FM or FiM (not AFM/WF)
-    4. Must be same crystal phase (not a different compound)
+    This function returns assessments for EACH definition so the model can decide
+    which interpretation applies to the specific claim.
     
     Args:
         baseline_props: Baseline material properties
@@ -1762,25 +1763,23 @@ def assess_strength(
         doped_mp: Doped MP data (for ordering and phase)
         
     Returns:
-        Assessment dictionary with decision and reasoning
+        Assessment dictionary with multi-metric analysis
     """
     try:
         assessment = {
-            "stronger": False,
-            "reason": "",
-            "confidence": "low",
-            "details": {}
+            "confidence": "medium",
+            "details": {},
+            "metric_assessments": {},
+            "summary": ""
         }
         
         # Guard: Refuse phase changes for a "doping" claim
-        # If doped_mp has "method: heuristic", it's conceptually the same phase
         if doped_mp and doped_mp.get("method") != "heuristic":
             baseline_sg = baseline_mp.get("phase", {}).get("space_group")
             doped_sg = doped_mp.get("phase", {}).get("space_group")
             
             if baseline_sg and doped_sg and baseline_sg != doped_sg:
-                assessment["stronger"] = False
-                assessment["reason"] = (
+                assessment["summary"] = (
                     f"Doped entry is a different crystal phase (space group {doped_sg} vs {baseline_sg}); "
                     "not substitutional doping. Cannot claim 'stronger magnet by doping'."
                 )
@@ -1790,92 +1789,137 @@ def assess_strength(
                     "doped_space_group": doped_sg,
                     "phase_changed": True
                 }
+                assessment["metric_assessments"] = {
+                    "pull_force": {"improved": False, "reason": "Phase changed"},
+                    "coercivity": {"improved": False, "reason": "Phase changed"},
+                    "magnetization": {"improved": False, "reason": "Phase changed"}
+                }
                 return assessment
         
-        # Check if we have necessary data
-        if not baseline_force.get("success") or not doped_force.get("success"):
-            assessment["reason"] = "Insufficient data to calculate pull forces"
-            return assessment
+        # Get magnetic ordering info
+        baseline_ordering = baseline_mp.get("magnetic_ordering", {}).get("ordering_type", "Unknown")
+        doped_ordering = (doped_mp or {}).get("magnetic_ordering", {}).get("ordering_type", "Unknown")
+        assessment["details"]["baseline_ordering"] = baseline_ordering
+        assessment["details"]["doped_ordering"] = doped_ordering
         
-        F_baseline = baseline_force["force"]["F_N"]
-        F_doped = doped_force["force"]["F_N"]
+        # ============================================================
+        # METRIC 1: PULL FORCE (practical strength - lifts heavier objects)
+        # ============================================================
+        if baseline_force.get("success") and doped_force.get("success"):
+            F_baseline = baseline_force["force"]["F_N"]
+            F_doped = doped_force["force"]["F_N"]
+            force_change_pct = ((F_doped - F_baseline) / F_baseline) * 100 if F_baseline > 0 else 0
+            
+            assessment["details"]["F_baseline_N"] = float(F_baseline)
+            assessment["details"]["F_doped_N"] = float(F_doped)
+            assessment["details"]["force_change_percent"] = float(force_change_pct)
+            
+            force_improved = force_change_pct > 5  # Need >5% improvement
+            assessment["metric_assessments"]["pull_force"] = {
+                "improved": force_improved,
+                "change_percent": float(force_change_pct)
+            }
+        else:
+            assessment["metric_assessments"]["pull_force"] = {
+                "improved": None,
+                "reason": "Insufficient data to calculate pull force"
+            }
         
-        # Check pull force increase
-        force_increase_pct = ((F_doped - F_baseline) / F_baseline) * 100 if F_baseline > 0 else 0
-        assessment["details"]["force_change_percent"] = float(force_increase_pct)
-        assessment["details"]["F_baseline_N"] = float(F_baseline)
-        assessment["details"]["F_doped_N"] = float(F_doped)
-        
-        # Check coercivity
+        # ============================================================
+        # METRIC 2: COERCIVITY (resistance to demagnetization - "harder" magnet)
+        # ============================================================
         Hc_baseline = baseline_props.get("Hc_kA_per_m", 0)
         Hc_doped = doped_props.get("Hc_kA_per_m", 0)
-        Hc_min_threshold = 0.5  # kA/m (minimum for practical permanent magnet)
         
         assessment["details"]["Hc_baseline_kA_per_m"] = float(Hc_baseline)
         assessment["details"]["Hc_doped_kA_per_m"] = float(Hc_doped)
         
-        # Check magnetic ordering
-        baseline_ordering = baseline_mp.get("magnetic_ordering", {}).get("ordering_type", "Unknown")
-        doped_ordering = (doped_mp or {}).get("magnetic_ordering", {}).get("ordering_type", "Unknown")
-        
-        assessment["details"]["baseline_ordering"] = baseline_ordering
-        assessment["details"]["doped_ordering"] = doped_ordering
-        
-        # Decision logic
-        reasons = []
-        
-        # Criterion 1: Force increase
-        if force_increase_pct > 5:
-            reasons.append(f"Pull force increased by {force_increase_pct:.1f}%")
-            force_criterion = True
+        if Hc_baseline > 0:
+            Hc_change_pct = ((Hc_doped - Hc_baseline) / Hc_baseline) * 100
+            assessment["details"]["Hc_change_percent"] = float(Hc_change_pct)
+            
+            hc_improved = Hc_change_pct > 5  # Need >5% improvement
+            assessment["metric_assessments"]["coercivity"] = {
+                "improved": hc_improved,
+                "change_percent": float(Hc_change_pct)
+            }
         else:
-            reasons.append(f"Pull force changed by only {force_increase_pct:.1f}% (need >5% for 'stronger')")
-            force_criterion = False
+            assessment["metric_assessments"]["coercivity"] = {
+                "improved": None,
+                "reason": "Baseline coercivity is zero or unknown"
+            }
         
-        # Criterion 2: Coercivity check
-        if Hc_doped >= Hc_min_threshold:
-            reasons.append(f"Coercivity {Hc_doped:.1f} kA/m is above minimum threshold")
-            hc_criterion = True
+        # ============================================================
+        # METRIC 3: SATURATION MAGNETIZATION (maximum magnetic moment)
+        # ============================================================
+        Ms_baseline = baseline_props.get("Ms_kA_per_m")
+        Ms_doped = doped_props.get("Ms_kA_per_m")
+        
+        if Ms_baseline is not None:
+            assessment["details"]["Ms_baseline_kA_per_m"] = float(Ms_baseline)
+        if Ms_doped is not None:
+            assessment["details"]["Ms_doped_kA_per_m"] = float(Ms_doped)
+        
+        if Ms_baseline is not None and Ms_doped is not None and Ms_baseline > 0:
+            Ms_change_pct = ((Ms_doped - Ms_baseline) / Ms_baseline) * 100
+            assessment["details"]["Ms_change_percent"] = float(Ms_change_pct)
+            
+            Ms_improved = Ms_change_pct > 5  # Need >5% improvement
+            assessment["metric_assessments"]["magnetization"] = {
+                "improved": Ms_improved,
+                "change_percent": float(Ms_change_pct)
+            }
         else:
-            reasons.append(f"Coercivity {Hc_doped:.1f} kA/m is below minimum threshold ({Hc_min_threshold} kA/m)")
-            hc_criterion = False
+            assessment["metric_assessments"]["magnetization"] = {
+                "improved": None,
+                "reason": "Insufficient magnetization data"
+            }
         
-        # Criterion 3: Magnetic ordering
-        if doped_ordering in ["FM", "FiM"]:
-            reasons.append(f"Magnetic ordering ({doped_ordering}) suitable for permanent magnet")
-            ordering_criterion = True
+        # ============================================================
+        # METRIC 4: REMANENCE (retained field after removing external field)
+        # ============================================================
+        Br_baseline = baseline_props.get("Br_T")
+        Br_doped = doped_props.get("Br_T")
+        
+        if Br_baseline is not None:
+            assessment["details"]["Br_baseline_T"] = float(Br_baseline)
+        if Br_doped is not None:
+            assessment["details"]["Br_doped_T"] = float(Br_doped)
+        
+        if Br_baseline is not None and Br_doped is not None and Br_baseline > 0:
+            Br_change_pct = ((Br_doped - Br_baseline) / Br_baseline) * 100
+            assessment["details"]["Br_change_percent"] = float(Br_change_pct)
+            
+            Br_improved = Br_change_pct > 5
+            assessment["metric_assessments"]["remanence"] = {
+                "improved": Br_improved,
+                "change_percent": float(Br_change_pct)
+            }
         else:
-            reasons.append(f"Magnetic ordering ({doped_ordering}) not ideal for permanent magnet (prefer FM/FiM)")
-            ordering_criterion = False
+            assessment["metric_assessments"]["remanence"] = {
+                "improved": None,
+                "reason": "Insufficient remanence data"
+            }
         
-        # Final assessment
-        if force_criterion and hc_criterion and ordering_criterion:
-            assessment["stronger"] = True
-            assessment["confidence"] = "medium"
-            assessment["reason"] = "Doped material shows improved pull force with adequate coercivity and suitable magnetic ordering"
-        elif force_criterion:
-            assessment["stronger"] = False
-            assessment["confidence"] = "medium"
-            assessment["reason"] = "Pull force improved but coercivity or magnetic ordering concerns remain"
-        else:
-            assessment["stronger"] = False
-            assessment["confidence"] = "medium"
-            assessment["reason"] = "Pull force did not improve sufficiently"
+        # ============================================================
+        # BUILD SUMMARY - Raw metric changes only
+        # ============================================================
+        improvements = []
+        degradations = []
         
-        assessment["detailed_reasoning"] = reasons
-        
-        # Special case: AFM/WF materials
-        if baseline_ordering in ["AFM", "WF"] or doped_ordering in ["AFM", "WF"]:
-            assessment["confidence"] = "low"
-            assessment["reason"] += " (Note: AFM/Weak-FM materials are generally poor permanent magnets)"
+        for metric, result in assessment["metric_assessments"].items():
+            if result.get("improved") is True:
+                improvements.append(f"{metric} (+{result.get('change_percent', 0):.1f}%)")
+            elif result.get("improved") is False:
+                degradations.append(f"{metric} ({result.get('change_percent', 0):.1f}%)")
         
         return assessment
         
     except Exception as e:
         _log.error(f"Error in assess_strength: {e}", exc_info=True)
         return {
-            "stronger": False,
-            "reason": f"Error in assessment: {str(e)}",
-            "confidence": "N/A"
+            "summary": f"Error in assessment: {str(e)}",
+            "confidence": "none",
+            "metric_assessments": {}
         }
 

@@ -76,13 +76,13 @@ def parse_composition_string(
         else:
             return None, f"Parsed elements {set(comp_dict.keys())} don't match expected {expected_elements}"
     
-    # Try format 2/3: hyphen-separated (e.g., "Al-8Mg-4Zn" or "Fe-30Al-70")
+    # Try format 2/3: hyphen-separated (e.g., "Al-8Mg-4Zn" or "Fe-30Al-70" or "Al-8Cu")
     parts = composition.replace(' ', '').split('-')
     
     for part in parts:
-        # Extract element and number from each part
+        # Try element-first format: "Al" or "Mg8" or "Cu8.5"
         match = re.match(r'([A-Z][a-z]?)(\d+\.?\d*)?', part)
-        if match:
+        if match and match.group(1):
             elem = match.group(1)
             pct_str = match.group(2)
             
@@ -91,6 +91,13 @@ def parse_composition_string(
             else:
                 # No number means balance element (will be calculated)
                 comp_dict[elem] = None
+        else:
+            # Try number-first format: "8Cu" or "30.5Al"
+            match = re.match(r'(\d+\.?\d*)([A-Z][a-z]?)', part)
+            if match:
+                pct_str = match.group(1)
+                elem = match.group(2)
+                comp_dict[elem] = float(pct_str)
     
     # Calculate balance element if present
     balance_elem = None
