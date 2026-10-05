@@ -16,6 +16,10 @@ from .handlers import MaterialHandler, SearXNGSearchHandler, BatteryHandler, Sem
 from .prompts import KANI_SYSTEM_PROMPT
 from .models import BACKBONE_MODEL, BACKBONE_REASONING_EFFORT, PROMPT_CACHE_KEY, is_reasoning_model
 
+import tiktoken
+
+_LOCAL_TOKENIZER = tiktoken.get_encoding("o200k_base")
+
 
 # --------------------------------------------------------------------------------------
 # Engine: disable function token reserve to avoid schema pretty-printer crashes
@@ -30,6 +34,14 @@ class OpenAIEngineNoFuncReserve(OpenAIEngine):
     """
     def _function_token_reserve_impl(self, functions: frozenset) -> int:
         return 0
+
+    async def prompt_len(self, messages, functions=None, **kwargs) -> int:
+        total = 0
+        for message in messages:
+            total += 4 + len(_LOCAL_TOKENIZER.encode(message.text or ""))
+            for call in message.tool_calls or []:
+                total += len(_LOCAL_TOKENIZER.encode(call.function.name + call.function.arguments))
+        return total
 
 # --------------------------------------------------------------------------------------
 # Engine builder
