@@ -14,6 +14,7 @@ from kani.engines.openai.engine import OpenAIEngine  # we subclass this
 
 from .handlers import MaterialHandler, SearXNGSearchHandler, BatteryHandler, SemiconductorHandler, AlloyHandler, SuperconductorHandler, MagnetHandler, SolutesHandler, CalPhadHandler
 from .prompts import KANI_SYSTEM_PROMPT
+from .models import BACKBONE_MODEL, BACKBONE_REASONING_EFFORT, PROMPT_CACHE_KEY, is_reasoning_model
 
 
 # --------------------------------------------------------------------------------------
@@ -33,14 +34,17 @@ class OpenAIEngineNoFuncReserve(OpenAIEngine):
 # --------------------------------------------------------------------------------------
 # Engine builder
 # --------------------------------------------------------------------------------------
-def _build_engine(model: str = "gpt-4.1") -> OpenAIEngine:
+def _build_engine(model: str = BACKBONE_MODEL) -> OpenAIEngine:
     load_dotenv()
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set. Add it to your environment or .env file.")
 
     # Use our patched engine class that skips function token reserve
-    eng = OpenAIEngineNoFuncReserve(api_key, model=model)
+    if is_reasoning_model(model):
+        eng = OpenAIEngineNoFuncReserve(api_key, model=model, api_type="responses")
+    else:
+        eng = OpenAIEngineNoFuncReserve(api_key, model=model, api_type="chat_completions")
     _log.info(f"[kani_client] Initialized OpenAIEngineNoFuncReserve(model={model})")
     return eng
 
@@ -57,7 +61,7 @@ def get_all_ai_functions() -> List[Dict[str, Any]]:
     mpr = MPRester(api_key)
     
     # Create a temporary Kani instance to discover functions
-    temp_kani = MPKani(model="gpt-4o-mini")
+    temp_kani = MPKani(model=BACKBONE_MODEL)
     
     functions_list = []
     
@@ -114,7 +118,7 @@ class MPKani(MaterialHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandl
     def __init__(
         self,
         client: Optional[object] = None,
-        model: str = "gpt-4.1",
+        model: str = BACKBONE_MODEL,
         *,
         system_prompt: str = KANI_SYSTEM_PROMPT,
         chat_history: Optional[list[KChatMessage]] = None,
@@ -145,7 +149,8 @@ class MPKani(MaterialHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandl
         self._temperature = temperature
         self._top_p = top_p
         self._seed = seed
-        
+        self._model = model
+
         # Initialize Kani first
         engine = _build_engine(model)
         Kani.__init__(
@@ -183,6 +188,11 @@ class MPKani(MaterialHandler, SearXNGSearchHandler, BatteryHandler, CalPhadHandl
     
     def get_hyperparams(self) -> Dict[str, Any]:
         """Get hyperparameters to pass to the engine for each request."""
+        if is_reasoning_model(self._model):
+            return {
+                "reasoning": {"effort": BACKBONE_REASONING_EFFORT},
+                "prompt_cache_key": PROMPT_CACHE_KEY,
+            }
         params = {
             "temperature": self._temperature,
             "top_p": self._top_p,

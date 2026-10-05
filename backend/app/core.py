@@ -15,7 +15,9 @@ try:
 except ImportError:
     tiktoken = None
 
-DEFAULT_MODEL = "gpt-4o-mini"
+from ..models import BACKBONE_MODEL, is_reasoning_model
+
+DEFAULT_MODEL = BACKBONE_MODEL
 _log = logging.getLogger(__name__)
 
 def count_tokens(text: str, model: str) -> int:
@@ -26,7 +28,9 @@ def count_tokens(text: str, model: str) -> int:
     
     try:
         # Map model names to tiktoken encodings
-        if "gpt-4" in model.lower() or "gpt-4o" in model.lower():
+        if is_reasoning_model(model.lower()):
+            encoding = tiktoken.get_encoding("o200k_base")
+        elif "gpt-4" in model.lower() or "gpt-4o" in model.lower():
             encoding = tiktoken.encoding_for_model("gpt-4o")
         elif "gpt-3.5" in model.lower():
             encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
@@ -47,7 +51,9 @@ def count_message_tokens(messages: List[ChatMessage], model: str) -> int:
     
     try:
         # Map model names to tiktoken encodings
-        if "gpt-4" in model.lower() or "gpt-4o" in model.lower():
+        if is_reasoning_model(model.lower()):
+            encoding = tiktoken.get_encoding("o200k_base")
+        elif "gpt-4" in model.lower() or "gpt-4o" in model.lower():
             encoding = tiktoken.encoding_for_model("gpt-4o")
         elif "gpt-3.5" in model.lower():
             encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
@@ -175,7 +181,7 @@ async def sse_generator(messages: List[ChatMessage], model: str, request: Any = 
 
     try:
         # Pass text-only content (images have been converted to descriptions)
-        stream_iterator = kani_instance.full_round_stream(user_content_text)
+        stream_iterator = kani_instance.full_round_stream(user_content_text, **kani_instance.get_hyperparams())
         async for stream in stream_iterator:
             # Check cancellation flag (set by background monitor)
             check_cancelled()

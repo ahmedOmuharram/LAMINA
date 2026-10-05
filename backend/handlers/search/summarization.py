@@ -8,6 +8,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from ...models import helper_completion_params
+
 _log = logging.getLogger(__name__)
 
 
@@ -69,13 +71,11 @@ Document:
 Summary:"""
             
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a research assistant that creates concise, informative summaries of scientific and technical documents."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=max_tokens,
-                temperature=0.3
+                **helper_completion_params(max_tokens, 0.3),
             )
             
             summary = response.choices[0].message.content.strip()
@@ -147,13 +147,11 @@ Results:
 Synthesis:"""
                 
                 response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": "You are a research analyst who synthesizes information from multiple sources into coherent insights."},
                         {"role": "user", "content": synthesis_prompt}
                     ],
-                    max_tokens=200,
-                    temperature=0.4
+                    **helper_completion_params(200, 0.4),
                 )
                 
                 overall_synthesis = response.choices[0].message.content.strip()

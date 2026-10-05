@@ -6,12 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from .schemas import ChatRequest, CohenKappaRequest, CohenKappaResponse, AIFunctionsListResponse
 from .core import do_stream_response
 from ..kani_client import get_all_ai_functions
+from ..models import BACKBONE_MODEL
 from dotenv import load_dotenv
 from pathlib import Path
 from sklearn.metrics import cohen_kappa_score
 
 APP_TITLE = "LAMINA: LLM-Assisted Material INformatics and Analysis"
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = BACKBONE_MODEL
 APP_VERSION = "0.0.1"
 
 load_dotenv()
@@ -65,37 +66,15 @@ async def list_models():
         "object": "list",
         "data": [
             {
-                "id": "gpt-4o-mini",
+                "id": BACKBONE_MODEL,
                 "object": "model",
                 "created": 1700000000,
                 "owned_by": "openai",
                 "permission": [],
-                "root": "gpt-4o-mini",
+                "root": BACKBONE_MODEL,
                 "parent": None,
-                "name": "GPT-4o Mini",
-                "description": "Fast and intelligent model optimized for materials science analysis"
-            },
-            {
-                "id": "gpt-4o",
-                "object": "model",
-                "created": 1700000000,
-                "owned_by": "openai",
-                "permission": [],
-                "root": "gpt-4o",
-                "parent": None,
-                "name": "GPT-4o",
-                "description": "Most capable model for complex materials science queries"
-            },
-            {
-                "id": "o1",
-                "object": "model",
-                "created": 1700000000,
-                "owned_by": "openai",
-                "permission": [],
-                "root": "o1",
-                "parent": None,
-                "name": "OpenAI o1",
-                "description": "Advanced reasoning model for complex analysis tasks"
+                "name": "GPT-5.4",
+                "description": "Backbone model for materials science feasibility analysis"
             },
         ]
     }

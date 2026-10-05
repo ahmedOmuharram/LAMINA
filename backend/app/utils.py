@@ -6,6 +6,7 @@ import re
 import logging
 from typing import Any, List, Dict
 from .schemas import ChatMessage
+from ..models import helper_completion_params
 from kani import ChatMessage as KChatMessage
 
 _log = logging.getLogger(__name__)
@@ -574,14 +575,13 @@ async def describe_image_with_gpt4o(image_info: Dict[str, Any], user_text: str =
         print("describe_image_with_gpt4o: Calling OpenAI GPT-4o API...", flush=True)
         # Call GPT-4o with vision
         response = await client.chat.completions.create(
-            model="gpt-4o",
             messages=[
                 {
                     "role": "user",
                     "content": content_parts
                 }
             ],
-            max_tokens=500
+            **helper_completion_params(500, 1.0),
         )
         
         print("describe_image_with_gpt4o: API call successful", flush=True)
@@ -616,14 +616,13 @@ async def describe_image_with_gpt4o(image_info: Dict[str, Any], user_text: str =
                     
                     # Retry the API call
                     response = await client.chat.completions.create(
-                        model="gpt-4o",
                         messages=[
                             {
                                 "role": "user",
                                 "content": content_parts
                             }
                         ],
-                        max_tokens=500
+                        **helper_completion_params(500, 1.0),
                     )
                     
                     print("describe_image_with_gpt4o: Retry with base64 successful!", flush=True)
