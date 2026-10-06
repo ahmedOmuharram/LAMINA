@@ -119,6 +119,39 @@ def main() -> None:
     print(f"  flip rate across readings: GPT-5.4 cards {m:.2f} [{lo:.2f},{hi:.2f}] over {len(fr_now)} claims; on the readings both scored, {st.fmean(a for a, _ in fr_then):.2f} vs gpt-4o {st.fmean(b for _, b in fr_then):.2f} over {len(fr_then)} claims; mean |shift| from frozen base {st.fmean(shifts):.2f}")
     summary["readings"] = {"claims": len(fr_now), "flip_rate_now": round(m, 3), "ci": [round(lo, 3), round(hi, 3)], "matched": [round(st.fmean(a for a, _ in fr_then), 3), round(st.fmean(b for _, b in fr_then), 3), len(fr_then)]}
 
+    print("\nQuantifier set to universal, by source of evidence (shift from the unedited runs of the same condition)")
+    for edit_mode, base_mode in (("edit-quantifier", "frozen"), ("edit-quantifier-search", "frozen-search")):
+        rows = []
+        for c in claims:
+            path = RUNS / edit_mode / c / "r1.json"
+            base = verdicts(base_mode, c, None)
+            if kind[c] != "computed" or not path.exists() or not base:
+                continue
+            edited = json.loads(path.read_text())["verdict"]
+            if edited is None:
+                continue
+            rows.append((c, edited, base, edited - st.fmean(base), edited < min(base), st.fmean(base) > -2))
+        for label, chosen in (("all", rows), ("not at -2", [r for r in rows if r[5]])):
+            if not chosen:
+                continue
+            m, lo, hi = boot_mean_ci([r[3] for r in chosen])
+            print(f"  {edit_mode:24} {label:10} n={len(chosen):2} shift {m:+.2f} [{lo:+.2f},{hi:+.2f}] below every unedited run {st.fmean(r[4] for r in chosen):.2f} rose {st.fmean(r[3] > 0 for r in chosen):.2f}")
+            summary[f"{edit_mode}_{label}"] = [len(chosen), round(m, 3), round(lo, 3), round(hi, 3)]
+        for r in rows:
+            print(f"    {r[0]:30} edited {r[1]:+d} unedited {r[2]}")
+
+    shifts = {}
+    for edit_mode, base_mode in (("edit-quantifier", "frozen"), ("edit-quantifier-search", "frozen-search")):
+        for c in claims:
+            path = RUNS / edit_mode / c / "r1.json"
+            base = verdicts(base_mode, c, None)
+            if kind[c] == "computed" and path.exists() and base and json.loads(path.read_text())["verdict"] is not None:
+                shifts.setdefault(c, {})[edit_mode] = json.loads(path.read_text())["verdict"] - st.fmean(base)
+    paired = [v["edit-quantifier"] - v["edit-quantifier-search"] for v in shifts.values() if len(v) == 2]
+    m, lo, hi = boot_mean_ci(paired)
+    print(f"  paired, tools minus search only: {m:+.2f} [{lo:+.2f},{hi:+.2f}] over {len(paired)} claims; tools moved further down on {sum(d < 0 for d in paired)}, equal on {sum(d == 0 for d in paired)}, less on {sum(d > 0 for d in paired)}")
+    summary["edit_paired"] = [len(paired), round(m, 3), round(lo, 3), round(hi, 3)]
+
     print("\nSign accuracy against gold (first runs per condition)")
     for mode in ("full", "none", "frozen"):
         acc = [st.fmean(sign(v) == sign(gold[c]) for v in verdicts(mode, c)) for c in claims if verdicts(mode, c)]
